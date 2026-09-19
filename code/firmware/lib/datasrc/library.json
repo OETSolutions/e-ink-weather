@@ -1,5 +1,11 @@
 {
   "name": "datasrc",
   "version": "0.1.0",
-  "build": { "srcDir": "src", "includeDir": "include" }
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  },
+  "dependencies": {
+    "baracodadailyhealthtech/cJSON": "^1.7.18"
+  }
 }

@@ -163,6 +163,21 @@ static void test_long_page_name_is_truncated(void)
     TEST_ASSERT_EQUAL_INT((int)sizeof(c.pages[0].name) - 1, (int)strlen(c.pages[0].name));
 }
 
+/* A `pages` that is present but the WRONG TYPE is a serialization bug, not a user choice.
+ * Falling through to the default would silently discard the user's layout; it must be an
+ * error. An ABSENT `pages` stays lenient (a minimal document is valid). */
+static void test_wrong_typed_pages_is_rejected(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_NOT_EQUAL(0, layout_config_parse("{\"schemaVersion\":1,\"pages\":\"nope\"}", &c));
+    TEST_ASSERT_NOT_EQUAL(0, layout_config_parse("{\"schemaVersion\":1,\"pages\":42}", &c));
+    TEST_ASSERT_NOT_EQUAL(0, layout_config_parse("{\"schemaVersion\":1,\"pages\":{}}", &c));
+    TEST_ASSERT_NOT_EQUAL(0, layout_config_parse("{\"schemaVersion\":1,\"pages\":null}", &c));
+    /* Absent is still fine. */
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse("{\"schemaVersion\":1}", &c));
+    TEST_ASSERT_EQUAL_INT(1, c.page_count);
+}
+
 /* An empty pages array must not leave page_count pointing past the default page. */
 static void test_empty_pages_array_keeps_a_usable_default(void)
 {
@@ -220,6 +235,7 @@ int main(void)
     RUN_TEST(test_too_many_pages_are_truncated);
     RUN_TEST(test_junk_entries_do_not_corrupt_page_count);
     RUN_TEST(test_long_page_name_is_truncated);
+    RUN_TEST(test_wrong_typed_pages_is_rejected);
     RUN_TEST(test_empty_pages_array_keeps_a_usable_default);
     RUN_TEST(test_null_and_empty_input_are_rejected);
     RUN_TEST(test_page_at_on_zeroed_config);

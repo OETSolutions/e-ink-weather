@@ -9,11 +9,29 @@
  * The radio is fully torn down in net_wifi_disconnect() before the ADC2 battery read
  * (HW-3: ADC2 is unusable while WiFi is active) and before deep sleep (NFR-3). */
 
+/* Bring up the network stack WITHOUT connecting: esp_netif, the default event loop, and the
+ * WiFi driver.
+ *
+ * WHY THIS IS SEPARATE FROM net_wifi_connect(): the HTTP API (FR-31) needs a TCP/IP stack to
+ * listen on, and it must work on a device that has NO credentials yet — that is exactly when
+ * the user needs to reach it to configure it. Calling esp_http_server without this aborts
+ * inside lwIP with "tcpip_send_msg_wait_sem (Invalid mbox)", because the default event loop
+ * and the tcpip thread do not exist. Verified on hardware.
+ *
+ * Idempotent, and safe to call before or after net_wifi_connect(). Returns ESP_OK if the
+ * stack is up. */
+esp_err_t net_stack_init(void);
+
+/* Connect to `ssid`. Calls net_stack_init() first, so it may be used on its own. */
 esp_err_t net_wifi_connect(const char *ssid, const char *pass, int timeout_ms);
 void net_wifi_disconnect(void);
 
 /* RSSI in dBm, or 0 if not connected. */
 int net_wifi_rssi(void);
+
+/* 1 if associated and got an IP. Needed to tell "connected with a very weak signal" (a real
+ * -95 dBm reading) from "radio off" (0) — both would otherwise report the same thing. */
+int net_wifi_connected(void);
 
 /* One visible access point. */
 typedef struct {

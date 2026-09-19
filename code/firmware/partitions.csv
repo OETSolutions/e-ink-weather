@@ -1,7 +1,22 @@
-# Name,   Type, SubType, Offset,   Size,     Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-otadata,  data, ota,     0xf000,   0x2000,
-phy_init, data, phy,     0x11000,  0x1000,
-ota_0,    app,  ota_0,   0x20000,  0x180000,
-ota_1,    app,  ota_1,   0x1A0000, 0x180000,
-storage,  data, spiffs,  0x320000, 0xE0000,
+# Name,      Type, SubType, Offset,   Size,     Flags
+# Dual-OTA (FR-32 / NFR-2). Everything below is 4 KB sector aligned, the whole image is
+# exactly 0x400000 (4 MB) with no tail, verified by tools/check_partitions.py.
+nvs,         data, nvs,     0x9000,   0x6000,
+otadata,     data, ota,     0xf000,   0x2000,
+phy_init,    data, phy,     0x11000,  0x1000,
+ota_0,       app,  ota_0,   0x20000,  0x180000,
+ota_1,       app,  ota_1,   0x1A0000, 0x180000,
+# The static-bitmap slots (IF-2a). 0x14000 = 81,920 bytes = the 16-byte header plus the
+# 78,200-byte frame, rounded up to a whole sector so a promote rewrites exactly one sector
+# of header without touching the image. Two of them, because an interrupted upload must
+# leave the PREVIOUS image live — see bitmap_slot.h. NVS is only 24 KB and cannot hold a
+# 78,200-byte bitmap, which is why these are raw partitions.
+# Subtype 0x40 is a raw data partition: there is NO filesystem here, the slots are addressed
+# directly with esp_partition_read/write through a bitmap_slot backend. Using `spiffs` (as
+# an earlier revision did) would advertise a mountable FS that does not exist.
+# Resolves spec Q9.
+bitmap_a,    data, 0x40,    0x320000, 0x14000,
+bitmap_b,    data, 0x40,    0x334000, 0x14000,
+# Web-app assets, if the build ever needs to ship them outside the app image. Task 21b
+# currently embeds them in the app via EMBED_FILES, so this is headroom, not a dependency.
+storage,     data, spiffs,  0x348000, 0xB8000,

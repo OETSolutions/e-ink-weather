@@ -30,6 +30,10 @@ typedef struct {
     int  font_id;
 } value_field_t;
 
+/* Read `len` bytes of the static layer starting at `offset` into `dst`.
+ * Returns 0 on success, non-zero on failure. */
+typedef int (*render_read_fn)(void *ctx, size_t offset, uint8_t *dst, size_t len);
+
 /* Draw `static_layer` (EPD_FB_BYTES, 1 bpp, 1 = white) into `c`, then stamp `values[i]`
  * into `fields[i]` for i in [0, n_fields).
  *
@@ -41,3 +45,18 @@ typedef struct {
 int render_compose(canvas_t *c, const uint8_t *static_layer,
                    const value_field_t *fields, const char *const *values,
                    int n_fields);
+
+/* Same, but the static layer is PULLED through `read` in chunks instead of being a
+ * contiguous buffer.
+ *
+ * WHY THIS EXISTS: the static layer is 78,200 bytes and the device has 320 KB of RAM with
+ * no PSRAM (NFR-2). It also lives in a flash partition, so copying it into RAM only to copy
+ * it again into the frame buffer costs 78 KB — a quarter of the heap — for nothing. This
+ * reads it in `RENDER_CHUNK` windows straight into the frame buffer, so the peak cost is
+ * one window regardless of panel size. The host tests use render_compose(), which delegates
+ * here with a memcpy reader, so both paths share one implementation of the compositing. */
+#define RENDER_CHUNK 1024
+
+int render_compose_stream(canvas_t *c, render_read_fn read, void *ctx,
+                          const value_field_t *fields, const char *const *values,
+                          int n_fields);

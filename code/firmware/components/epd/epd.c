@@ -107,8 +107,12 @@ static esp_err_t init_common(void)
     return first_err;
 }
 
+/* 1 once the panel has been put into deep sleep and has not been woken since. */
+static int s_asleep;
+
 esp_err_t epd_init(void)
 {
+    s_asleep = 0;   /* init_common() pulses RES, which is what wakes a sleeping controller */
     /* Bring the hardware transport up first so every byte below goes through it. The
      * bit-bang path remains available and is what runs if this fails, so a bus problem
      * degrades speed rather than correctness. Measured on a full frame: shifting drops
@@ -124,6 +128,7 @@ esp_err_t epd_init(void)
 
 esp_err_t epd_init_partial(void)
 {
+    s_asleep = 0;
     epd_spi_init();
     esp_err_t first_err = init_common();
     /* Partial OTP instead of the temperature LUT ladder. */
@@ -174,7 +179,20 @@ esp_err_t epd_sleep(void)
     epd_write_cmd(0x02); epd_write_data(0x00);   /* power off */
     esp_err_t err = epd_wait_ready();
     epd_write_cmd(0x07); epd_write_data(0xA5);   /* deep sleep (FR-12) */
+    if (err == ESP_OK) s_asleep = 1;
     return err;
+}
+
+/* See epd.h: the controller ignores commands while in deep sleep, so anything that draws
+ * after a sleep must reset it first. Tracked here rather than left to the caller because a
+ * missed reset does not fail loudly — it times out on BUSY, which looks like a wiring fault.
+ * Note the flag is only set when the sleep command actually went out, so a failed sleep does
+ * not force a needless re-init. */
+esp_err_t epd_wake(void)
+{
+    if (!s_asleep) return ESP_OK;
+    s_asleep = 0;
+    return epd_init();
 }
 
 /* Hardware-SPI temperature read, same sequence as the software version. */

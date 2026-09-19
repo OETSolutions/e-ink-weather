@@ -22,6 +22,18 @@ esp_err_t epd_write_frame(const uint8_t *fb1bpp);          /* full update */
  * controller derives each pixel's transition from the pair (vendor PIC_display_Part_ALL). */
 esp_err_t epd_write_frame_partial(const uint8_t *prev1bpp, const uint8_t *next1bpp);
 esp_err_t epd_sleep(void);                                 /* power-off + deep sleep (FR-12) */
+
+/* Wake the panel after epd_sleep(), which puts the CONTROLLER into deep sleep (0x07/0xA5).
+ *
+ * While asleep the controller ignores everything except a hardware reset, so a write issued
+ * after epd_sleep() does not fail loudly — it times out on BUSY, which is indistinguishable
+ * from a loose FPC. That is exactly what happened when the USB serve loop re-rendered after
+ * the boot path had already slept the panel: every refresh reported ESP_ERR_TIMEOUT and the
+ * display never changed.
+ *
+ * Cheap when the panel is already awake (returns immediately), so callers that are unsure
+ * whether they slept it can call this unconditionally before drawing. */
+esp_err_t epd_wake(void);
 esp_err_t epd_read_temp(int *out_c);
 esp_err_t epd_read_temp_hw(int *out_c);                       /* cmd 0x40, returns degC */
 esp_err_t epd_wait_ready(void);                            /* bounded BUSY wait (FR-13) */

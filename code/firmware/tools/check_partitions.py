@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Validate partitions.csv before a flash.
+
+A partition table error is a silent, expensive class of bug: an overlap or an out-of-range
+region does not fail the build, it fails at runtime with a partition lookup returning NULL —
+on a device with no console, after a flash cycle. This checks the arithmetic the table
+cannot check for itself.
+
+Checks:
+  - every entry is 4 KB sector aligned;
+  - no partition overlaps another;
+  - the table exactly fills the 4 MB flash (no wasted tail, no overflow past the end);
+  - the two bitmap slots are large enough for the header plus a full 1bpp frame.
+"""
+import csv
+import sys
+from pathlib import Path
+
+FLASH_SIZE = 0x400000          # 4 MB, ESP32-WROOM-32D (NFR-2)
+SECTOR = 0x1000
+# Must match bitmap_upload.h BITMAP_UPLOAD_TOTAL and the on-flash header.
+BITMAP_SLOT_MIN = 16 + 78200
+
+TABLE = Path(__file__).resolve().parent.parent / "partitions.csv"
+
+
+def parse(path):
+    rows = []
+    with path.open() as fh:
+        # Strip comment and blank lines before handing the rest to the CSV reader, so a
+        # '#' inside a comment cannot be mistaken for a field.
+        lines = [ln for ln in fh if ln.strip() and not ln.lstrip().startswith("#")]
+    for row in csv.reader(lines):
+        if not row or not row[0].strip():
+            continue
+        name, ptype, subtype, offset, size = (c.strip() for c in row[:5])
+        rows.append({
+            "name": name,
+            "offset": int(offset, 0),
+            "size": int(size, 0),
+        })
+    return rows
+
+
+def main():
+    rows = parse(TABLE)
+    if not rows:
+        print("FAIL: no partitions parsed — is the file comment-only?", file=sys.stderr)
+        return 1
+
+    errors = []
+
+    for p in rows:
+        if p["offset"] % SECTOR:
+            errors.append(f"{p['name']}: offset 0x{p['offset']:X} is not {SECTOR}-byte aligned")
+        if p["size"] % SECTOR:
+            errors.append(f"{p['name']}: size 0x{p['size']:X} is not {SECTOR}-byte aligned")
+        if p["size"] == 0:
+            errors.append(f"{p['name']}: zero size")
+        if p["offset"] + p["size"] > FLASH_SIZE:
+            errors.append(
+                f"{p['name']}: ends at 0x{p['offset'] + p['size']:X}, "
+                f"past the {FLASH_SIZE:#x} end of flash")
+
+    # Sort by offset so adjacency is a simple neighbour comparison.
+    ordered = sorted(rows, key=lambda p: p["offset"])
+    for a, b in zip(ordered, ordered[1:]):
+        a_end = a["offset"] + a["size"]
+        if a_end > b["offset"]:
+            errors.append(
+                f"{a['name']} (0x{a['offset']:X}-0x{a_end:X}) overlaps "
+                f"{b['name']} (from 0x{b['offset']:X})")
+
+    last_end = ordered[-1]["offset"] + ordered[-1]["size"]
+    if last_end != FLASH_SIZE:
+        errors.append(
+            f"table ends at 0x{last_end:X}, flash is 0x{FLASH_SIZE:X} "
+            f"({FLASH_SIZE - last_end} bytes unused)")
+
+    slots = {p["name"]: p for p in rows if p["name"].startswith("bitmap_")}
+    for want in ("bitmap_a", "bitmap_b"):
+        p = slots.get(want)
+        if p is None:
+            errors.append(f"{want}: missing — the atomic-promote pair is required (IF-2a)")
+        elif p["size"] < BITMAP_SLOT_MIN:
+            errors.append(
+                f"{want}: {p['size']} bytes is too small for a "
+                f"{BITMAP_SLOT_MIN}-byte header+frame")
+
+    for e in errors:
+        print(f"FAIL: {e}", file=sys.stderr)
+
+    if errors:
+        return 1
+
+    total = sum(p["size"] for p in rows)
+    used = last_end
+    print(f"OK: {len(rows)} partitions, {used:#x} of {FLASH_SIZE:#x} bytes "
+          f"({used * 100 // FLASH_SIZE}%), no overlap, none wasted")
+    for p in ordered:
+        print(f"    {p['name']:<10} 0x{p['offset']:06X}..0x{p['offset'] + p['size']:06X}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

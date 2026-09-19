@@ -47,13 +47,56 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
+/* Guarded by s_netif, which is only set once the stack is fully up — so a second call is a
+ * no-op rather than a double init. Every step below returns ESP_ERR_INVALID_STATE when it
+ * has already run, and that is treated as success: the init is idempotent by design, and
+ * treating "already done" as fatal is what would break the second wake in a power cycle. */
+esp_err_t net_stack_init(void)
+{
+    if (s_netif) return ESP_OK;
+
+    esp_err_t e = esp_netif_init();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return e;
+    e = esp_event_loop_create_default();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return e;
+
+    s_netif = esp_netif_create_default_wifi_sta();
+    if (!s_netif) return ESP_FAIL;
+
+    wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
+    e = esp_wifi_init(&ic);
+    if (e != ESP_OK) return e;
+
+    /* The station event handlers are registered here, not in net_wifi_connect(), because the
+     * API server needs the stack up on a device that has never connected — and a later
+     * connect must not re-register them. */
+    e = esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL);
+    if (e != ESP_OK) return e;
+    e = esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL);
+    if (e != ESP_OK) return e;
+
+    return ESP_OK;
+}
+
 esp_err_t net_wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 {
     if (!ssid || !*ssid) return ESP_ERR_INVALID_ARG;
     if (timeout_ms <= 0) timeout_ms = 15000;
 
     if (s_events) {
-        /* Already initialised by a previous wake in this power cycle: just retry. */
+        /* Already initialised by a previous wake in this power cycle. If the station is
+         * ALREADY associated, this is a no-op: the API stays reachable across refresh
+         * requests on USB power, so reconnecting is not just unnecessary, it actively
+         * breaks. esp_wifi_connect() while connected logs "sta is connected, disconnect
+         * before connecting to new ap" and then fails with reason 0 — which the retry
+         * filter below correctly refuses to retry — so every refresh after the first would
+         * be dropped and the panel would silently stop updating. */
+        if (s_connected) return ESP_OK;
+        /* Otherwise retry from a clean slate: clear the stale result bits before asking the
+         * driver to connect again, or a failure from the previous attempt would be read as
+         * this attempt's outcome. */
         xEventGroupClearBits(s_events, BIT_CONNECTED | BIT_FAILED);
         esp_wifi_connect();
     } else {
@@ -73,35 +116,18 @@ esp_err_t net_wifi_connect(const char *ssid, const char *pass, int timeout_ms)
         }
         if (ne != ESP_OK) return ne;
 
-        /* These three are process-wide and are NOT torn down by net_wifi_disconnect(), so
-         * on a second connect in the same power cycle they return ESP_ERR_INVALID_STATE.
-         * Treating that as fatal would abort the device on its second wake — the init is
-         * idempotent, so "already done" is success here. */
-        esp_err_t e = esp_netif_init();
-        if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return e;
-        e = esp_event_loop_create_default();
-        if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return e;
-
-        s_netif = esp_netif_create_default_wifi_sta();
-        if (!s_netif) return ESP_FAIL;
-
-        wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
-        e = esp_wifi_init(&ic);
-        if (e != ESP_OK) return e;
-
-        /* Credentials come from provisioning (FR-30) and are already in NVS; keeping the
-         * station config in RAM avoids rewriting flash on every wake (NFR-3). */
-        e = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-        if (e != ESP_OK) return e;
-        e = esp_event_handler_instance_register(
-            WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL);
-        if (e != ESP_OK) return e;
-        e = esp_event_handler_instance_register(
-            IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL);
+        /* The stack (esp_netif, the default event loop, the WiFi driver and the event
+         * handlers) is brought up by net_stack_init() so the HTTP API can listen on a
+         * device that has never connected. */
+        esp_err_t e = net_stack_init();
         if (e != ESP_OK) return e;
 
         wifi_config_t wc;
         memset(&wc, 0, sizeof(wc));
+        /* Credentials come from provisioning (FR-30) and are already in NVS; keeping the
+         * station config in RAM avoids rewriting flash on every wake (NFR-3). */
+        e = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        if (e != ESP_OK) return e;
         /* Truncation is rejected, not silently clipped: a 33-byte SSID would connect to
          * the wrong network or fail with a misleading reason. */
         if (strlen(ssid) >= sizeof(wc.sta.ssid) ||
@@ -193,6 +219,11 @@ int net_wifi_rssi(void)
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
     return ap.rssi;
+}
+
+int net_wifi_connected(void)
+{
+    return s_connected ? 1 : 0;
 }
 
 int net_wifi_scan(net_wifi_ap_t *out, int max)

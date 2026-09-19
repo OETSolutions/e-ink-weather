@@ -1,101 +1,57 @@
-#include "net_wifi.h"
-#include "net_http.h"
+#include "app_boot.h"
+#include "api.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_system.h"
-#include "esp_heap_caps.h"
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-/* Generated per-machine by tools/gen_secrets_header.py from code/.env; the header is
- * gitignored (FR-30). If it is absent the verification build cannot run, which is why the
- * #error below is deliberate rather than a silent no-network build. */
+/* Bench verification only. Generated per-machine by tools/gen_secrets_header.py from
+ * code/.env and gitignored; a normal clone has no such header, so this block does not
+ * exist and the device waits to be provisioned (FR-30). */
 #if __has_include("secrets_build.h")
 #include "secrets_build.h"
-#else
-#error "run tools/gen_secrets_header.py first (needs code/.env with WIFI_SSID and OWM_API_KEY)"
+#define HAVE_BENCH_SECRETS 1
 #endif
 
-static const char *TAG = "net_verify";
+static const char *TAG = "main";
 
-/* Task 11 on-hardware verification (plan Step 5). The pass/fail criteria are:
- *   - HTTP status 200 for every request
- *   - NO "Stack canary watchpoint triggered" and no reboot
- *   - free heap stable across 20 consecutive requests
- * The stack watermark is the number that justifies NET_TLS_TASK_STACK.
+/* app_main runs on the IDF main task, whose stack is CONFIG_ESP_MAIN_TASK_STACK_SIZE =
+ * 3584 bytes on this board. The boot path does a TLS handshake (net_http.c), an OTA, an
+ * NVS write and a 4 KB body parse — the Arduino loopTask overflow at ~8 KB is the exact
+ * crash class this project exists to avoid (spec §9.1). So the work runs on a SIZED worker
+ * task and app_main only starts it and returns; IDF keeps the main task alive afterwards.
  *
- * Credentials are read from the build, not committed: the values are injected by
- * tools/gen_secrets_header.py into an ignored header at build time (FR-30). */
+ * 16 KB matches NET_TLS_TASK_STACK, because the boot path's deepest frame is the same
+ * handshake net_http.c already sized for. */
+#define APP_TASK_STACK 16384
+#define APP_TASK_PRIO  5
 
-static char s_resp[8192];
-
-static int one_request(int i, const char *url)
+static void app_task(void *arg)
 {
-    size_t before = esp_get_free_heap_size();
-    esp_err_t e = net_http_get_json(url, NULL, s_resp, sizeof(s_resp));
-    size_t after = esp_get_free_heap_size();
-    ESP_LOGI(TAG, "req %2d: %s | %u bytes | heap %u -> %u (%+d) | tls hwm %u B",
-             i, esp_err_to_name(e), (unsigned)strlen(s_resp),
-             (unsigned)before, (unsigned)after, (int)after - (int)before,
-             net_http_stack_hwm());
-    if (e != ESP_OK) return -1;
-    /* The response must actually be JSON, not an error page or an empty body — a 200 with
-     * an HTML captive-portal page is the classic false pass. */
-    if (s_resp[0] != '{' && s_resp[0] != '[') {
-        ESP_LOGE(TAG, "body is not JSON: %.60s", s_resp);
-        return -1;
-    }
-    return 0;
+    (void)arg;
+#ifdef HAVE_BENCH_SECRETS
+    /* Seed before the boot path reads NVS for credentials. Never overwrites (see
+     * app_seed_wifi), so a provisioned device is unaffected. */
+    app_seed_wifi(NET_VERIFY_SSID, NET_VERIFY_PASS);
+#endif
+    app_boot_run();
+    /* app_boot_run() returns only on USB power, where the device must stay awake to serve
+     * the API. The task parks rather than exiting: a FreeRTOS task that returns from its
+     * entry point aborts unless it deletes itself first, and deleting the task that owns
+     * the boot path's local state is not worth the saving on a device that is mains-
+     * powered in this branch. */
+    for (;;) vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Task 11 network verification ===");
+    ESP_LOGI(TAG, "e-ink weather display starting");
 
-#ifdef NET_VERIFY_SSID
-    esp_err_t e = net_wifi_connect(NET_VERIFY_SSID, NET_VERIFY_PASS, 20000);
-#else
-    esp_err_t e = ESP_ERR_INVALID_ARG;
-#endif
-    ESP_LOGI(TAG, "net_wifi_connect: %s", esp_err_to_name(e));
-    if (e != ESP_OK) {
-        ESP_LOGE(TAG, "cannot verify without a network; stopping");
-        return;
+    BaseType_t ok = xTaskCreate(app_task, "app", APP_TASK_STACK, NULL, APP_TASK_PRIO, NULL);
+    if (ok != pdPASS) {
+        /* Without this the device would sit in app_main doing nothing, which looks exactly
+         * like a hang. Say so loudly and restart into a clean state instead. */
+        ESP_LOGE(TAG, "cannot create app task (%d bytes)", APP_TASK_STACK);
+        esp_restart();
     }
-
-#ifdef NET_VERIFY_OWM_URL
-    const char *url = NET_VERIFY_OWM_URL;
-#else
-    const char *url = NULL;
-#endif
-    if (!url) { ESP_LOGE(TAG, "no URL configured"); net_wifi_disconnect(); return; }
-
-    size_t heap_at_start = esp_get_free_heap_size();
-    int failures = 0;
-    for (int i = 1; i <= 20; i++) {
-        if (one_request(i, url) != 0) failures++;
-    }
-    size_t heap_at_end = esp_get_free_heap_size();
-
-    ESP_LOGI(TAG, "=== result ===");
-    ESP_LOGI(TAG, "failures: %d/20 (expect 0)", failures);
-    ESP_LOGI(TAG, "heap start %u end %u (expect no monotonic decline)",
-             (unsigned)heap_at_start, (unsigned)heap_at_end);
-    ESP_LOGI(TAG, "TLS stack headroom: %u B of %u (lower = closer to the crash class)",
-             net_http_stack_hwm(), (unsigned)NET_TLS_TASK_STACK);
-
-    /* Tear the radio down BEFORE any ADC2 use — this is the HW-3 ordering, and it is also
-     * the last chance to prove deinit does not panic. */
-    net_wifi_disconnect();
-    ESP_LOGI(TAG, "radio down, free heap %u", (unsigned)esp_get_free_heap_size());
-
-    /* Prove a second connect works in the same power cycle (the idempotent-init path). */
-    e = net_wifi_connect(NET_VERIFY_SSID, NET_VERIFY_PASS, 20000);
-    ESP_LOGI(TAG, "reconnect after deinit: %s", esp_err_to_name(e));
-    if (e == ESP_OK) {
-        one_request(21, url);
-        net_wifi_disconnect();
-    }
-    ESP_LOGI(TAG, "=== done ===");
 }

@@ -76,20 +76,43 @@ static void draw_field(canvas_t *c, const value_field_t *f, const char *s)
     }
 }
 
-int render_compose(canvas_t *c, const uint8_t *static_layer,
-                   const value_field_t *fields, const char *const *values,
-                   int n_fields)
+int render_compose_stream(canvas_t *c, render_read_fn read, void *ctx,
+                          const value_field_t *fields, const char *const *values,
+                          int n_fields)
 {
-    if (!c || !c->px || !static_layer) return -1;
+    if (!c || !c->px || !read) return -1;
     if (n_fields < 0) return -1;
     if (n_fields > 0 && (!fields || !values)) return -1;
 
     /* The static layer IS the base image: the web app already drew all the chrome, labels
-     * and units at full panel resolution (FR-1). */
-    memcpy(c->px, static_layer, EPD_FB_BYTES);
+     * and units at full panel resolution (FR-1). Copy it in fixed windows so the caller
+     * never needs the whole 78,200 bytes resident. */
+    uint8_t window[RENDER_CHUNK];
+    for (size_t off = 0; off < EPD_FB_BYTES; off += sizeof(window)) {
+        size_t n = sizeof(window);
+        if (off + n > EPD_FB_BYTES) n = EPD_FB_BYTES - off;
+        if (read(ctx, off, window, n) != 0) return -1;
+        memcpy(c->px + off, window, n);
+    }
 
     for (int i = 0; i < n_fields; i++) {
         draw_field(c, &fields[i], values[i]);
     }
     return 0;
+}
+
+/* Adapter so the in-memory path shares one implementation with the streaming path. */
+static int mem_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
+{
+    memcpy(dst, (const uint8_t *)ctx + offset, len);
+    return 0;
+}
+
+int render_compose(canvas_t *c, const uint8_t *static_layer,
+                   const value_field_t *fields, const char *const *values,
+                   int n_fields)
+{
+    if (!static_layer) return -1;
+    return render_compose_stream(c, mem_reader, (void *)(uintptr_t)static_layer,
+                                 fields, values, n_fields);
 }

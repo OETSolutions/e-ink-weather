@@ -71,6 +71,15 @@ int layout_config_parse(const char *json, layout_config_t *out)
     }
 
     cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");
+    if (pages && !cJSON_IsArray(pages)) {
+        /* Present but the wrong type is a SERIALIZATION BUG, not a user choice — e.g. the
+         * web app sent the pages object where the schema says array. Falling through to the
+         * default would silently discard the user's whole layout and show a generic "Main"
+         * page with no error anywhere. An ABSENT `pages` is different and stays lenient: a
+         * minimal document is documented as valid, so the default applies. */
+        cJSON_Delete(root);
+        return -1;
+    }
     if (cJSON_IsArray(pages)) {
         int n = cJSON_GetArraySize(pages);
         if (n > LAYOUT_MAX_PAGES) n = LAYOUT_MAX_PAGES;
