@@ -1,0 +1,18 @@
+# Target ESP32-WROOM-32D: 4MB flash, no PSRAM (NFR-2)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# OTA rollback protection (FR-32)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ---- TLS trust anchors (FR-5a, FR-6a) ----
+# OpenWeatherMap and Home Assistant are reached over HTTPS; without a bundle there is no
+# trust anchor and the handshake fails with a verify error.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# TLS buffers into internal RAM — there is no PSRAM on this part (NFR-2).
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# The device has no console and no operator; a crash must be observable in a log, not a
+# silent reboot. Keep panics loud.
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y

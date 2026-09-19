@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+*.local
+
+# Local secrets must never be committed (FR-30). The device gets credentials via
+# the captive portal / BLE provisioning into NVS; anything here is for local dev only.
+.env
+.env.*
+secrets.json

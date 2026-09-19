@@ -1,0 +1,23 @@
+name,x_mm,y_mm,size_x_mm,size_y_mm,z_base_mm,height_mm,geometry,access_edge,confidence,location_definition
+ESP32_WROOM_32D,24.0,34.2,18.0,25.5,1.0,3.1,box,top,high,x/y lower-left for boxes; center for cylinders
+USB_C_receptacle,-0.7,51.4,7.8,9.0,1.0,3.25,box,left,medium-high,x/y lower-left for boxes; center for cylinders
+BAT_SH1_0_2P,0.2,41.2,5.3,4.0,1.0,3.0,box,left,medium,x/y lower-left for boxes; center for cylinders
+Power_switch_body,0.2,31.4,6.2,5.2,1.0,2.4,box,left,medium-high,x/y lower-left for boxes; center for cylinders
+Power_switch_actuator,-3.0,32.5,3.4,3.0,1.55,1.45,box,left,medium-high,x/y lower-left for boxes; center for cylinders
+microSD_socket,0.4,14.8,13.7,15.2,1.0,1.85,box,left,medium-high,x/y lower-left for boxes; center for cylinders
+User_KEY,4.6,7.8,4.6,4.6,1.0,2.4,box,top,medium-high,x/y lower-left for boxes; center for cylinders
+Brightness_RT,7.0,2.6,5.0,5.0,1.0,3.2,cyl,bottom/top,medium-high,x/y lower-left for boxes; center for cylinders
+FrontLight_voltage_select_P8,14.0,1.0,7.0,5.5,1.0,5.5,box,bottom/top,medium,x/y lower-left for boxes; center for cylinders
+FrontLight_HV_switch_SS1,21.0,5.8,5.4,3.4,1.0,2.4,box,top,medium,x/y lower-left for boxes; center for cylinders
+FrontLight_FPC_P9,22.5,-0.2,7.0,4.2,1.0,2.1,box,bottom,medium-high,x/y lower-left for boxes; center for cylinders
+Touch_FPC_P6,29.8,-0.2,8.0,4.2,1.0,2.1,box,bottom,medium,x/y lower-left for boxes; center for cylinders
+Touch_FPC_P7,43.6,25.5,4.6,8.0,1.0,2.2,box,right,medium,x/y lower-left for boxes; center for cylinders
+EPaper_FPC_P5,43.3,7.0,5.0,16.0,1.0,2.2,box,right,medium-high,x/y lower-left for boxes; center for cylinders
+RESE_switch_P4_body,43.6,49.8,4.5,5.2,1.0,2.5,box,right,medium-high,x/y lower-left for boxes; center for cylinders
+RESE_switch_P4_actuator,47.6,51.0,3.0,2.8,1.6,1.4,box,right,medium-high,x/y lower-left for boxes; center for cylinders
+RST_button,8.6,59.0,4.5,4.5,1.0,2.5,box,top,medium,x/y lower-left for boxes; center for cylinders
+BOOT_button,15.0,59.0,4.5,4.5,1.0,2.5,box,top,medium,x/y lower-left for boxes; center for cylinders
+WiFi_LED,4.2,61.0,1.2,1.2,1.0,0.8,cyl,top,low-medium,x/y lower-left for boxes; center for cylinders
+Charge_LED,7.4,46.6,1.2,1.2,1.0,0.8,cyl,top,low-medium,x/y lower-left for boxes; center for cylinders
+mounting_hole,3.0,3.0,3.2,3.2,0,1.0,cylinder,through,medium-high,x/y center
+mounting_hole,45.0,63.0,3.2,3.2,0,1.0,cylinder,through,medium-high,x/y center

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "updateSeconds": 900,
+  "partialRefreshLimit": 24,
+  "pages": [
+    { "name": "default", "refreshSeconds": 900, "weight": 1 }
+  ],
+  "fields": [
+    { "x": 48, "y": 76, "w": 420, "h": 110, "alignH": "L", "alignV": "T", "font": 1, "sample": "68.4" },
+    { "x": 48, "y": 256, "w": 420, "h": 110, "alignH": "L", "alignV": "T", "font": 1, "sample": "41.2" }
+  ]
+}

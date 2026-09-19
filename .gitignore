@@ -1,0 +1,30 @@
+.playwright-mcp
+.kilo/worktrees
+old
+
+# Local secrets must never be committed (FR-30). This file is the workspace-root guard;
+# code/.gitignore carries the same rules for the subdirectory. Both are needed: a repo-wide
+# `git add -A` from the root consults the ROOT .gitignore, so without this entry a root-level
+# .env would be committed even though code/.env was ignored.
+.env
+.env.*
+!/.env.example
+secrets.json
+
+# Build/editor cruft that would otherwise be staged by a repo-wide `git add -A`.
+.DS_Store
+__pycache__/
+*.pyc
+
+# Large derived artifacts — regenerable from the sources that ARE tracked.
+# Kept out of history deliberately: 217 MB of intermediates would bloat the repo
+# permanently, and git never forgets a blob once committed.
+work/pdfimg/
+work/ds/
+work/fpc/*.png
+work/fpc/*.ppm
+work/cad/*.ppm
+work/cad/*_views.json
+
+# FreeCAD autosave backups — never wanted in history.
+*.FCBak
