@@ -31,3 +31,11 @@
  * locale-dependent result. */
 #define DEVENV_KEY_LOC_LAT "loc_lat"
 #define DEVENV_KEY_LOC_LON "loc_lon"
+
+/* Optional API authentication (FR-31). Two keys rather than one, because "the owner asked
+ * for auth" and "there is a token to check" are different facts: an enabled flag with no
+ * token would demand a credential that does not exist, so apiauth_required() requires both.
+ * Storing the token as a string keeps it readable by the config app, which has to show the
+ * user the token they must type into the client. */
+#define DEVENV_KEY_API_AUTH_ENABLED "api_auth_on"
+#define DEVENV_KEY_API_TOKEN        "api_token"

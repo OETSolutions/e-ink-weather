@@ -18,6 +18,15 @@ static const char *TAG = "api_ota";
 
 esp_err_t api_ota_handler(httpd_req_t *req)
 {
+    /* Optional bearer auth (FR-31), and this is the endpoint it exists for.
+     *
+     * WHAT IS AT STAKE HERE: the body is a CLIENT-SUPPLIED URL and this installs
+     * firmware from it. Ungated, anyone who can reach the device can replace its
+     * firmware — a device takeover, not a data leak. The old comment on the scheme
+     * check below acknowledged exactly this ("a firmware-replacement endpoint with no
+     * authentication"); the token check is the control that closes it. */
+    if (api_auth_gate(req)) return ESP_OK;
+
     char url[OTA_URL_MAX];
     const int n = api_read_body(req, url, sizeof(url));
     if (n < 0) return ESP_OK;      /* api_read_body already answered */

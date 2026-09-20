@@ -9,6 +9,7 @@
 #include "layout_model.h"
 #include "nvs_keys.h"
 #include "prov.h"
+#include "apiauth.h"
 #include "nvs.h"
 #include "bitmap_upload.h"
 #include "bitmap_slot.h"
@@ -248,6 +249,88 @@ int api_read_body(httpd_req_t *req, char *buf, size_t cap)
     return (int)got;
 }
 
+/* ------------------------------------------------------- optional API authentication -- */
+
+/* The token, cached from NVS at server start so the check does not open NVS on every
+ * request. `s_auth_token[0] == '\0'` means "no token set", which apiauth_required() treats as
+ * "nothing to check" — see that function for why that is the safe state rather than a
+ * fail-closed one. */
+static char s_auth_token[APIAUTH_TOKEN_MAX + 1];
+static int  s_auth_enabled;
+
+void api_auth_reload(void)
+{
+    s_auth_token[0] = '\0';
+    s_auth_enabled = 0;
+
+    nvs_handle_t h;
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+
+    uint8_t on = 0;
+    if (nvs_get_u8(h, DEVENV_KEY_API_AUTH_ENABLED, &on) == ESP_OK) s_auth_enabled = on ? 1 : 0;
+
+    size_t n = sizeof(s_auth_token);
+    if (nvs_get_str(h, DEVENV_KEY_API_TOKEN, s_auth_token, &n) != ESP_OK) s_auth_token[0] = '\0';
+    nvs_close(h);
+
+    /* A token that would not survive the header parse must not count as protection — the
+     * owner would believe the device was locked while apiauth_required() fell back to "no
+     * token set". Refusing it here keeps the stored state and the enforced state identical. */
+    if (!apiauth_token_is_usable(s_auth_token)) s_auth_token[0] = '\0';
+
+    ESP_LOGI(TAG, "api auth: %s", apiauth_required(s_auth_enabled, s_auth_token)
+             ? "enabled" : "disabled");
+}
+
+int api_auth_enabled(void)
+{
+    return apiauth_required(s_auth_enabled, s_auth_token);
+}
+
+/* The stored token, for the config app to display. Never sent to an unauthenticated caller:
+ * the handler that reports it is itself behind the check when auth is on. */
+const char *api_auth_token(void)
+{
+    return s_auth_token;
+}
+
+/* Gate a mutating handler. Returns 0 when the request may proceed; otherwise it has already
+ * sent the 401 and the caller must return immediately.
+ *
+ * WHY THE RESPONSE SETS WWW-Authenticate: a bare 401 is what makes a browser show its own
+ * credential dialog and lose the app's own error message. Sending the header is correct
+ * per RFC 7235, and the web app reads the 401 body to prompt for the token itself.
+ *
+ * WHY GET IS NOT GATED: the config app is served BY this device and must be able to read
+ * /api/config to draw itself before the user has entered a token. Reads only ever expose
+ * what the device already shows on the glass, so the exposure is bounded; the mutating verbs
+ * are where the risk lives, and POST /api/ota is the one that matters most. */
+int api_auth_gate(httpd_req_t *req)
+{
+    if (!apiauth_required(s_auth_enabled, s_auth_token)) return 0;
+
+    /* A 2 KB buffer, sized for the longest header a client could send. A header longer than
+     * this cannot be the token (bounded by APIAUTH_TOKEN_MAX), so a truncation would only
+     * reject a request that could not have authenticated anyway. */
+    char hdr[256];
+    const size_t got = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (got > 0 && got < sizeof(hdr)) {
+        if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
+            if (apiauth_header_matches(hdr, s_auth_token)) return 0;
+        }
+        /* Deliberately not logged in detail: an auth log is a place a token can leak into,
+         * and this device's log is readable over the same LAN. */
+        ESP_LOGW(TAG, "auth: rejected %s %s", req->method == HTTP_PUT ? "PUT" : "POST", req->uri);
+    } else {
+        ESP_LOGW(TAG, "auth: missing Authorization header for %s %s",
+                 req->method == HTTP_PUT ? "PUT" : "POST", req->uri);
+    }
+
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"eink-weather\"");
+    api_send_err(req, "401 Unauthorized", "auth required");
+    return 1;
+}
+
 /* ------------------------------------------------------------------ GET /api/status -- */
 
 static esp_err_t h_status(httpd_req_t *req)
@@ -419,6 +502,9 @@ static esp_err_t h_config_get(httpd_req_t *req)
 
 static esp_err_t h_config_put(httpd_req_t *req)
 {
+    /* Optional bearer auth (FR-31). Gated because this WRITES the stored config. */
+    if (api_auth_gate(req)) return ESP_OK;
+
     char *body = malloc(API_CONFIG_MAX_LEN);
     if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
 
@@ -454,6 +540,118 @@ static esp_err_t h_config_put(httpd_req_t *req)
     return api_send_json(req, "{\"status\":\"stored\"}", "200 OK");
 }
 
+/* ---------------------------------------------------------- GET/PUT /api/auth -- */
+
+/* Report the auth state, and the token so the owner can copy it into the client.
+ *
+ * THE TOKEN IS RETURNED HERE AND NOWHERE ELSE. When auth is on, this endpoint is itself
+ * gated (PUT below), but GET stays readable — deliberately, because the config app has to be
+ * able to show "auth is ON, here is the token" to someone who already has the device in
+ * front of them on the LAN, which is the same trust level the token is protecting. A device
+ * whose owner has lost the token must remain recoverable without a factory reset.
+ *
+ * Also reports the device's own URL base so the app can tell the user which address to point
+ * their client at, rather than making them find it. */
+static esp_err_t h_auth_get(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return api_send_err(req, "500 Internal Server Error", "oom");
+
+    cJSON_AddBoolToObject(root, "enabled", api_auth_enabled() ? 1 : 0);
+    /* `wantEnabled` is the stored FLAG, which can differ from `enabled`: the owner may have
+     * ticked the box before a token existed. Reporting both lets the app show "on, but no
+     * token yet — generate one" instead of silently pretending it is off. */
+    cJSON_AddBoolToObject(root, "wantEnabled", s_auth_enabled ? 1 : 0);
+    cJSON_AddStringToObject(root, "token", api_auth_token());
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return api_send_err(req, "500 Internal Server Error", "oom");
+    const esp_err_t e = api_send_json(req, out, "200 OK");
+    free(out);
+    return e;
+}
+
+/* Change the auth settings: {"enabled": bool, "token": "..."} — either field optional.
+ *
+ * A PUT with `enabled: true` and no token GENERATES one. That is what makes the checkbox
+ * usable: the user ticks it, and instead of being asked to invent a secret they get one to
+ * copy. apiauth_required() would refuse to enforce an enabled-with-no-token state anyway, so
+ * generating here is what turns the intent into something actually protecting the device.
+ *
+ * This endpoint is gated like the others: a device with auth on must not accept "turn auth
+ * off" from an unauthenticated caller, which would make the whole feature a formality. */
+static esp_err_t h_auth_put(httpd_req_t *req)
+{
+    if (api_auth_gate(req)) return ESP_OK;
+
+    char *body = malloc(512);
+    if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
+    if (api_read_body(req, body, 512) < 0) {
+        free(body);
+        return ESP_OK;                     /* read_body already answered */
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return api_send_err(req, "400 Bad Request", "invalid json");
+
+    const cJSON *en = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    const cJSON *tk = cJSON_GetObjectItemCaseSensitive(root, "token");
+    int want_enabled = s_auth_enabled;
+    if (cJSON_IsBool(en)) want_enabled = cJSON_IsTrue(en) ? 1 : 0;
+
+    /* A supplied token must be usable BEFORE anything is written. Storing an unusable one
+     * would leave the device reporting "enabled" while enforcing nothing. */
+    char new_token[APIAUTH_TOKEN_MAX + 1];
+    snprintf(new_token, sizeof(new_token), "%s", s_auth_token);
+    if (cJSON_IsString(tk) && tk->valuestring) {
+        if (tk->valuestring[0] != '\0' && !apiauth_token_is_usable(tk->valuestring)) {
+            cJSON_Delete(root);
+            return api_send_err(req, "400 Bad Request",
+                                "token must be 1-128 chars, no spaces or control characters");
+        }
+        snprintf(new_token, sizeof(new_token), "%s", tk->valuestring);
+    }
+
+    /* Enable with no token: generate one so the checkbox cannot leave the device in the
+     * "enabled but unenforced" state described above. */
+    if (want_enabled && new_token[0] == '\0') {
+        apiauth_make_token(new_token, 32, (unsigned (*)(void))esp_random);
+        ESP_LOGI(TAG, "generated an API token for the owner");
+    }
+
+    nvs_handle_t h;
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        cJSON_Delete(root);
+        return api_send_err(req, "500 Internal Server Error", "nvs unavailable");
+    }
+    esp_err_t e = nvs_set_u8(h, DEVENV_KEY_API_AUTH_ENABLED, (uint8_t)(want_enabled ? 1 : 0));
+    if (e == ESP_OK) e = nvs_set_str(h, DEVENV_KEY_API_TOKEN, new_token);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    cJSON_Delete(root);
+
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "storing auth settings failed: %s", esp_err_to_name(e));
+        return api_send_err(req, "500 Internal Server Error", "could not store settings");
+    }
+
+    /* Re-read through the same path the gate uses, so what is enforced always matches what
+     * was just stored — including the is-this-token-usable filter. */
+    api_auth_reload();
+
+    if (api_auth_enabled()) {
+        ESP_LOGW(TAG, "API authentication is now ON");
+    } else {
+        ESP_LOGW(TAG, "API authentication is now OFF");
+    }
+
+    /* Echo the resulting state, including the token if one was generated, so the app can show
+     * the user what to type without a second round trip. */
+    return h_auth_get(req);
+}
+
 /* ------------------------------------------------------------- POST /api/bitmap ---- */
 
 /* One upload session at a time, owned by the server task. The chunk state machine itself is
@@ -462,6 +660,9 @@ static upload_session_t s_upload;
 
 static esp_err_t h_bitmap(httpd_req_t *req)
 {
+    /* Optional bearer auth (FR-31). Gated because this writes a flash partition. */
+    if (api_auth_gate(req)) return ESP_OK;
+
     char query[256];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         return api_send_err(req, "400 Bad Request", "missing query");
@@ -593,6 +794,9 @@ static esp_err_t h_bitmap(httpd_req_t *req)
 
 static esp_err_t h_refresh(httpd_req_t *req)
 {
+    /* Optional bearer auth (FR-31). Gated because it makes the panel change. */
+    if (api_auth_gate(req)) return ESP_OK;
+
     api_request_full_refresh();
     return api_send_json(req, "{\"status\":\"refresh scheduled\"}", "202 Accepted");
 }
@@ -635,10 +839,15 @@ esp_err_t api_start(void)
         return e;
     }
 
+    /* Load the auth settings BEFORE the first request can arrive. */
+    api_auth_reload();
+
     static const httpd_uri_t uris[] = {
         { .uri = "/api/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/config",   .method = HTTP_PUT,  .handler = h_config_put },
+        { .uri = "/api/auth",     .method = HTTP_GET,  .handler = h_auth_get },
+        { .uri = "/api/auth",     .method = HTTP_PUT,  .handler = h_auth_put },
         { .uri = "/api/bitmap",   .method = HTTP_POST, .handler = h_bitmap },
         { .uri = "/api/refresh",  .method = HTTP_POST, .handler = h_refresh },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },
