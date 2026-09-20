@@ -1,0 +1,193 @@
+/*
+ * Component styles: the editor chrome, the property inspector, the map and the panel frame.
+ *
+ * These build on ui/theme.css's tokens and are imported AFTER it, so every value here comes from
+ * the scale rather than being a fresh magic number.
+ */
+
+/* ---- the panel preview ---- */
+
+.editorLayout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  align-items: flex-start;
+}
+
+/* The panel is inset in a frame that reads as an object rather than a page: it IS a device
+   viewport, and a bare rectangle on white would look like a broken image. */
+.editorWrap {
+  flex: 1 1 32rem;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  padding: var(--s-4);
+  background: var(--panel-frame);
+  border-radius: var(--r-lg);
+  overflow: auto;
+}
+
+.editorStage {
+  position: relative;
+  line-height: 0;
+  background: var(--panel-paper);
+  box-shadow: var(--shadow);
+}
+
+/* The canvas backing store stays at panel resolution and CSS scales it; `pixelated` keeps that
+   scale CRISP. Without it the browser smooths a 2x scale and every glyph edge blurs — which
+   would hide exactly the clipping and mis-alignment the preview exists to reveal. */
+canvas.panel {
+  display: block;
+  image-rendering: pixelated;
+  touch-action: none; /* a drag must not scroll the page */
+  cursor: default;
+  background: var(--panel-paper);
+}
+
+/* ---- property inspector ---- */
+
+.panelHost {
+  flex: 0 1 22rem;
+  min-width: 17rem;
+  max-height: 40rem;
+  overflow-y: auto;
+  padding-right: var(--s-1);
+}
+
+.panelHost fieldset {
+  background: var(--surface);
+}
+
+.pGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--s-3);
+}
+
+.pRow,
+.pGrid > div {
+  margin-bottom: var(--s-2);
+}
+
+.panelHost label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* An alert row reads left-to-right: operation, threshold, level, remove. */
+.pRule {
+  display: flex;
+  gap: var(--s-1);
+  align-items: center;
+  margin-bottom: var(--s-1);
+}
+
+.pRule select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pRule input {
+  flex: 1 1 4.5rem;
+  min-width: 0;
+}
+
+.pRule button {
+  flex: 0 0 auto;
+  width: 2rem;
+  padding: var(--s-1);
+  color: var(--muted);
+}
+
+.panelHost button {
+  width: 100%;
+  margin-top: var(--s-2);
+}
+
+/* An empty state that says what to DO, not merely that something is absent. */
+.empty {
+  padding: var(--s-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* ---- map ---- */
+
+.map {
+  height: 22rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  /* Leaflet's panes use high z-indexes; without a stacking context here the map's zoom
+     controls float over the sticky header on a narrow screen. */
+  position: relative;
+  z-index: 0;
+}
+
+.map-status {
+  margin: var(--s-2) 0 var(--s-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.map-status.err {
+  color: var(--err);
+}
+
+/* ---- save state machine ---- */
+
+/* The button carries its own state so the user never has to hunt for a message: idle ->
+   saving -> saved/failed. Colour alone is not enough for the failed state, so the label
+   changes too. */
+button.primary[data-state='saving'] {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+}
+
+button.primary[data-state='saved'] {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #fff;
+}
+
+button.primary[data-state='failed'] {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+
+/* ---- toolbar ---- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: center;
+  margin: var(--s-2) 0 var(--s-3);
+}
+
+.toolbar button {
+  width: auto;
+  padding: var(--s-1) var(--s-3);
+  font-weight: 500;
+}
+
+.panelReadout {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-left: auto;
+}
+
+/* A tiny legend so the 1-bit preview is not mistaken for a greyscale one. */
+.badge {
+  display: inline-block;
+  padding: 0 var(--s-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}

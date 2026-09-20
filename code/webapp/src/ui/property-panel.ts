@@ -128,7 +128,8 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     host.replaceChildren();
 
     if (!current) {
-      host.append(el('p', { className: 'hint' }, 'Select a value box on the panel to edit it.'));
+      host.append(el('div', { className: 'empty' },
+        'Nothing selected. Click a value box on the panel to move, resize or bind it.'));
       return;
     }
     const w = current;

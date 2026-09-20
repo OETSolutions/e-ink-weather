@@ -11,7 +11,8 @@
  * declared below it throws at runtime, and the page renders blank with no visible reason.
  */
 
-import './app.css';
+import './ui/theme.css';
+import './ui/app.css';
 import { createMapPicker, type MapPickerHandle } from './ui/map-picker';
 import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
@@ -185,6 +186,15 @@ async function mount(root: HTMLElement): Promise<void> {
   const canvasEl = el('canvas', { className: 'panel' }) as HTMLCanvasElement;
   const panelHost = el('div', { className: 'panelHost' });
   const sel = el('p', { className: 'hint' });
+
+  /* Zoom controls. 'Fit' is the default because it shows the whole panel; 1:1 is there because
+   * a one-pixel defect is invisible at fit scale, and the point of looking at the preview is to
+   * see exactly what the glass will show. */
+  const zoomOut = button('−', () => void applyZoom('out'));
+  const zoomIn = button('+', () => void applyZoom('in'));
+  const zoomFit = button('Fit', () => void applyZoom('fit'));
+  const zoomLabel = el('span', { className: 'panelReadout' });
+  const bitBadge = el('span', { className: 'badge' }, '1-bit, no greys');
   const alertToggle = el('label', { className: 'toggle' }) as HTMLLabelElement;
   const alertBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
   alertToggle.append(alertBox, el('span', {}, 'Preview a firing alert'));
@@ -354,11 +364,26 @@ async function mount(root: HTMLElement): Promise<void> {
       location: { ...doc.location, latitude: p.lat, longitude: p.lon, zipCode: zipInput.value },
       pages: [page, ...doc.pages.slice(1)],
     };
-    saveBtn.disabled = true;
+    /* The button carries its own state. A message at the top of the page is easy to miss when
+     * the user is looking at the button they just pressed, and "did it save?" is the one
+     * question this app must never leave ambiguous. */
+    const setBtn = (st: 'saving' | 'saved' | 'failed' | 'idle') => {
+      saveBtn.disabled = st === 'saving';
+      if (st === 'idle') {
+        saveBtn.removeAttribute('data-state');
+        saveBtn.textContent = 'Save to device';
+      } else {
+        saveBtn.dataset.state = st;
+        saveBtn.textContent =
+          st === 'saving' ? 'Saving…' : st === 'saved' ? 'Saved' : 'Save failed — retry';
+      }
+    };
+    setBtn('saving');
     const r = await saveConfig(doc);
-    saveBtn.disabled = false;
     if (r.ok) {
-      status.classList.remove('err');
+      setBtn('saved');
+      setTimeout(() => setBtn('idle'), 2500);
+      status.classList.remove('err', 'busy');
       if (r.restarting) {
         /* A powerMode change restarts the device, so say so rather than leaving the user
          * watching a dropped connection. */
@@ -370,10 +395,28 @@ async function mount(root: HTMLElement): Promise<void> {
         status.textContent = 'Saved. The display will refresh with the new layout.';
       }
     } else {
+      setBtn('failed');
+      setTimeout(() => setBtn('idle'), 4000);
       status.textContent = `Could not save: ${r.error}`;
       status.classList.add('err');
     }
   }
+
+  let zoomValue: number | 'fit' = 'fit';
+  function applyZoom(z: 'in' | 'out' | 'fit'): void {
+    if (z === 'fit') {
+      zoomValue = 'fit';
+    } else {
+      const base = zoomValue === 'fit' ? editor.zoom() : zoomValue;
+      const next = z === 'in' ? base * 1.25 : base / 1.25;
+      /* Clamped to something useful: below 0.25 the panel is unreadable, above 4x a single
+       * glyph fills the viewport and the layout cannot be judged. */
+      zoomValue = Math.min(4, Math.max(0.25, next));
+    }
+    const s2 = editor.setZoom(zoomValue);
+    zoomLabel.textContent = `Zoom ${(s2 * 100).toFixed(0)}%`;
+  }
+  zoomLabel.textContent = 'Zoom fit';
 
   /* ---- append LAST, after every declaration above ---- */
   root.append(
@@ -393,6 +436,8 @@ async function mount(root: HTMLElement): Promise<void> {
     el('p', { className: 'sub' },
        'Drag a value box to move it, or drag its edge to resize. This is the real 1-bit output ' +
        'the panel will show.'),
+    el('div', { className: 'toolbar' },
+       zoomOut, zoomIn, zoomFit, bitBadge, zoomLabel),
     el('div', { className: 'editorLayout' },
        el('div', { className: 'editorWrap' }, canvasEl),
        panelHost),

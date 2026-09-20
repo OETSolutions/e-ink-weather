@@ -48,6 +48,10 @@ export interface EditorHandle {
   redraw(): void;
   /** Recompute the canvas size for its container. */
   resize(): void;
+  /** Force a zoom multiple (1 = fit the container). Returns the zoom now in force. */
+  setZoom(z: number | 'fit'): number;
+  /** The zoom currently in force. */
+  zoom(): number;
   destroy(): void;
 }
 
@@ -265,9 +269,19 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
   canvasEl.addEventListener('pointerup', onPointerUp);
   canvasEl.addEventListener('pointercancel', onPointerUp);
 
+  /* ZOOM. 'fit' scales the whole panel into the container; a number is an explicit multiple
+   * (1 = 1:1 device pixels). Being able to go to 1:1 matters: at fit scale on a laptop the
+   * panel is roughly 0.7x, and a one-pixel glyph defect is invisible — which is the whole
+   * reason to look at the preview rather than trust the numbers. */
+  let zoomMode: number | 'fit' = 'fit';
+
+  function currentScale(): number {
+    if (zoomMode === 'fit') return fitScale(canvasEl.parentElement ?? canvasEl);
+    return zoomMode;
+  }
+
   function resize(): void {
-    const el = canvasEl.parentElement ?? canvasEl;
-    const s = fitScale(el);
+    const s = currentScale();
     canvasEl.style.width = `${Math.round(PANEL_WIDTH * s)}px`;
     canvasEl.style.height = `${Math.round(PANEL_HEIGHT * s)}px`;
     redraw();
@@ -280,6 +294,14 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
   return {
     redraw,
     resize,
+    setZoom(z) {
+      zoomMode = z;
+      resize();
+      return currentScale();
+    },
+    zoom() {
+      return currentScale();
+    },
     destroy() {
       canvasEl.removeEventListener('pointerdown', onPointerDown);
       canvasEl.removeEventListener('pointermove', onPointerMove);
