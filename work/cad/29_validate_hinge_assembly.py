@@ -24,7 +24,7 @@ _src = open(os.path.join(HERE, "06_rear_cover_foot.py")).read()
 _ENV = {"MIN_LOAD_WALL": 1.6, "MIN_PRINTED_WALL": 1.2, "FOOT_T": 1.8, "COVER_T": 3.0,
         "CASE_W": 134.4, "REAR_COVER_T": 3.0}
 # Resolve constants in source order so expressions like KNUCKLE_Z = FOOT_T-KNUCKLE_R work.
-for _m in re.finditer(r"^(PIN_R|PIN_PRELOAD|PIN_CLEAR|BORE_R|CLIP_WALL|CLIP_W|DETENT_H|HINGE_Y|KNUCKLE_Z|PIN_ROOT|WEB_Y0|WEB_Z1|ARM_W|ARM_T|COVER_T)\s*=\s*([^#\n]+)", _src, re.M):
+for _m in re.finditer(r"^(PIN_R|PIN_PRELOAD|PIN_CLEAR|BORE_R|CLIP_WALL|CLIP_W|HINGE_Y|KNUCKLE_Z|PIN_ROOT|WEB_Y0|WEB_Z1|ARM_W|ARM_T|COVER_T)\s*=\s*([^#\n]+)", _src, re.M):
     try:
         _ENV[_m.group(1)] = float(eval(_m.group(2).strip(), {"__builtins__": {}}, _ENV))
     except Exception:

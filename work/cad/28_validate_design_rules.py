@@ -62,8 +62,7 @@ _mfx = re.search(r"^FOOT_X, FOOT_Y\s*=\s*\(CASE_W-FOOT_W\)/2,\s*([\d.]+)", _src,
 if _mfx: _env_seed.update({"FOOT_X": (CASE_W - _env_seed["FOOT_W"]) / 2.0, "FOOT_Y": float(_mfx.group(1))})
 
 # Second stage: constants the generator derives from other generator constants.
-for _n in ("POCKET_CLEAR", "WEB_Y0", "WEB_Z1", "ARM_T", "CLIP_ROOT_Z",
-           "DETENT_W", "DETENT_T", "PIN_ROOT"):
+for _n in ("POCKET_CLEAR", "WEB_Y0", "WEB_Z1", "ARM_T", "CLIP_ROOT_Z", "PIN_ROOT"):
     _env_seed[_n] = _const(_n)
 
 PIN_R = _const("PIN_R");            _env["PIN_R"] = PIN_R
@@ -73,13 +72,13 @@ PIN_CLEAR = _const("PIN_CLEAR");    _env["PIN_CLEAR"] = PIN_CLEAR
 BORE_R = _const("BORE_R");          _env["BORE_R"] = BORE_R
 CLIP_WALL = _const("CLIP_WALL");    _env["CLIP_WALL"] = CLIP_WALL
 CLIP_W = _const("CLIP_W");          _env["CLIP_W"] = CLIP_W
-DETENT_H = _const("DETENT_H")
+CAVITY_CLEAR = _const("CAVITY_CLEAR")
 KNUCKLE_Z = _const("KNUCKLE_Z");    _env["KNUCKLE_Z"] = KNUCKLE_Z
 HY = _const("HINGE_Y");             _env["HINGE_Y"] = HY
 ARM_W = _const("ARM_W")
 STOP_RAMP_T = _const("STOP_RAMP_T")
-LIP_T = _const("HATCH_LIP_T")
-LIP_H = _const("HATCH_LIP_H")
+LIP_T = _const("HATCH_KEY_T")      # anti-rotation key thickness (the old perimeter lip is gone)
+HATCH_KEY_CLEAR = _const("HATCH_KEY_CLEAR")
 HATCH_CLEAR = _const("HATCH_CLEAR")
 SCREW_X = _const("HATCH_SCREW_X");  _env["HATCH_SCREW_X"] = SCREW_X
 SCREW_Y = _const("HATCH_SCREW_Y")
@@ -140,37 +139,23 @@ print("  wrap >= 200 deg to retain past the equator %s" % ("OK" if ok_wrap else 
 if not ok_open: fails.append("clip mouth is not open (%.0f deg)" % open_deg)
 if not ok_wrap: fails.append("clip wrap %.0f deg below retention minimum" % wrap)
 
-print("\n-- retracted detent: rib must sit in the wrap, opposite the mouth --")
-# The rib sits diametrically opposite the mouth, so its pin angle is MOUTH_PIN_ANGLE+180 and the
-# matching groove is cut at the same angle. Both are derived here rather than assumed to be +Y:
-# the mouth was moved off -Y (see MOUTH_PIN_ANGLE) and a hardcoded +Y check then read zero.
-rib_a = math.radians(MOUTH_PIN_ANGLE + 180.0)
-rib_r = BORE_R - DETENT_H / 2.0
-rib_y = HY + rib_r * math.sin(rib_a)
-rib_z = HZ + rib_r * math.cos(rib_a)
-rp = Part.makeBox(CLIP_W - 0.2, 0.3, DETENT_H * 0.8,
-                  App.Vector(ARM_CENTERS[1] - (CLIP_W - 0.2) / 2, rib_y - 0.15, rib_z - 0.15))
-rv = foot.common(rp).Volume
-print("  detent rib material at pin angle %.0f: %.4f mm3 %s"
-      % (MOUTH_PIN_ANGLE + 180.0, rv, "OK" if rv > 0.05 else "FAIL"))
-if rv <= 0.05: fails.append("retracted detent rib missing from the wrap")
-# The groove in the pin must be EMPTY at the rib's angle and SOLID just beside it.
-gcx = ARM_CENTERS[1] - CLIP_W / 2
-gr = PIN_R - DETENT_H
-gcy = HY + gr * math.sin(rib_a)
-gcz = HZ + gr * math.cos(rib_a)
-in_groove = cover.common(Part.makeCylinder(DETENT_H * 0.6, CLIP_W - 0.2,
-                 App.Vector(gcx, gcy, gcz), App.Vector(1, 0, 0))).Volume
-bes_a = math.radians(MOUTH_PIN_ANGLE + 180.0 + 25.0)
-br = PIN_R - DETENT_H * 0.5
-beside = Part.makeBox(CLIP_W - 0.2, 0.25, 0.25,
-                      App.Vector(gcx, HY + br * math.sin(bes_a) - 0.125,
-                                 HZ + br * math.cos(bes_a) - 0.125))
-beside_v = cover.common(beside).Volume
-grv_ok = in_groove < 0.01 and beside_v > 0.05
-print("  pin groove relief present (empty inside %.4f, solid beside %.4f mm3): %s"
-      % (in_groove, beside_v, "OK" if grv_ok else "FAIL"))
-if not grv_ok: fails.append("pin has no matching detent groove")
+print("\n-- pin/clip running clearance (there is no detent: see 06_rear_cover_foot.py) --")
+# The detent rib is GONE. It was removed because a radial bump inside a C-clip splays the clip's
+# free mouth lips outward as the leg swings, and those lips are the last material to clear the
+# cover's cavity -- the hooks flared and caught. So the only thing the cavity has to clear is the
+# clip's outer wall stretched by the bore interference:
+#     clip outer wall under load = BORE_R + CLIP_WALL + PIN_PRELOAD
+#     margin                     = CAVITY_CLEAR - PIN_PRELOAD
+wall_loaded = BORE_R + CLIP_WALL + PIN_PRELOAD
+_margin = CAVITY_CLEAR - PIN_PRELOAD
+print("  clip outer wall under load = BORE_R + CLIP_WALL + preload = %.2f + %.2f + %.2f = %.3f mm"
+      % (BORE_R, CLIP_WALL, PIN_PRELOAD, wall_loaded))
+print("  cavity radius              = BORE_R + CLIP_WALL + CAVITY_CLEAR         = %.3f mm"
+      % (BORE_R + CLIP_WALL + CAVITY_CLEAR))
+print("  running margin = CAVITY_CLEAR - PIN_PRELOAD = %.2f - %.2f = %+.3f mm %s"
+      % (CAVITY_CLEAR, PIN_PRELOAD, _margin, "OK" if _margin > 0.30 else "FAIL"))
+if _margin <= 0.30:
+    fails.append("clip running clearance %.3f too small" % _margin)
 
 print("\n-- discrete clips exist as real printed material --")
 clips = 0
@@ -183,7 +168,7 @@ if clips != 3: fails.append("compliant clips missing (%d/3)" % clips)
 
 print("\n-- walls, necks and stop lug (>= %.1f mm) --")
 for nm, v in (("clip wall", CLIP_WALL), ("stop ramp", STOP_RAMP_T),
-              ("perimeter lip", LIP_T), ("neck", ARM_W)):
+              ("anti-rotation key", LIP_T), ("neck", ARM_W)):
     ok = v >= MIN_WALL - 1e-9
     print("  %-14s %.2f mm %s" % (nm, v, "OK" if ok else "FAIL"))
     if not ok: fails.append("%s below %.1f mm" % (nm, MIN_WALL))
@@ -198,7 +183,7 @@ for x0, x1 in ((FOOT_X - 4.0, FOOT_X - 0.2), (FOOT_X + FOOT_W + 0.2, FOOT_X + FO
     print("  end web x %.1f..%.1f material: %.2f mm3 %s" % (x0, x1, wv, "OK" if wv > 5.0 else "FAIL"))
     if wv <= 5.0: fails.append("pin end web x %.1f..%.1f has no material" % (x0, x1))
 
-print("\n-- hatch: single screw from OUTSIDE, perimeter lip, plug clearance --")
+print("\n-- hatch: single screw from OUTSIDE, anti-rotation keys, plug clearance --")
 shank = Part.makeCylinder(SCREW_D / 2, 12.0, App.Vector(SCREW_X, SCREW_Y, -6.0))
 hv = hatch.common(shank).Volume
 print("  screw hole clear through the hatch: %.4f mm3 %s" % (hv, "OK" if hv <= 0.001 else "FAIL"))

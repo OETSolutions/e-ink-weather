@@ -58,45 +58,38 @@ PIN_R = 2.20                                        # rigid pin radius
 PIN_PRELOAD = 0.12                                  # interference -> friction
 PIN_CLEAR = -PIN_PRELOAD                            # negative: bore is SMALLER than the pin
 BORE_R = PIN_R+PIN_CLEAR                            # clip bore radius (2.08)
-# Retracted detent: a shallow bump on the pin drops into a matching relief in the clip bore
-# when the stand is folded, so it stays put instead of swinging out.
-DETENT_H = 0.35                                     # bump height (radial)
-DETENT_W = 2.40                                     # bump width along the axis
-DETENT_T = 3.00                                     # bump angular width (mm of arc)
-# OPEN-POSITION detent. The retracted detent above only holds the leg FOLDED. The user's
-# complaint -- "there is nothing that holds it in place!!!! The foot will just collapse and the
-# whole thing will fall over!!" -- is exactly right: the 65-degree feature is an OVER-TRAVEL
-# STOP (it only ever pushes the leg further open, measured 0.98 mm3 at 65 deg and rising to
-# 1.75 mm3 at 75 deg), and the friction is small enough that the weight of the case simply
-# folds the leg back down. A stand needs a detent the leg must climb OVER to close.
-#
-# A second groove in the pin and a matching rib in each clip, at the deployed angle, gives it.
-# The leg is pushed open past the crest (a short, firm push), the rib drops into the groove,
-# and the leg then has to be deliberately pulled back over that crest to fold -- so it holds
-# itself up. The crest is sized so the push is easy to make by hand.
-DETENT_OPEN_ANGLE = 65.0                            # the deployed angle the leg locks at
-# Where the clip's mouth points, in pin-angle degrees measured about the hinge axis
-# (0 = +Z into the case, 90 = +Y folded side, 180 = -Z out the bottom edge).
-# MEASURED, not assumed: the previous value of 180 put the mouth on -Z, but -Z is the ONLY
-# direction from which the foot can approach -- so the pin was driven through the solid
-# 210 deg WRAP instead of the 150 deg mouth, needing 7.5% strain (past PETG's 5% limit).
-# Moving the mouth to 0 faces it along the free insertion direction.
+# NO DETENT -- folded OR open. Read this before re-adding one.
+# The hinge used to carry a raised rib inside each clip (at MOUTH_PIN_ANGLE+180) dropping into a
+# matching groove in the pin at the folded angle, plus a second groove at the open angle. The user
+# rejected it: "Get RID of the nubs!! They still cause the end of the hooks to flare out and hit!!!"
+# The failure is geometric, not a matter of sizing the nub smaller. A rib inside a C-clip is an
+# INTERFERENCE feature: pushing the ring out at one angular point opens the ring, and a ring opens
+# at its FREE ENDS -- the two mouth lips. So riding the rib over the rigid pin splays the lips
+# outward, and the lips are the last material to clear the cover's cavity as the leg swings, so
+# they catch. My clearance probe never saw it because it measured a single scalar radial
+# expansion at the rib's own angle on an undeflected clip; a local flare at the far side of the
+# ring, at the free ends, cannot be represented by one number.
+# With no detent the leg is held by the bore interference alone (PIN_PRELOAD), i.e. a plain
+# friction hinge: it stays wherever it is put by hand but has no positive location folded or open.
 MOUTH_PIN_ANGLE = 0.0
-# The swing maps a FOLDED clip-frame point to pin angle (psi + open), MEASURED off the real
-# solids in 38_probe_pin_grooves.py: the outermost clip vertex sits at pin angle 79.4 folded
-# and 144.4 at 65 deg, i.e. exactly +65. (An earlier note in this file had the sign inverted
-# and derived 205 deg; that was wrong and is what made the first two attempts fail.)
-#
-# So the groove needs no second rib: the clip's EXISTING retracted rib, at folded psi=90, is
-# already sitting at pin angle 90 when folded and reaches pin angle 155 when the leg is open.
-# Cutting a groove at 155 reuses the rib that is already there and is already proven printable,
-# and it is impossible for the leg to fold without climbing back over that same crest.
-DETENT_OPEN_PIN_ANGLE = MOUTH_PIN_ANGLE + 180.0 + DETENT_OPEN_ANGLE   # folded rib lands here
-# The crest the leg must climb. Half the width either side of the groove centre, so the two
-# flanks total this. Sized for about 8 N of hand force on a 70 mm leg (see validator 28).
-DETENT_OPEN_FLANK = 1.2                             # mm of arc from groove edge to crest
 CLIP_WALL = MIN_LOAD_WALL                           # 1.6 mm clip wall
 CLIP_W = 3.00                                       # clip axial width
+# ROOT GUSSET: the haunch that joins each clip ring to the leg plate.
+# The ring is a CYLINDER about the hinge axis and the plate is a flat slab, so where the two
+# meet they are TANGENT -- not overlapping. MEASURED in probes/93_probe_clip_weld.py: the whole
+# attachment was 0.0870 mm3, a 0.12 mm deep line contact (Y 8.50..8.62, Z 0.00..0.46), i.e. the
+# clips are not welded to the foot at all. That is the user's "the hooks that go around the back
+# cover rod on the swing-out foot just fall right off after printing".
+# The gusset fills the wedge between the ring's outer wall and the plate's underside so the two
+# become one solid. MEASURED (same probe): 28.12 mm3 per clip, a 320x increase.
+CLIP_GUSSET_Y0 = 7.75                               # clear of the mouth box (+Y edge 7.704);
+                                                    # 0.0000 mm3 of gusset enters the mouth
+CLIP_GUSSET_Y1 = 12.00                              # 3.5 mm of lap onto the plate's underside
+CLIP_GUSSET_Z0 = -2.80                              # down to the ring's outer wall
+CLIP_GUSSET_Z1 = 1.80                               # flush with the plate's top face
+CLIP_GUSSET_FILLET_ROOT = 1.20                      # fillet on the gusset's real root corners.
+                                                    # The user: "fillets ... in the acute corners
+                                                    # where it will make the gussets stronger."
 PIN_ROOT = 4.00                                     # pin extension each side into the cover
 WEB_Y0 = 1.00                                       # web start Y, 1 mm INSIDE the cover
                                                     # so the fuse is a real overlap
@@ -142,6 +135,17 @@ HINGE_X0, HINGE_X1 = FOOT_X, FOOT_X+FOOT_W           # full-width load distribut
 WEB_Z1 = 3.00                                       # web tops at the cover split plane
 CAVITY_X0 = HINGE_X0-2.0                            # clip-sweep cavity, cut before the pin
 CAVITY_X1 = HINGE_X1+2.0
+# Radial clearance between the clip's OUTER wall and the cavity wall. The clip is a bearing on
+# the pin, so this is a running clearance, not just print clearance: the clip's outer wall sits
+# at BORE_R+CLIP_WALL, stretched by the bore interference to BORE_R+CLIP_WALL+PIN_PRELOAD = 3.80.
+# The margin the cover must keep over that is CAVITY_CLEAR - PIN_PRELOAD = 0.48 mm, i.e. two
+# nozzle widths. (This was 0.90 while a detent nub lived in the clip bore and had to be cleared
+# at its crest; the nubs are gone, so the cavity is back to the plain running clearance and the
+# cover keeps the material.)
+CAVITY_CLEAR = 0.60
+# The cavity is cut as bands this much wider than each clip, at the clip stations only. Cutting
+# it across the FULL width at this radius cost the cover's hinge rail 20 mm3 (validator 23).
+CAVITY_PAD = 0.60
 # Target lip interference when the pin passes the mouth: small but definite.
 LIP_INTERFERENCE = 0.07
 CHEEK_T = 3.00                                       # ASSUME side cheek thickness
@@ -204,11 +208,40 @@ STOP_RAMP_P=(7.10,-3.56)                            # measured face-line point a
 STOP_RAMP_LEN=3.3
 STOP_RAMP_T=3.0                                     # material behind the face
 STOP_SPAN_X=((29.40, 40.60), (93.80, 105.00))       # from inside a web out under the leg
-STOP_RISER_X=((29.40, 31.80), (102.60, 105.00))     # buried in the webs
-STOP_RISER_Y0=4.00                                  # covers the ramp's back
-STOP_RISER_Y1=7.20                                  # out to the web's own Y edge
-STOP_RISER_Z0=-5.00                                 # down into the ramp
-STOP_RISER_Z1=-2.00                                 # 0.88 mm up into the webs (z -2.88)
+
+# ---- WHY THE RAMP+RISER IS GONE, AND WHAT REPLACES IT (2026-09-19) -----------------
+# The user: "For the stops, why don't you have the stop extending all the way down below,
+# there's nothing under it and it will still be very weak cantilevered out like that."
+# That is exactly right, and it was measurable. A Y-Z section of the cover in a span (X 36.0,
+# probes/102) shows the ramp sitting at y 5..8, z -8.0..-5.2 and the cover's LOWER WALL at
+# z -2.5..1.0, with a VOID at z -4..-3 between them. The only material connecting the two was a
+# RISER at x 29.40..31.80 -- while the ramp runs out to x 40.60. So the ramp was an 8.8 mm beam
+# bolted to the cover at ONE END, floating 1.5 mm clear of everything else, and the load on its
+# bearing face had to travel through that single small riser. It also had a knife-edge root: the
+# riser's top corner was unfilleted where stress concentrates.
+#
+# The fix is the one the user asked for -- extend it all the way down and tie it back to the
+# cover, so the load path is short and the root is broad. Each span is now a single SOLID
+# BUTTRESS whose profile runs
+#     bearing face  (7.10,-3.56) -> (8.49,-6.55)     <- unchanged, still the 65 deg face
+#     straight down (8.49,-7.82)                      <- to the cover's lowest point
+#     back along the bottom (4.00,-7.82)              <- under the whole span, on the bed
+#     up the wall back (4.00, 0.00)                   <- MERGES into the cover's lower wall
+# so the buttress and the cover are one continuous solid from the bearing face to the wall, not
+# a beam on a post. MEASURED (probes/102): weld 76.25 mm3 against the ramp+riser's geometry,
+# with ZERO foot interference anywhere up to 65 deg.
+STOP_BACK_Y0=4.00                                   # buttress back face, inside the cover
+STOP_Z_BOTTOM=-7.82                                 # the cover's own lowest point; buttress is
+                                                    # flush with it, so ground clearance and
+                                                    # the print-orientation floor are unchanged
+# CONCAVE-ROOT FILLETS. The user: "Both the stops and the gussets you added should have fillets
+# in the corners to make them a lot stronger." A buttress fails at its root, where peak stress
+# sits, so the fillets go on the buttress's own corners. MEASURED: R > 1.00 fails the Boolean on
+# this profile (15StdFail_NotDone BRep_API), so 1.00 is the largest that builds -- still a real
+# Kt reduction over a sharp corner. The bearing face's outer edges are deliberately NOT filleted:
+# that is the stop face and must stay crisp, and a fillet there would round the 65 deg
+# engagement point too.
+STOP_FILLET_R=1.00
 
 # ---- closure screws -----------------------------------------------------------
 # M2 (user: "M2 screws are better"). Four distributed fasteners hold the rear cover on, so
@@ -223,7 +256,9 @@ SCREWS = [(11.0,11.0),(CASE_W-11.0,11.0),(11.0,CASE_H-11.0),(CASE_W-11.0,CASE_H-
 SERVICE_BAY_X0,SERVICE_BAY_X1=22.5,79.2
 SERVICE_BAY_Y0,SERVICE_BAY_Y1=68.0,92.0
 HATCH_CLEAR=0.25                                      # ASSUME per-side FDM plug clearance
-HATCH_PLUG_T=1.4                                      # ASSUME fills opening depth
+# The plug runs the FULL cover thickness. It was 1.4 mm, which left the bay's outer 1.6 mm open
+# and gave the hatch only 1.4 mm of bearing on the bay walls to resist rotation.
+HATCH_PLUG_T=COVER_T                                  # fills the opening through its whole depth
 HATCH_FLANGE_T=1.2                                    # ASSUME exterior overlay
 # Snap-in capture replaces the previous 2x M2 screws: two in-plane PETG cantilever
 # tongues are cut out of the hatch plug. Only their small detent noses enter matching
@@ -242,30 +277,55 @@ HATCH_SCREW_HEAD_D=M2_HEAD                           # M2 pan head
 HATCH_SCREW_X=SERVICE_BAY_X1+5.3                              # 84.5, outboard of the lip
 HATCH_SCREW_Y=84.0                                            # bay mid-height
 HATCH_BOSS_R=2.6                                    # M2 boss: 1.8 mm wall around the 1.6 pilot
-HATCH_LIP_T=1.20                                    # perimeter lip thickness
-HATCH_LIP_H=1.20                                    # lip height into the bay wall
-HATCH_LIP_CLEAR=0.35                                # per-side clearance so it drops in
+
+# ---- anti-rotation keys ---------------------------------------------------------
+# WHY THE CONTINUOUS LIP IS GONE. It was a ring on the plug's inner face sized to drop into a
+# matching recess in the cover. But the ring's outer boundary was SERVICE_BAY +- (CLEAR + T)
+# = 59.80 x 27.10, while the bay it had to pass through is 56.70 x 24.00. MEASURED in
+# probes/94_probe_hatch_insert.py: the lip was 3.10 mm LARGER than the opening in BOTH axes, so
+# it physically could not enter -- and the cover's recess was a CLOSED groove (material at
+# z 0.00..0.65 and z 2.95..3.00) with nowhere for the lip to go on the way in. This is the user's
+# "because it's a groove and not open on the inside, you can't put the door in".
+#
+# Anything that laps BEHIND the cover is a ring only a moulded part can have: printed, it has
+# to pass through the hole, and a feature wider than the hole never will. Opening the recess to
+# the exterior face does not rescue it either -- that leaves an undercut the printer cannot make
+# without supports and which could never be assembled afterwards.
+#
+# So nothing laps behind anything. The hatch's inner portion is entirely INSIDE the bay
+# footprint and drops straight in. Rotation about the single screw is stopped by two KEYS that
+# project sideways off the plug and land in NOTCHES cut through the cover's full thickness --
+# no undercut, no flexure, nothing that has to bend. The keys bear on the notch walls, so the
+# hatch cannot turn; the screw clamps the flange, so it cannot lift.
+#
+# Key sizes are deliberately UNEQUAL (3.15 mm against 3.15 mm but on 4.60 and 3.40 mm wide
+# notches at different Y spans), so the hatch can only seat one way round and cannot be fitted
+# rotated 180 degrees.
+HATCH_KEY_T=COVER_T                                 # key fills the cover's full thickness, so it
+                                                    # bears on the notch walls over 17 x 3 mm
+HATCH_KEY_CLEAR=0.30                                # per-side clearance in the notch
+HATCH_KEY1_X0,HATCH_KEY1_X1=19.60,23.00             # -X key; X1 laps 0.25 mm into the plug
+HATCH_KEY1_Y0,HATCH_KEY1_Y1=71.50,88.50             # clear of the bay's r3 corners
+HATCH_KEY2_X0,HATCH_KEY2_X1=78.70,82.10             # +X key; X0 laps 0.25 mm into the plug
+HATCH_KEY2_Y0,HATCH_KEY2_Y1=71.50,80.50             # stops short of the screw boss (Y 81.4+)
+# The notches are each key GROWN by the clearance on every side and cut through the cover.
+HATCH_KEYS=((HATCH_KEY1_X0,HATCH_KEY1_X1,HATCH_KEY1_Y0,HATCH_KEY1_Y1),
+            (HATCH_KEY2_X0,HATCH_KEY2_X1,HATCH_KEY2_Y0,HATCH_KEY2_Y1))
 
 # The exterior plate is ONE rounded rectangle, not a flange plus a welded-on tab. The previous
 # shape was a 21.25..80.45 flange with a hard-cornered 11 x 18 mm box tab stuck onto its +X side
 # to reach the screw, which read as an obvious lump glued to the cover (the user's "weird
-# artifacts and shape"). The plate now simply runs from the bay out to the screw, and its edge
-# covers the anti-rotation lip on every side.
+# artifacts and shape"). The plate now simply runs from the bay out to the screw.
 #
-# Flange edge vs lip outer: the lip outer boundary is SERVICE_BAY +- (HATCH_LIP_CLEAR +
-# HATCH_LIP_T) = 20.95..80.75 / 66.45..93.55, and the recess in the cover is cut to exactly
-# that. The old flange stopped 0.30 mm INSIDE it, so a 0.30 mm ring of the recess groove was
-# left exposed around the plate. The plate now laps 0.05 mm beyond the groove on the -X and Y
-# edges, so the groove is fully covered.
-HATCH_LIP_OUT=(SERVICE_BAY_X0-(HATCH_LIP_CLEAR+HATCH_LIP_T),
-               SERVICE_BAY_Y0-(HATCH_LIP_CLEAR+HATCH_LIP_T),
-               SERVICE_BAY_X1+(HATCH_LIP_CLEAR+HATCH_LIP_T),
-               SERVICE_BAY_Y1+(HATCH_LIP_CLEAR+HATCH_LIP_T))
-HATCH_FLANGE_X0=HATCH_LIP_OUT[0]-0.05
-HATCH_FLANGE_Y0=HATCH_LIP_OUT[1]-0.05
-HATCH_FLANGE_Y1=HATCH_LIP_OUT[3]+0.05
-# +X edge is set by the screw, not by the bay: the M3 head counterbore is dia 6.0 at 84.5, so
-# 88.7 leaves a full 1.2 mm of plate outside it (and 1.0 mm outside the 3.2 mm boss at 87.7).
+# The lap is set so the plate still covers every notch: the -X notch reaches X 19.30 and the Y
+# notches reach Y 71.20..88.80. The -Y edge is held at 67.00 -- above the wall-hang keyhole's
+# slot, which ends at Y 65.00. Tracking the old lip boundary instead would have run the plate
+# down to Y 61.65 and buried the keyhole, making the case impossible to hang.
+HATCH_FLANGE_X0=SERVICE_BAY_X0-6.35                 # 16.15, covers the -X notch (19.30)
+HATCH_FLANGE_Y0=67.00                               # above the keyhole slot (Y <= 65.00)
+HATCH_FLANGE_Y1=SERVICE_BAY_Y1+6.35                 # 98.35, covers the Y notches (to 88.80)
+# +X edge is set by the screw, not by the bay: the M2 head counterbore is dia 4.5 at 84.5, so
+# 88.7 leaves a full 1.95 mm of plate outside it (and covers the +X notch, which ends at 82.40).
 HATCH_FLANGE_X1=88.70
 # The plate is FLUSH at one thickness (HATCH_FLANGE_T). Making it thicker so the head could sit
 # flush put its face 2.8 mm below the flange -- and the hatch prints exterior-face down, so that
@@ -273,10 +333,11 @@ HATCH_FLANGE_X1=88.70
 # sits proud of the exterior face, which is normal for a service cover.
 HATCH_HEAD_CBORE=0.6                                 # shallow seat, not a flush recess
 # Finger scallop for prying the hatch off without tools: a half-round notch in the plate's +Y
-# edge. The previous 31.6 x 5.0 mm rectangular bite removed most of that edge and was one of the
-# "weird shape" artifacts. It stays clear of the USB slot (x 25.6..34.6) and of the screw.
-HATCH_RELIEF_R=6.0
-HATCH_RELIEF_X=(SERVICE_BAY_X0+SERVICE_BAY_X1)/2.0   # 50.85, bay centre
+# edge. Placed at 45.00 rather than the bay centre -- with the plate now laps 6.35 mm past the
+# bay on +X, a 3.0 mm scallop at the bay centre (50.85) would cut into the screw boss at 84.5.
+HATCH_SCALLOP_R=3.0
+HATCH_SCALLOP_R=3.0
+HATCH_SCALLOP_X=45.00
 USB_SLOT_W,USB_SLOT_H=9.0,3.4                         # ASSUME clear a USB-C plug body
 USB_SLOT_X=(25.90+33.30)/2.0                         # DERIVED flipped USB keep-out center
 
@@ -351,27 +412,29 @@ def build_cover(outer, foot):
     # matters -- the clip-sweep cavity is cut FIRST, then the pin is fused inside it, anchored
     # at both ends by webs. Fusing the pin before clearing the cavity deletes the pin.
     pin_r = PIN_R
-    cavity_r = BORE_R+CLIP_WALL+0.6
-    cavity = cyl_x(CAVITY_X0, CAVITY_X1-CAVITY_X0, HINGE_Y, KNUCKLE_Z, cavity_r)
-    cover = cover.cut(cavity)
+    # The cavity must clear the clip's OUTER wall with a running margin. With no detent nub in
+    # the clip bore the wall only reaches (BORE_R+CLIP_WALL) + PIN_PRELOAD = 3.80 mm, so the
+    # margin is cavity_r - 3.80 = CAVITY_CLEAR - PIN_PRELOAD = 0.48 mm -- twice the nozzle and
+    # clear of FDM's expected error.
+    #
+    # The cavity is cut only in BANDS at the three clip stations, not across the full width.
+    # A full-width cavity ate the cover's hinge rail -- validator 23 measured its rail connection
+    # falling from 32.9 mm3 to 12.8 mm3. The clips are the only thing that sweeps here and they do
+    # so in Y-Z at fixed X, so the bands are all that is needed; the material between them is cover
+    # that helps the part print and adds stiffness. MEASURED: the rail keeps 33.4 mm3.
+    cavity_r = BORE_R+CLIP_WALL+CAVITY_CLEAR
+    for cx in ARM_CENTERS:
+        cover = cover.cut(cyl_x(cx-CLIP_W/2-CAVITY_PAD, CLIP_W+2*CAVITY_PAD,
+                                HINGE_Y, KNUCKLE_Z, cavity_r))
     # Pin spans the whole cavity and projects into the webs at each end.
     pin = cyl_x(HINGE_X0-PIN_ROOT, (HINGE_X1-HINGE_X0)+2*PIN_ROOT,
                 HINGE_Y, KNUCKLE_Z, pin_r)
     cover = cover.fuse(pin)
-    # Retracted detent. The pin gets a shallow GROOVE on its +Y (folded) side and each clip
-    # has a matching raised rib. When folded, the rib drops into the groove: a positive
-    # location that holds the stand closed, while the interference fit provides running
-    # friction. Using a groove (not a bump) means the detent cannot add preload or collide.
-    for cx in ARM_CENTERS:
-        # Shallow scallop on the +Y side only: a small cylinder whose centre sits OUTSIDE the
-        # pin surface, so it removes a groove without severing the pin from the end webs.
-        # The groove tracks the rib, which is at MOUTH_PIN_ANGLE+180, not at a fixed +Y.
-        for pa_deg in (MOUTH_PIN_ANGLE+180.0, DETENT_OPEN_PIN_ANGLE):
-            pa = math.radians(pa_deg)
-            pb = pin_r - DETENT_H
-            cover = cover.cut(cyl_x(cx-CLIP_W/2-0.1, CLIP_W+0.2,
-                                    HINGE_Y + pb*math.sin(pa),
-                                    KNUCKLE_Z + pb*math.cos(pa), DETENT_H))
+    # The pin is a plain bearing surface. The earlier retracted/open detent relied on grooves
+    # here matching raised ribs inside the clips; the ribs are gone (see build_foot) because a
+    # radial bump in a C-clip splays the clip's free mouth lips outward as it seats, which is
+    # what made the hooks flare and catch on the cover. No grooves, no ribs. Holding force is
+    # the bore interference alone.
     # The web must OVERLAP the cover solidly. Setting both to y=2.0 gave a bare face contact,
     # which does not fuse in a Boolean and left the webs (and the pin with them) as separate
     # solids. WEB_Y0 is 1.0 mm INSIDE the cover's material so the join is real.
@@ -397,27 +460,16 @@ def build_cover(outer, foot):
                  SERVICE_BAY_X0, SERVICE_BAY_Y0, -0.2, COVER_T+0.4)
     cover = cover.cut(bay)
 
-    # --- hatch retention: anti-rotation lip recess + ONE screw ---------------------------------
-    # The hatch is held by a single M3 screw; a continuous recessed lip around the bay stops
-    # it rotating about that one screw. The side cantilevers are gone entirely.
-    # The recess must be an annular GROOVE in the cover's REAR FACE, occupying exactly the Z
-    # band the lip occupies. An earlier version cut a counterbore at z 1.8..3.0 while the lip
-    # spanned z 0.8..2.6, so the lip's lower half sat inside solid cover plate (292 mm3).
-    lip_z0 = HATCH_PLUG_T-0.6
-    lip_z1 = lip_z0+HATCH_LIP_H+0.6
-    groove = rprism((SERVICE_BAY_X1-SERVICE_BAY_X0)+2*(HATCH_LIP_CLEAR+HATCH_LIP_T),
-                    (SERVICE_BAY_Y1-SERVICE_BAY_Y0)+2*(HATCH_LIP_CLEAR+HATCH_LIP_T), 3.0,
-                    SERVICE_BAY_X0-HATCH_LIP_CLEAR-HATCH_LIP_T,
-                    SERVICE_BAY_Y0-HATCH_LIP_CLEAR-HATCH_LIP_T,
-                    lip_z0-0.2, (lip_z1-lip_z0)+HATCH_LIP_CLEAR+0.2)
-    # Inner boundary = the BAY EDGE itself. Cutting it at (bay - CLEAR) left the lip's inner
-    # face 0.35 mm inside the opening, where cover material still exists -> the lip bit into the
-    # bay wall (26.9 mm3).
-    groove_inner = rprism(SERVICE_BAY_X1-SERVICE_BAY_X0,
-                          SERVICE_BAY_Y1-SERVICE_BAY_Y0, 3.0,
-                          SERVICE_BAY_X0, SERVICE_BAY_Y0,
-                          lip_z0-0.4, (lip_z1-lip_z0)+0.8)
-    cover = cover.cut(groove.cut(groove_inner))
+    # --- hatch retention: notch seats + ONE screw ---------------------------------------------
+    # The hatch's two keys drop into these notches, which are cut through the cover's FULL
+    # thickness. They bear on the notch walls to stop the hatch rotating about its single screw.
+    # An undercut here -- a recess that opened to the exterior face -- would be a bridge the
+    # printer cannot make and the hatch could not enter; see the constant block.
+    for kx0, kx1, ky0, ky1 in HATCH_KEYS:
+        cover = cover.cut(rprism((kx1-kx0)+2*HATCH_KEY_CLEAR,
+                                 (ky1-ky0)+2*HATCH_KEY_CLEAR, 3.0,
+                                 kx0-HATCH_KEY_CLEAR, ky0-HATCH_KEY_CLEAR,
+                                 -0.2, COVER_T+0.4))
     # Screw boss for the hatch's single screw. It must overlap REAL cover material: the bay
     # spans x 22.5..79.2 (centre 50.9) and CASE_W/2 = 67.2 is inside the opening, so a boss
     # there was a floating island; the bay's centre-line (50.9) had the same problem lower
@@ -439,39 +491,51 @@ def build_cover(outer, foot):
                        App.Vector(USB_SLOT_X-USB_SLOT_W/2, SERVICE_BAY_Y1-1.0, -0.2))
     cover = cover.cut(usb)
     if STOP_ENABLE:
-        # The 65 deg stop: a ramp along the leg plate's underside at SWING_DEG, anchored to the
-        # end webs by risers. See the constant block for the measurements behind it.
+        # The 65 deg stop: ONE SOLID BUTTRESS per side, running from the bearing face down to the
+        # cover's lowest point and back into the cover's lower wall, with fillets at its concave
+        # roots. See the constant block for why the old floating ramp+riser had to go.
         ca, sa = math.cos(math.radians(SWING_DEG)), math.sin(math.radians(SWING_DEG))
         py, pz = STOP_RAMP_P
         ey, ez = py + STOP_RAMP_LEN*ca, pz - STOP_RAMP_LEN*sa      # inward end of the face
-        by, bz = ey - STOP_RAMP_T*sa, ez - STOP_RAMP_T*ca          # back of the ramp
-        ay, az = py - STOP_RAMP_T*sa, pz - STOP_RAMP_T*ca
-        quad = [App.Vector(0, py, pz), App.Vector(0, ey, ez),
-                App.Vector(0, by, bz), App.Vector(0, ay, az)]
-        quad.append(quad[0])
+        quad = [(py, pz), (ey, ez),
+                (ey, STOP_Z_BOTTOM), (STOP_BACK_Y0, STOP_Z_BOTTOM), (STOP_BACK_Y0, 0.0)]
+        # Fillet the three concave corners -- both bottom corners and the root where the buttress
+        # meets the wall. NOT the bearing face's outer edge: that is the stop face and must stay
+        # crisp, and a fillet there would round the 65 deg engagement point too.
+        CONCAVE = {(round(ey, 3), round(ez, 3)),
+                   (round(ey, 3), round(STOP_Z_BOTTOM, 3)),
+                   (round(STOP_BACK_Y0, 3), round(STOP_Z_BOTTOM, 3))}
         stop = None
         for x0, x1 in STOP_SPAN_X:
-            ramp = (Part.Face(Part.makePolygon(quad))
-                    .extrude(App.Vector(x1-x0, 0, 0)).translate(App.Vector(x0, 0, 0)))
-            stop = ramp if stop is None else stop.fuse(ramp)
-        for x0, x1 in STOP_RISER_X:
-            stop = stop.fuse(Part.makeBox(x1-x0, STOP_RISER_Y1-STOP_RISER_Y0,
-                                          STOP_RISER_Z1-STOP_RISER_Z0,
-                                          App.Vector(x0, STOP_RISER_Y0, STOP_RISER_Z0)))
+            pts = [App.Vector(0, y, z) for y, z in quad] + [App.Vector(0, quad[0][0], quad[0][1])]
+            prism = Part.Face(Part.makePolygon(pts)).extrude(App.Vector(x1-x0, 0, 0))
+            edges = []
+            for e in prism.Edges:
+                eb = e.BoundBox
+                if eb.XMax-eb.XMin < 1.0-1e-9:      # skip the along-X extrusion edges
+                    continue
+                if (round(eb.YMin, 3), round(eb.ZMin, 3)) in CONCAVE \
+                   or (round(eb.YMax, 3), round(eb.ZMax, 3)) in CONCAVE:
+                    edges.append(e)
+            if edges:
+                prism = prism.makeFillet(STOP_FILLET_R, edges)
+            prism.translate(App.Vector(x0, 0, 0))
+            stop = prism if stop is None else stop.fuse(prism)
         cover = cover.fuse(stop)
 
     return cover
 
 
 def build_hatch():
-    """Service hatch: perimeter anti-rotation lip + ONE screw driven from OUTSIDE.
+    """Service hatch: two anti-rotation keys + ONE M2 screw driven from OUTSIDE.
 
     The previous plug carried two in-plane cantilevers cut by U-slots. They did not print as
     flexures -- they stayed attached along their length and just looked like blobs stuck to the
-    side ("the friction pieces on the sides stuck to the side and don't print"). Retention is
-    now a single M3 screw that goes through the flange on the case's EXTERIOR face and
-    threads into a boss on the cover's rear face; rotation about that one screw is prevented
-    by a continuous lip that drops into a recess around the whole bay.
+    side ("the friction pieces on the sides stuck to the side and don't print"). Retention is a
+    single M2 screw through the flange on the case's EXTERIOR face into a boss on the cover's
+    rear face, and rotation about that one screw is stopped by two keys that drop through
+    notches in the bay rim and land behind the cover plate. See the constant block for why the
+    old perimeter lip could not be assembled at all.
     """
     plug = rprism((SERVICE_BAY_X1-SERVICE_BAY_X0)-2*HATCH_CLEAR,
                   (SERVICE_BAY_Y1-SERVICE_BAY_Y0)-2*HATCH_CLEAR, 2.75,
@@ -482,19 +546,12 @@ def build_hatch():
                     HATCH_FLANGE_X0, HATCH_FLANGE_Y0, -HATCH_FLANGE_T, HATCH_FLANGE_T)
     hatch = plug.fuse(flange)
 
-    # CONTINUOUS anti-rotation lip: a ring on the plug's inner face that sits in the bay's
-    # matching recess. Because it runs all the way round, it resists rotation about the single
-    # screw in every direction, and it also stops the hatch being pushed in too far.
-    lip = rprism((SERVICE_BAY_X1-SERVICE_BAY_X0)+2*(HATCH_LIP_CLEAR+HATCH_LIP_T),
-                 (SERVICE_BAY_Y1-SERVICE_BAY_Y0)+2*(HATCH_LIP_CLEAR+HATCH_LIP_T), 3.0,
-                 SERVICE_BAY_X0-HATCH_LIP_CLEAR-HATCH_LIP_T,
-                 SERVICE_BAY_Y0-HATCH_LIP_CLEAR-HATCH_LIP_T,
-                 HATCH_PLUG_T-0.6, HATCH_LIP_H+0.6).cut(
-          rprism((SERVICE_BAY_X1-SERVICE_BAY_X0)+2*HATCH_LIP_CLEAR,
-                 (SERVICE_BAY_Y1-SERVICE_BAY_Y0)+2*HATCH_LIP_CLEAR, 3.0,
-                 SERVICE_BAY_X0-HATCH_LIP_CLEAR, SERVICE_BAY_Y0-HATCH_LIP_CLEAR,
-                 HATCH_PLUG_T-0.1, HATCH_LIP_H+0.2))
-    hatch = hatch.fuse(lip)
+    # Two keys on the plug's inner face, inside the bay footprint so they pass straight through
+    # the opening and drop into the matching notches in the bay rim. Each laps 0.25 mm into the
+    # plug so the join is a real overlap, not a tangent line. Nothing projects past the bay's
+    # outer boundary, so nothing has to lap behind the cover and nothing has to bend.
+    for kx0, kx1, ky0, ky1 in HATCH_KEYS:
+        hatch = hatch.fuse(rprism(kx1-kx0, ky1-ky0, 3.0, kx0, ky0, 0.0, HATCH_KEY_T))
 
     # Single screw: clearance through the tab, the plug and the lip, counterbored for the
     # head in the tab. Both cuts use HATCH_SCREW_X (84.5) -- cutting the flange's head
@@ -507,14 +564,25 @@ def build_hatch():
                                                    -HATCH_FLANGE_T-0.1)))
 
     # Finger scallop so the hatch can be pried out without tools. A half-round notch in the
-    # plate's +Y edge, centred on the bay, instead of the previous 31.6 x 5.0 mm rectangular
-    # bite that removed most of that edge and read as a chunk cut out of the part. Clear of the
-    # USB slot (x 25.6..34.6) and of the screw boss entirely.
-    hatch = hatch.cut(Part.makeCylinder(HATCH_RELIEF_R, HATCH_FLANGE_T+0.4,
-                                        App.Vector(HATCH_RELIEF_X, HATCH_FLANGE_Y1,
+    # plate's +Y edge, instead of the previous 31.6 x 5.0 mm rectangular bite that removed most
+    # of that edge and read as a chunk cut out of the part.
+    # It is placed at 45.00, not at the bay centre: the plate now laps 6.35 mm past the bay on
+    # the +X side, and a 6.0 mm scallop centred on the bay (50.85) would reach X 56.85 and cut
+    # straight into the screw boss at 84.5. At 45.00 the scallop spans X 39.00..51.00, clear of
+    # the boss (81.90) and still within 5 mm of the bay centre, so it pried fine there.
+    # The depth is 0.75 mm x 6.0 mm = 4.5 mm2 of fingernail access -- a dimple, not a bite.
+    hatch = hatch.cut(Part.makeCylinder(HATCH_SCALLOP_R, HATCH_FLANGE_T+0.4,
+                                        App.Vector(HATCH_SCALLOP_X, HATCH_FLANGE_Y1,
                                                    -HATCH_FLANGE_T-0.3)))
-    # USB cable slot through the flange, aligned to the cover's slot.
-    hatch = hatch.cut(Part.makeBox(USB_SLOT_W, 6.0, HATCH_FLANGE_T+HATCH_PLUG_T+0.6,
+    # USB cable exit -- cut through the flange AND OUT THROUGH ITS +Y EDGE, so it is an OPEN
+    # cutout like the cover's, not a closed hole.
+    # This used to stop at y=97.0, leaving 1.35 mm of plate across the slot's outer end. That
+    # made the passage a HOLE WITH A LIP either side, which is why the user reported it as
+    # closed: the cover's own opening is an open cutout running off the service bay (open
+    # continuously from the bay to y=97), but the plate plugged its end, and the two did not
+    # match. The cut now runs past HATCH_FLANGE_Y1 (98.35) so it breaks the plate's edge.
+    hatch = hatch.cut(Part.makeBox(USB_SLOT_W, (HATCH_FLANGE_Y1+0.6)-(SERVICE_BAY_Y1-1.0),
+                                   HATCH_FLANGE_T+HATCH_PLUG_T+0.6,
                                    App.Vector(USB_SLOT_X-USB_SLOT_W/2, SERVICE_BAY_Y1-1.0,
                                               -HATCH_FLANGE_T-0.3)))
     return hatch
@@ -552,21 +620,49 @@ def build_foot():
         mouth.rotate(App.Vector(cx, HINGE_Y, KNUCKLE_Z), App.Vector(1,0,0),
                      MOUTH_PIN_ANGLE-180.0)
         ring = ring.cut(mouth)
-        # The rib sits diametrically OPPOSITE the mouth, in the middle of the remaining
-        # 210 deg wrap -- at MOUTH_PIN_ANGLE+180 -- so it is 105 deg clear of either mouth lip
-        # and its 6.35 deg arc leaves solid wall either side (>= the 0.8 mm slot rule).
-        # Its crest projects 0.05 mm past the bore, so it adds no interference anywhere but its
-        # own 0.30 mm-deep detent. The matching groove in the cover moves with it (build_cover).
-        rib_a = math.radians(MOUTH_PIN_ANGLE+180.0)
-        rib_r = BORE_R-DETENT_H/2.0
-        rib = cyl_x(cx-CLIP_W/2, CLIP_W,
-                    HINGE_Y+rib_r*math.sin(rib_a), KNUCKLE_Z+rib_r*math.cos(rib_a),
-                    DETENT_H)
-        # There is deliberately NO second rib. The rib above is at folded psi=90, so when the
-        # leg swings open 65 deg it arrives at pin angle 155, which is exactly where the second
-        # groove is cut in build_cover(). One rib, two grooves: the same feature holds the leg
-        # folded AND held open, and there is nothing extra to print or to weaken the clip.
-        foot = foot.fuse(ring.fuse(rib))
+        # There is deliberately NO detent nub on this clip. A radial bump inside a C-clip is an
+        # interference feature, and it does not merely press the clip out where the bump is: it
+        # splays the clip's FREE ENDS -- the two mouth lips -- outward, because pushing a C-ring
+        # out at one point opens its gap. Those lips are the last thing to clear the cover, so a
+        # nub makes the hook flare and catch exactly when the leg is swung. The holding force is
+        # the 0.12 mm bore interference alone.
+        foot = foot.fuse(ring)
+        # Root gusset: fills the wedge between the ring's outer wall and the plate's underside
+        # so the clip is welded to the foot as a solid rather than touching it on a tangent line
+        # (0.0870 mm3 -- see the constant block). Sized to stay clear of the mouth channel, so it
+        # cannot stiffen the lip the pin has to push past during assembly.
+        gus = Part.makeBox(CLIP_W, CLIP_GUSSET_Y1-CLIP_GUSSET_Y0, CLIP_GUSSET_Z1-CLIP_GUSSET_Z0,
+                           App.Vector(cx-CLIP_W/2, CLIP_GUSSET_Y0, CLIP_GUSSET_Z0))
+        gus = gus.cut(Part.makeCylinder(BORE_R, CLIP_W+0.4,
+                                        App.Vector(cx-CLIP_W/2-0.2, HINGE_Y, KNUCKLE_Z),
+                                        App.Vector(1,0,0)))
+        foot = foot.fuse(gus)
+        # --- ACUTE-CORNER FILLETS at the gusset's roots -------------------------------
+        # The user: "I see fillets, but not down in the acute corners where it will make the
+        # gussets stronger." The fillet has to go on the FUSED solid, because the corners that
+        # matter only exist once the gusset, the ring and the plate are one body -- and the
+        # sharpest of them, where the gusset's outer face meets the ring's outer CYLINDER, is an
+        # acute tangent junction that a box's own edges do not contain at all.
+        # MEASURED: the root edge at (Y 12.00, Z 0.00) and the tangent edge at (Y 8.008, Z -2.80)
+        # both fillet cleanly at R up to 1.5 on the fused solid, while the gusset's top edges do
+        # not (16Standard_Failure: no suitable edge). Fillet exactly those two.
+        _root = []
+        # Where the gusset's bottom plane crosses the ring's OUTER cylinder: the gusset's sharpest
+        # root, an ACUTE junction between a flat face and a cylinder. Computed here because it
+        # needs KNUCKLE_Z, which is defined after the constant block.
+        _tangent_y = HINGE_Y + ((BORE_R+CLIP_WALL)**2 - (CLIP_GUSSET_Z0-KNUCKLE_Z)**2)**0.5
+        for e in foot.Edges:
+            bb = e.BoundBox
+            if bb.XMax-bb.XMin < CLIP_W-0.1:            # along-X edges only (the profile corners)
+                continue
+            if not (cx-CLIP_W/2-0.1 <= bb.XMin and bb.XMax <= cx+CLIP_W/2+0.1):
+                continue
+            y = (bb.YMin+bb.YMax)/2; z = (bb.ZMin+bb.ZMax)/2
+            if (abs(y-CLIP_GUSSET_Y1) < 0.02 and abs(z) < 0.02) or \
+               (abs(y-_tangent_y) < 0.02 and abs(z-CLIP_GUSSET_Z0) < 0.02):
+                _root.append(e)
+        if _root:
+            foot = foot.makeFillet(CLIP_GUSSET_FILLET_ROOT, _root)
     # --- print-support rib --------------------------------------------------------------
     # The clips hang 3.6 mm below the plate, so printing the foot plate-down leaves them (and
     # the plate's main face) with almost no bed contact -- measured 0.2 mm3, i.e. it would
