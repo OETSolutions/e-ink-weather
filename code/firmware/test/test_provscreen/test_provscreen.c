@@ -112,9 +112,10 @@ static void test_runtime_provisioning_code_survives_the_blit(void)
     const char *pop  = "eink1234";
     TEST_ASSERT_EQUAL_INT(0, provscreen_render(fb, ssid, pop));
 
-    char payload[160];
+    char payload[192];
     snprintf(payload, sizeof(payload),
-             "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"ble\"}", ssid, pop);
+             "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"softap\","
+             "\"security\":1}", ssid, pop);
 
     static uint8_t qr[qrcodegen_BUFFER_LEN_MAX], tmp[qrcodegen_BUFFER_LEN_MAX];
     TEST_ASSERT_TRUE(qrcodegen_encodeText(payload, tmp, qr, qrcodegen_Ecc_LOW,
@@ -149,15 +150,22 @@ static void test_payload_names_the_advertised_device(void)
     const char *ssid = "EINK-WEATHER-2045AC";
     TEST_ASSERT_EQUAL_INT(0, provscreen_render(fb, ssid, "eink1234"));
 
-    char payload[160];
+    char payload[192];
     snprintf(payload, sizeof(payload),
-             "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"ble\"}",
+             "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"softap\","
+             "\"security\":1}",
              ssid, "eink1234");
     /* The documented format, in the documented shape. */
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"ver\":\"v1\""));
-    TEST_ASSERT_NOT_NULL(strstr(payload, "\"transport\":\"ble\""));
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"name\":\"EINK-WEATHER-2045AC\""));
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"pop\":\"eink1234\""));
+    /* These three are the ones that silently break the SoftAP app:
+     *   - "transport" must be softap, or the app ignores the code entirely;
+     *   - "security":1 must be present, because an absent value defaults to Sec2 and this
+     *     device is Sec1 (the app then fails the handshake as a bad proof of possession);
+     *   - "name" must be the SoftAP SSID the app will connect to. */
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"transport\":\"softap\""));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"security\":1"));
 }
 
 /* Each code needs a clear quiet zone or it will not scan, however correct its modules are. */

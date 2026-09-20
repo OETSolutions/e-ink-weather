@@ -233,52 +233,75 @@ int provscreen_render_branded(uint8_t *fb, const char *ap_ssid, const char *pop,
     y += 20;
 
     /* ---- Fastest path: the setup page ---- */
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "EASIEST WAY - no app needed") + 12;
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "EASIEST - the setup page") + 12;
     y += draw_line(&c, FONT_BODY, MARGIN, y,
                    "1. Join this WiFi network on your phone.") + 10;
     draw_line_scaled(&c, FONT_BODY, MARGIN + 22, y, ap_ssid, 2);
     y += font_line_height(FONT_BODY) * 2 + 14;
     y += draw_line(&c, FONT_BODY, MARGIN, y, "2. Scan code 2 and enter your") + 0;
     y += draw_line(&c, FONT_BODY, MARGIN, y,
-                   "WiFi, weather API key and location.") + 22;
+                   "WiFi, weather API key and location.") + 20;
 
-    /* ---- The app path ---- */
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "OR - ESP BLE PROVISIONING APP") + 10;
+    /* ---- The app path ----
+     * Named the SoftAP app, because that is the one code 1 targets and the one that can show a
+     * network list. The BLE app still works and is not mentioned: the BLE name and PoP printed
+     * below are exactly what it asks for when typed by hand, and its own list is broken. */
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "OR - ESP SOFTAP APP") + 8;
     y += draw_line(&c, FONT_BODY, MARGIN, y,
-                   "Install it with code 3 or 4, then scan") + 0;
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "code 1 - no typing.") + 14;
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "Bluetooth device:") + 2;
-    draw_line_scaled(&c, FONT_BODY, MARGIN + 22, y, ap_ssid, 1);
-    y += font_line_height(FONT_BODY) + 12;
+                   "Install with code 3 or 4, then scan") + 0;
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "code 1. (On iPhone, search will not") + 0;
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "find it - you must scan code 1.)") + 12;
     if (pop && *pop) {
-        y += draw_line(&c, FONT_BODY, MARGIN, y, "Proof of possession:") + 2;
+        y += draw_line(&c, FONT_BODY, MARGIN, y, "If asked, PoP:") + 2;
         draw_line_scaled(&c, FONT_BODY, MARGIN + 22, y, pop, 2);
         y += font_line_height(FONT_BODY) * 2 + 6;
     }
 
+    /* The BLE app's own path, kept because it still works: its device name is the same string
+     * as the AP SSID (both come from the one service name), and it needs the PoP. */
+    y += draw_line(&c, FONT_BODY, MARGIN, y,
+                   "(BLE app works too - device name is") + 0;
+    y += draw_line(&c, FONT_BODY, MARGIN, y,
+                   "the WiFi name above, PoP as shown.)") + 4;
+
     /* ---- QR grid: 2 x 2 ----
-     * The auto-provisioning code is FIRST because it is the convenient path: scanning it in the
-     * ESP BLE Provisioning app carries the device name, the PoP and the transport all at once,
-     * so the user never types a device name or a key. */
+     * The auto-provisioning code is FIRST because it is the convenient path: scanning it in an
+     * Espressif provisioning app carries the device name, the PoP and the transport all at once,
+     * so the user never types a device name or a key.
+     *
+     * THE CODE IS THE SoftAP ONE, NOT BLE, and that is deliberate. Per Espressif's own library
+     * README, "SoftAP search is not supported in iOS currently" — so in the SoftAP app the
+     * "don't have a code" device list is ALWAYS empty on an iPhone, and this QR is the only way
+     * in. (The BLE app has the mirror-image problem: its list works but its scan drops the
+     * link.) Since the SoftAP app is also the only one that can show a network list, it gets
+     * the auto-provisioning code. BLE still works — it just needs the name and PoP typed, which
+     * the screen prints anyway. */
     const int qx = MARGIN + LEFT_W + QR_GAP;
     const int qy0 = MARGIN + 8;
 
     /* The payload the app expects, per Espressif's documented format:
-     *   {"ver":"v1","name":"<BLE name>","pop":"<PoP>","transport":"ble"}
-     * "name" is what the app matches against the advertiser, so it must be the same string the
-     * device advertises — which is why it is built from the same ap_ssid passed in. */
-    char prov_payload[160];
+     *   {"ver":"v1","name":"<AP SSID>","pop":"<PoP>","transport":"softap","security":1}
+     *
+     * THREE FIELDS ARE LOAD-BEARING:
+     *   - "name" must be the SoftAP's SSID, because the SoftAP app connects to that SSID. It is
+     *     the same string the device raises and the one printed on this screen.
+     *   - "transport" must be "softap"; the app silently ignores a code that says "ble".
+     *   - "security" MUST be given. Espressif's table says an absent value "is considered Sec2",
+     *     and this device uses Security 1, so omitting it makes the app attempt a Sec2
+     *     handshake against a Sec1 device — which fails as a bad proof of possession. */
+    char prov_payload[192];
     if (pop && *pop) {
         snprintf(prov_payload, sizeof(prov_payload),
-                 "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"ble\"}",
-                 ap_ssid, pop);
+                 "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"softap\","
+                 "\"security\":1}", ap_ssid, pop);
     } else {
         snprintf(prov_payload, sizeof(prov_payload),
-                 "{\"ver\":\"v1\",\"name\":\"%s\",\"transport\":\"ble\"}", ap_ssid);
+                 "{\"ver\":\"v1\",\"name\":\"%s\",\"transport\":\"softap\",\"security\":1}",
+                 ap_ssid);
     }
 
     struct { const char *cap; const qr_code_t *qr; const char *payload; } codes[] = {
-        { "1. BLE SETUP",            NULL,        prov_payload },
+        { "1. AUTO SETUP",           NULL,        prov_payload },
         { "2. SETUP PAGE",           &QR_PORTAL,  NULL },
         { "3. iOS APP",              &QR_IOS,     NULL },
         { "4. ANDROID APP",          &QR_ANDROID, NULL },

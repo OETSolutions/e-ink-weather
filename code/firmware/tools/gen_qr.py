@@ -27,10 +27,13 @@ except ImportError:
 CODES = [
     ("QR_PORTAL",  "http://192.168.4.1/",
      "The setup page. The AP's address is fixed, so this URL never varies."),
-    ("QR_IOS",     "https://apps.apple.com/app/id1473590141",
-     "ESP BLE Provisioning, App Store. Verified: the listing resolves (HTTP 200)."),
-    ("QR_ANDROID", "https://play.google.com/store/apps/details?id=com.espressif.provble",
-     "ESP BLE Provisioning, Google Play. Verified: the listing resolves (HTTP 200)."),
+    ("QR_IOS",     "https://apps.apple.com/app/id1474040630",
+     "ESP SoftAP Provisioning, App Store. Verified: the listing resolves (HTTP 200). This is "
+     "the app the auto-setup code targets, because it is the one that can show a network list "
+     "AND the one that can be reached by QR on iOS (its device SEARCH is unsupported on iOS, so "
+     "a code is the only way in there)."),
+    ("QR_ANDROID", "https://play.google.com/store/apps/details?id=com.espressif.provsoftap",
+     "ESP SoftAP Provisioning, Google Play. Verified: the listing resolves (HTTP 200)."),
 ]
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "lib", "provscreen", "src", "qr_data.h")
