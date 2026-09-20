@@ -37,7 +37,7 @@ static const char *TAG = "prov";
  * this device has no screen to show it on, so a random one would have to be logged anyway,
  * and it would break the documented bench procedure of "flash, read the log, enter the PoP".
  * It is meaningless once credentials are stored — the transport is torn down with it. */
-#define PROV_POP "eink1234"
+#define PROV_POP PROV_POP_STRING
 
 /* The longest the station may take to join and get an address before the credentials are
  * declared bad. The manager retries on transient reasons, so this is a ceiling on the whole
@@ -73,6 +73,14 @@ static void make_service_name(char *out, size_t out_max)
         return;
     }
     snprintf(out, out_max, PROV_AP_PREFIX "-%02X%02X%02X", mac[3], mac[4], mac[5]);
+}
+
+/* Public accessor for the name, so the provisioning screen and this component cannot
+ * disagree about what the device is called. */
+void prov_service_name(char *out, size_t out_max)
+{
+    if (!out || out_max == 0) return;
+    make_service_name(out, out_max);
 }
 
 /* ------------------------------------------------------------------ events ---- */

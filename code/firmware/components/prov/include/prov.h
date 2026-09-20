@@ -48,6 +48,18 @@ esp_err_t prov_run_if_unconfigured(void);
 /* 1 if NVS holds a non-empty WiFi SSID. */
 int prov_is_configured(void);
 
+/* The AP name / BLE device name this unit will advertise, e.g. "EINK-WEATHER-2045AC".
+ *
+ * Exposed so the provisioning SCREEN can print it. Deriving it a second time at the display
+ * site would be a bug waiting to happen — the name depends on the MAC and would drift if the
+ * two derivations ever disagreed, leaving a screen that tells the user to join a network the
+ * device is not offering. Callers pass a buffer of at least 32 bytes. */
+void prov_service_name(char *out, size_t out_max);
+
+/* The BLE proof of possession, for the provisioning screen. See provscreen.h for why printing
+ * it is not the security hole it looks like. */
+#define PROV_POP_STRING "eink1234"
+
 /* Wipe the stored WiFi credentials and restart into provisioning. Exposed for the API so a
  * user can deliberately re-provision a device that has been moved to another network, and
  * so a device stuck with a wrong password is recoverable without a full erase. */

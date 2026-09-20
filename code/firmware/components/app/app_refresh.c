@@ -11,6 +11,8 @@
 #include "net_wifi.h"
 #include "nvs_keys.h"
 #include "owm.h"
+#include "provscreen.h"
+#include "prov.h"
 #include "refresh_policy.h"
 #include "render.h"
 #include "esp_heap_caps.h"
@@ -286,6 +288,53 @@ void app_fbs_release(void)
     s_shown_slot = -1;
     ESP_LOGI(TAG, "framebuffers released (%u bytes back to the heap)",
              (unsigned)(2 * EPD_FB_BYTES));
+}
+
+/* Draw the "how to set this up" screen: the AP name, the BLE PoP, and QR codes for the setup
+ * page and the two provisioning apps (FR-30).
+ *
+ * Uses ONE framebuffer, and reuses the resident one when it is already held, because this runs
+ * at the last moment before provisioning needs the memory back — so it must not ask for 152 KiB
+ * it is about to hand over. Composed via lib/provscreen, which is host-tested (the QR modules
+ * are verified byte-for-byte against the reference matrices; see test/test_provscreen). */
+void app_render_setup_screen(void)
+{
+    if (ensure_prev() != 0) {
+        ESP_LOGE(TAG, "cannot draw the setup screen: no framebuffer");
+        return;
+    }
+    const int have_next = (acquire_next() == 0);
+    uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
+
+    char ap_ssid[32];
+    prov_service_name(ap_ssid, sizeof(ap_ssid));
+
+    if (provscreen_render(work, ap_ssid, PROV_POP_STRING) != 0) {
+        ESP_LOGE(TAG, "setup screen render failed");
+        if (have_next) release_next();
+        return;
+    }
+
+    if (epd_wake() != ESP_OK) {
+        ESP_LOGE(TAG, "panel did not wake for the setup screen");
+        if (have_next) release_next();
+        return;
+    }
+
+    const esp_err_t e = epd_write_frame(work);
+    /* The resident buffer follows this like any other full frame, so the NEXT partial refresh
+     * (after provisioning, on a later boot) diffs against the right thing. The slot is -1:
+     * this is not the layout bitmap, and marking it otherwise would make a later partial diff
+     * the setup screen against a layout. */
+    if (e == ESP_OK) {
+        memcpy(s_fb_prev, work, EPD_FB_BYTES);
+        s_shown_slot = -1;
+        ESP_LOGI(TAG, "setup screen shown: SSID \"%s\"", ap_ssid);
+    } else {
+        ESP_LOGE(TAG, "setup screen push failed: %s", esp_err_to_name(e));
+    }
+    epd_sleep();
+    if (have_next) release_next();
 }
 
 /* ---------------------------------------------------------------------------------------

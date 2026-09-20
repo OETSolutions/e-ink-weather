@@ -54,6 +54,20 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# Notification support on the prov-* characteristics. REQUIRED for the official app to work.
+#
+# WHY THIS IS NOT OPTIONAL: wifi_prov_scheme_ble only sets ble_config->ble_notify when this is
+# defined (components/wifi_provisioning/src/scheme_ble.c:69), and protocomm_ble then advertises
+# the characteristics as READ+WRITE only instead of READ+WRITE+NOTIFY
+# (components/protocomm/src/transports/protocomm_ble.c:528). The official ESP BLE Provisioning
+# app's Security 1 handshake SUBSCRIBES to notifications on the prov-session characteristic and
+# waits for the response that way, so with notify off the app connects, subscribes to nothing,
+# and spins forever at the "connecting" step — with no error on either side, because the
+# connection itself succeeds. Verified by dumping the GATT table from this Mac: all five
+# characteristics showed props=['read','write'] with no 'notify'.
+#
+# It is a `bool` with no default in IDF's Kconfig, so it is OFF unless asked for.
+CONFIG_WIFI_PROV_BLE_NOTIFY=y
 # WiFi IRAM speed optimizations OFF to make room for the BT controller.
 #
 # Enabling BT costs IRAM (the controller's IRAM code), and the link failed with

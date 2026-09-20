@@ -215,6 +215,18 @@ void app_boot_run(void)
      * has no other way to be configured. The image is already on the glass and the panel is
      * bistable, so giving the memory back costs nothing the user can see. */
     if (!prov_is_configured()) {
+        /* Show HOW to set the device up, before releasing the memory the screen needs.
+         *
+         * WHY THIS IS DRAWN HERE AND NOT EARLIER: it needs one framebuffer, and this is the last
+         * moment one is available — the release below frees both so the radio can come up. The
+         * panel is bistable and is put to sleep after the push, so the instructions stay on the
+         * glass for as long as provisioning takes, with no memory held.
+         *
+         * This is drawn rather than the last-good image on purpose: the last-good image is a
+         * weather reading the user cannot act on, while the setup screen is the one thing they
+         * need at exactly this moment. */
+        app_render_setup_screen();
+
         app_fbs_release();
 
         const esp_err_t pe = prov_run_if_unconfigured();

@@ -24,6 +24,11 @@
  * outcome independent of what else the boot path allocates.
  *
  * Idempotent: returns ESP_OK immediately if the framebuffers are already held. */
+/* Draw the provisioning "how to set this up" screen: the AP/BLE name, the PoP, and QR codes
+ * for the setup page and the two apps. Uses ONE framebuffer and reuses the resident one, so it
+ * can run at the last moment before provisioning reclaims the memory. */
+void app_render_setup_screen(void);
+
 esp_err_t app_fbs_reserve(void);
 
 /* Give the framebuffers back to the heap. The image stays on the glass — the panel is
