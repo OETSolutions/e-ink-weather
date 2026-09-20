@@ -22,12 +22,21 @@ cover = d.getObject("PRINT_REAR_COVER").Shape
 foot = d.getObject("PRINT_FOOT").Shape
 opened = d.getObject("REFERENCE_FOOT_OPEN_65DEG").Shape
 
-HY, HZ = 5.0, -0.68   # current axis (derived in the generator)
-HINGE_X0, HINGE_X1 = 32.2, 102.2   # hinge span = plate footprint
-KR, CR = 2.2, 2.08
-FOOT_X, FOOT_W = 32.2, 70.0
-ARM_CENTERS = [44.2, 67.2, 90.2]
-CLIP_W = 3.00
+# Read the hinge geometry from the generator instead of restating it. These were hardcoded
+# (axis -0.68, pin r 2.20, clip r 2.08, CLIP_W 3.00) and went stale the moment the clip was
+# beefed to 2.00 wall x 4.50 wide and the axis dropped to keep it under the cover: the wider
+# clip's own legitimate running preload then fell OUTSIDE this file's 3.00-wide band and was
+# reported as a swing collision at every angle. A validator that restates the design's numbers
+# tests its own arithmetic, not the design.
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("_gen", os.path.join(HERE, "06_rear_cover_foot.py"))
+_gen = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_gen)
+HY, HZ = _gen.HINGE_Y, _gen.KNUCKLE_Z
+HINGE_X0, HINGE_X1 = _gen.HINGE_X0, _gen.HINGE_X1
+KR, CR = _gen.PIN_R, _gen.BORE_R
+FOOT_X, FOOT_W = _gen.FOOT_X, _gen.FOOT_W
+ARM_CENTERS = list(_gen.ARM_CENTERS)
+CLIP_W = _gen.CLIP_W
 fails = []
 
 print("=== BOTTOM-EDGE PRINTED HINGE VALIDATION ===")

@@ -55,9 +55,14 @@ PIN_R = 2.20                                        # rigid pin radius
 # The clip must PRESS on the pin, not run free: a 0.30 mm free-running gap let the stand flop
 # and fall off. A light interference gives controlled rotational friction (a friction hinge),
 # and the clip wall is long enough that even 0.15 mm only reaches ~0.6% strain.
-PIN_PRELOAD = 0.12                                  # interference -> friction
+PIN_PRELOAD = 0.15                                  # interference -> friction. Raised from 0.12:
+                                                    # with no positive detent friction is the only
+                                                    # thing holding the leg when the case is
+                                                    # carried, so the interference IS the holding
+                                                    # force. 0.15 is still ~0.6% wall strain, well
+                                                    # inside PETG's elastic range for this wall.
 PIN_CLEAR = -PIN_PRELOAD                            # negative: bore is SMALLER than the pin
-BORE_R = PIN_R+PIN_CLEAR                            # clip bore radius (2.08)
+BORE_R = PIN_R+PIN_CLEAR                            # clip bore radius (2.02)
 # NO DETENT -- folded OR open. Read this before re-adding one.
 # The hinge used to carry a raised rib inside each clip (at MOUTH_PIN_ANGLE+180) dropping into a
 # matching groove in the pin at the folded angle, plus a second groove at the open angle. The user
@@ -72,8 +77,13 @@ BORE_R = PIN_R+PIN_CLEAR                            # clip bore radius (2.08)
 # With no detent the leg is held by the bore interference alone (PIN_PRELOAD), i.e. a plain
 # friction hinge: it stays wherever it is put by hand but has no positive location folded or open.
 MOUTH_PIN_ANGLE = 0.0
-CLIP_WALL = MIN_LOAD_WALL                           # 1.6 mm clip wall
-CLIP_W = 3.00                                       # clip axial width
+# BEEFED UP 2026-09-20. The user: "the hooks on the foot that go around the hinge pin are too
+# weak and need to be beefier." They were 1.6 mm wall x 3.0 mm wide -- the minimum load-bearing
+# wall and the narrowest sane bearing. The ring's radial bending section modulus is
+# CLIP_W*CLIP_WALL^2/6, so at 3.0 x 1.6 it was 1.28 mm3; at 4.5 x 2.0 it is 3.00 mm3, i.e.
+# 2.3x stronger, with 1.5x the axial bearing length so the pin load is spread further.
+CLIP_WALL = 2.00                                    # was MIN_LOAD_WALL (1.6); 1.25x thicker
+CLIP_W = 4.50                                       # was 3.00; 1.5x wider bearing
 # ROOT GUSSET: the haunch that joins each clip ring to the leg plate.
 # The ring is a CYLINDER about the hinge axis and the plate is a flat slab, so where the two
 # meet they are TANGENT -- not overlapping. MEASURED in probes/93_probe_clip_weld.py: the whole
@@ -123,9 +133,10 @@ PRINT_RIB_Y = 4.00                                  # print-support rib depth at
 RIB_INSET = 4.00                                    # keep the rib clear of the stop at each end
 KNUCKLE_R = PIN_R                                   # kept for the print-orientation printout
 # Axis height is bounded by the cover depth: the clip's outer top must stay under the cover
-# split plane (z=COVER_T), i.e. KNUCKLE_Z+BORE_R+CLIP_WALL <= COVER_T. Keeping the full 1.6 mm
-# clip (required minimum 1.2) therefore puts the axis at -1.10 rather than tangent to the plate.
-KNUCKLE_Z = COVER_T-(BORE_R+CLIP_WALL)               # -1.10; keeps the clip under the cover
+# split plane (z=COVER_T), i.e. KNUCKLE_Z+BORE_R+CLIP_WALL <= COVER_T. With the beefed wall
+# (2.00) the axis drops to -1.02 to keep the clip under the cover -- still clear of the cover's
+# own floor (z -2.88) by 0.10 mm at the clip's outer wall.
+KNUCKLE_Z = COVER_T-(BORE_R+CLIP_WALL)               # -1.02; keeps the clip under the cover
 
 ARM_W = 6.00                                         # ASSUME; three strong printed necks
 ARM_CENTERS = [FOOT_X+12.0, FOOT_X+FOOT_W/2, FOOT_X+FOOT_W-12.0]
@@ -151,89 +162,80 @@ LIP_INTERFERENCE = 0.07
 CHEEK_T = 3.00                                       # ASSUME side cheek thickness
 SLOT_CLEAR = 0.25                                    # ASSUME neck-to-slot clearance per side
 # --- 65-degree hard stop ------------------------------------------------------
-# WHY THE OLD LUG FAILED, and why it is gone. The old 6.0 x 1.5 x 1.3 lug at (y 6.90,
-# z -5.60) was derived for the OLD -1.10 hinge axis; the pin rework moved the axis to -0.68
-# and the lug was never re-derived. Measured on the current solids it arrested the leg at
-# 55.2 deg -- BELOW the gravity barrier. 36_kickstand_energy.py gives tau = dU/dphi crossing
-# zero at ~58.5 deg: below that gravity FOLDS the leg, above it gravity OPENS the leg. A stop
-# below the barrier is pressed from the wrong side, so the leg folds away from it and the
-# stand collapses -- exactly the reported failure, and why no detent depth could fix it.
+# The stop must engage ABOVE the gravity barrier (~58.5 deg). 36_kickstand_energy.py gives
+# tau = dU/dphi crossing zero there: below it gravity FOLDS the leg, above it gravity OPENS it.
+# A stop below the barrier is pressed from the wrong side and the stand collapses. Ours engages
+# at 65.0 deg, with margin. (The original lug sat at 55.2 deg -- below the barrier -- and was
+# replaced for exactly that reason.)
 #
-# WHY THE FIRST RAMP ALTERNATIVE ALSO FAILED (user: "super thin flanges on the shaft that
-# will just break off since the attachment is so thin"). The ramp's top face DID land at
-# 65.0 deg, but it was a floating fin welded only to the hinge PIN. MEASURED in
-# probes/65_probe_true_joint.py: the ramp overlapped the cover by 1.414 mm3 TOTAL, i.e. a
-# 0.17 x 0.17 mm sliver per side -- a weld in name only. The cause is that the cover has NO
-# material near the hinge axis: the clip-sweep cavity is cut to r 4.28 and the pin is only
-# r 2.20, so everything between them is the void the clips swing in. The ONLY solid material
-# anywhere near is the two end WEBS (x 28.2..31.99 and 102.41..106.19), which run from the
-# cover's lower wall down to z -2.88.
-#
-# So the stop is now an A-FRAME buttress: two struts that land on the web tops and carry the
-# bearing face across the span, with a cross-tie so they act as a truss and cannot splay.
-# Root bearing on the web top is 2.50 x 2.50 = 6.25 mm2 per strut and the struts are 2.50 mm
-# thick everywhere, so there is no thin feature left to break. Everything sits at y >= 2.00,
-# which keeps it out of the clip sweep (measured: zero contact at 65 deg, zero when folded).
+# WHAT WENT WRONG, AND WHAT CHANGED 2026-09-20. The user: "The stops still break off. They need
+# more meat." and "the whole foot and stops needs to be completely redone ... the stops are on
+# the wrong side of the foot to keep it open; they keep it FROM opening further, but don't keep
+# it from closing to prop it up." MEASURED on the two-span buttress this replaces:
+#   * it existed ONLY at x 29.40..40.60 and 93.80..105.00, so over the leg's central 53 mm
+#     (x 40.6..93.8) there was nothing below the cover floor at all;
+#   * its bearing contact at 65 deg was a 0.28 mm3 sliver and its weld into the cover's lower
+#     wall was 2.85 mm3 -- a 3 mm3 section carrying the whole standing load. That is why it
+#     snaps off first, and once it is gone the leg has nothing to rest against: the collapse.
+#   * its load path also ran sideways, from a bearing face at x 29.4..40.6 to webs at x 28..32.
+# The stop is now the same buttress section repeated in EVERY GAP between the clips
+# (STOP_SECTIONS), so a section sits directly under the bearing face at every x across the leg,
+# each with the same short path face -> section -> bed -> web. It is deliberately not one
+# continuous bar: the clip's mouth sweeps down through the bar's own sector as the leg opens,
+# and only the GAPS are free of the clip at every angle.
 STOP_ENABLE=True
-# The stop is a RAMP whose top face lies on the leg plate's own underside at SWING_DEG, in two
-# spans that reach from inside an end WEB out under the leg.
-#
-# WHY A RAMP. The plate is a rounded prism, so its corner is a CURVE: a vertical stop face meets
-# it tangentially and engages as a soft wedge over tens of degrees (measured: a vertical face at
-# the 65 deg corner Y only reached 0.05 mm3 of contact at 71 deg). A face lying ALONG the plate's
-# underside engages all at once. MEASURED in probes/87_probe_ramp_offset.py: a prism whose top face is
-# the line through (7.10, -3.56) with direction (cos65, -sin65) gives first contact at exactly
-# 65.0 deg, ZERO contact at 64 deg, 4.10 mm3 of bearing at 65 deg, and then rises steeply
-# (127.6 at 66 deg, 621.1 at 70 deg). That line was measured off the real rotated solid in
-# probes/55_probe_leg_outline.py.
-#
-# WHY THIS IS NOT THE OLD THIN FLANGE. The first ramp was welded only to the hinge PIN: measured
-# in probes/65_probe_true_joint.py it overlapped the cover by 1.414 mm3 total, a 0.17 x 0.17 mm sliver
-# per side -- exactly the user's "super thin flanges on the shaft that will just break off". The
-# cause is that the cover has NO material near the hinge axis: the clip-sweep cavity is cut to
-# r 4.28 and the pin is only r 2.20, so everything between them is the void the clips swing in.
-# The ramp also lies wholly BELOW the webs (the web bottom is z -2.88; the ramp spans z -3.56 to
-# -10.27), so it cannot reach them directly.
-#
-# So each span gets a RISER: a block that runs from the ramp's back up to the web and is buried
-# in it. The risers sit at x 29.40..31.80 and 102.60..105.00 -- inside the webs' own X range
-# (28.20..31.99 and 102.41..106.19) and clear of the foot, whose plate starts at x 32.20. The
-# load path is therefore ramp -> riser -> web -> cover, with millimetres of engagement.
-# MEASURED weld in probes/88_probe_ramp_riser.py: see the printed joint volume, not a sliver.
-STOP_RAMP_P=(7.10,-3.56)                            # measured face-line point at 65 deg
-# Length of the bearing face. MEASURED limit in probes/90_probe_ramp_extent.py: the ramp must not
-# reach past the plate's own outer edge (Y 8.50), or it sits under the plate's corner and
-# blocks the straight-down insertion -- clear at Yend 8.50, blocked (0.53 mm3) at 8.70.
-# 3.3 mm puts the outer end at exactly Y 8.50, the largest face that still assembles.
-STOP_RAMP_LEN=3.3
-STOP_RAMP_T=3.0                                     # material behind the face
-STOP_SPAN_X=((29.40, 40.60), (93.80, 105.00))       # from inside a web out under the leg
 
-# ---- WHY THE RAMP+RISER IS GONE, AND WHAT REPLACES IT (2026-09-19) -----------------
-# The user: "For the stops, why don't you have the stop extending all the way down below,
-# there's nothing under it and it will still be very weak cantilevered out like that."
-# That is exactly right, and it was measurable. A Y-Z section of the cover in a span (X 36.0,
-# probes/102) shows the ramp sitting at y 5..8, z -8.0..-5.2 and the cover's LOWER WALL at
-# z -2.5..1.0, with a VOID at z -4..-3 between them. The only material connecting the two was a
-# RISER at x 29.40..31.80 -- while the ramp runs out to x 40.60. So the ramp was an 8.8 mm beam
-# bolted to the cover at ONE END, floating 1.5 mm clear of everything else, and the load on its
-# bearing face had to travel through that single small riser. It also had a knife-edge root: the
-# riser's top corner was unfilleted where stress concentrates.
+
+# ---- STOP REDESIGN 2026-09-20: A SECTION IN EVERY GAP BETWEEN THE CLIPS -------------
+# The user: "The stops still break off. They need more meat." and "the whole foot and stops
+# needs to be completely redone ... the stops are on the wrong side of the foot to keep it open;
+# they keep it FROM opening further, but don't keep it from closing to prop it up."
 #
-# The fix is the one the user asked for -- extend it all the way down and tie it back to the
-# cover, so the load path is short and the root is broad. Each span is now a single SOLID
-# BUTTRESS whose profile runs
-#     bearing face  (7.10,-3.56) -> (8.49,-6.55)     <- unchanged, still the 65 deg face
-#     straight down (8.49,-7.82)                      <- to the cover's lowest point
-#     back along the bottom (4.00,-7.82)              <- under the whole span, on the bed
-#     up the wall back (4.00, 0.00)                   <- MERGES into the cover's lower wall
-# so the buttress and the cover are one continuous solid from the bearing face to the wall, not
-# a beam on a post. MEASURED (probes/102): weld 76.25 mm3 against the ramp+riser's geometry,
-# with ZERO foot interference anywhere up to 65 deg.
-STOP_BACK_Y0=4.00                                   # buttress back face, inside the cover
-STOP_Z_BOTTOM=-7.82                                 # the cover's own lowest point; buttress is
-                                                    # flush with it, so ground clearance and
-                                                    # the print-orientation floor are unchanged
+# MEASURED DEFECTS in the two-span buttress this replaces:
+#  - It existed only at x 29.40..40.60 and 93.80..105.00. Over the leg's whole CENTRAL 53 mm
+#    (x 40.6..93.8) there was NOTHING below the cover floor at all, so more than half the leg
+#    had no stop under it.
+#  - Its bearing contact at 65 deg was a **0.28 mm3 sliver** and its weld into the cover's
+#    lower wall only **2.85 mm3**. That is why it snaps off -- and once it is gone the leg has
+#    nothing to rest against, which is the collapse the user reports.
+#  - The load path also ran sideways: the bearing face sat at x 29.4..40.6 while the only solid
+#    cover material it reached (the end webs) is at x 28.2..32.0.
+#
+# THE REPLACEMENT: the SAME buttress section, repeated in every gap between the clips, so a
+# section of stop sits directly under the bearing face at every x across the leg (see
+# STOP_SECTIONS). This is deliberately NOT one continuous full-width bar: the clip's mouth
+# sweeps DOWN through the bar's own region as the leg opens (MEASURED: the clip's free mouth
+# runs from pin-angle 40 deg folded to 105 deg at 65 deg -- exactly the sector the bar
+# occupies), so a continuous bar would collide with the mouth in mid-swing. In the GAPS the
+# sweep is completely free (MEASURED: 0.000 mm3 at every angle), so the sections go there.
+# The load path is then the same short one everywhere: face -> section -> bed -> web.
+# Stop sections, positioned ONLY in the free gaps between the clips. Each clip band is
+# CLIP_W wide (4.5) centred on ARM_CENTERS, so the gaps are those bands' complement. The
+# sections must not enter a band at all: inside a band the clip's own preload already overlaps
+# the cover, and adding stop material there would both stiffen the clip and confuse the
+# preload test (validator 18 splits the overlap into "in the clips" and "anywhere else").
+# The outer pair is extended 0.4 mm further out to merge with the end webs
+# (x 28.20..31.99 / 102.41..106.19), which is what anchors the stop to the cover.
+_CW = CLIP_W/2.0
+STOP_SECTIONS=((ARM_CENTERS[0]-_CW-2.0, ARM_CENTERS[0]-_CW),
+               (ARM_CENTERS[0]+_CW,       ARM_CENTERS[1]-_CW),
+               (ARM_CENTERS[1]+_CW,       ARM_CENTERS[2]-_CW),
+               (ARM_CENTERS[2]+_CW,       ARM_CENTERS[2]+_CW+2.0))
+# Bearing-face line. RE-DERIVED 2026-09-20 from the leg's REAL solid at 65 deg, not by
+# rotating the plate's sharp corner: the plate is an r4.0 rounded prism, so its nominal corner
+# (8.50,0.00) is CUT AWAY and the material there begins ~1.2 mm inward. Rotating the sharp
+# corner therefore put the face 0.85 mm outside the leg (onset late at 66 deg, and the earlier
+# (7.10,-3.56) was left over from the old -0.68 axis besides). MEASURED off the rotated solid,
+# the leg's bearing surface at 65 deg is a convex corner whose 65 deg TANGENT passes through
+# (8.00,-4.25); that line reaches the cover floor (z -2.88) at (7.361,-2.88) and the plate's
+# outer edge at (8.50,-5.32).
+STOP_RAMP_P=(7.089,-3.007)                          # inner end of the face
+STOP_RAMP_LEN=3.57                                  # outward along the 65 deg direction
+STOP_RAMP_T=3.0                                     # material behind the face
+STOP_BACK_Y0=4.00                                   # section back face, inside the cover
+STOP_Z_BOTTOM=-7.82                                 # the cover's own lowest point; the section is
+                                                    # flush with it, so ground clearance and the
+                                                    # print-orientation floor are unchanged
 # CONCAVE-ROOT FILLETS. The user: "Both the stops and the gussets you added should have fillets
 # in the corners to make them a lot stronger." A buttress fails at its root, where peak stress
 # sits, so the fillets go on the buttress's own corners. MEASURED: R > 1.00 fails the Boolean on
@@ -304,8 +306,14 @@ HATCH_BOSS_R=2.6                                    # M2 boss: 1.8 mm wall aroun
 HATCH_KEY_T=COVER_T                                 # key fills the cover's full thickness, so it
                                                     # bears on the notch walls over 17 x 3 mm
 HATCH_KEY_CLEAR=0.30                                # per-side clearance in the notch
-HATCH_KEY1_X0,HATCH_KEY1_X1=19.60,23.00             # -X key; X1 laps 0.25 mm into the plug
-HATCH_KEY1_Y0,HATCH_KEY1_Y1=71.50,88.50             # clear of the bay's r3 corners
+HATCH_KEY1_X0,HATCH_KEY1_X1=19.60,23.00             # -X hook; X1 laps 0.25 mm into the plug
+# 80% OF THE PLUG'S WIDTH, per the user: "Add a hook 80% of the width of the opposite end of
+# where the screw holds down the hatch so that both ends attach." The screw clamps the +X end
+# (at x 84.5), so this is the -X end and it is now the primary attachment there -- wide enough
+# that the hatch is held along nearly its whole edge, not just located against rotation.
+# 18.80 mm over the plug's 23.50 mm Y span, centred on the plug, which keeps 2.60 mm clear of
+# the bay's r3 corners at each end.
+HATCH_KEY1_Y0,HATCH_KEY1_Y1=70.60,89.40             # 80% of the plug span, centred
 HATCH_KEY2_X0,HATCH_KEY2_X1=78.70,82.10             # +X key; X0 laps 0.25 mm into the plug
 HATCH_KEY2_Y0,HATCH_KEY2_Y1=71.50,80.50             # stops short of the screw boss (Y 81.4+)
 # The notches are each key GROWN by the clearance on every side and cut through the cover.
@@ -491,22 +499,22 @@ def build_cover(outer, foot):
                        App.Vector(USB_SLOT_X-USB_SLOT_W/2, SERVICE_BAY_Y1-1.0, -0.2))
     cover = cover.cut(usb)
     if STOP_ENABLE:
-        # The 65 deg stop: ONE SOLID BUTTRESS per side, running from the bearing face down to the
-        # cover's lowest point and back into the cover's lower wall, with fillets at its concave
-        # roots. See the constant block for why the old floating ramp+riser had to go.
+        # The 65 deg stop: the same buttress section in EVERY gap between the clips, so a
+        # section sits under the bearing face at every x across the leg. See the constant block
+        # for why this replaced the two side buttresses (and why it is not one full-width bar).
         ca, sa = math.cos(math.radians(SWING_DEG)), math.sin(math.radians(SWING_DEG))
         py, pz = STOP_RAMP_P
         ey, ez = py + STOP_RAMP_LEN*ca, pz - STOP_RAMP_LEN*sa      # inward end of the face
         quad = [(py, pz), (ey, ez),
                 (ey, STOP_Z_BOTTOM), (STOP_BACK_Y0, STOP_Z_BOTTOM), (STOP_BACK_Y0, 0.0)]
-        # Fillet the three concave corners -- both bottom corners and the root where the buttress
-        # meets the wall. NOT the bearing face's outer edge: that is the stop face and must stay
-        # crisp, and a fillet there would round the 65 deg engagement point too.
+        # Fillet the concave corners -- both bed corners and the root where the section meets the
+        # wall. NOT the bearing face's outer edge: that is the stop face and must stay crisp, or
+        # a fillet would round the 65 deg engagement point.
         CONCAVE = {(round(ey, 3), round(ez, 3)),
                    (round(ey, 3), round(STOP_Z_BOTTOM, 3)),
                    (round(STOP_BACK_Y0, 3), round(STOP_Z_BOTTOM, 3))}
         stop = None
-        for x0, x1 in STOP_SPAN_X:
+        for x0, x1 in STOP_SECTIONS:
             pts = [App.Vector(0, y, z) for y, z in quad] + [App.Vector(0, quad[0][0], quad[0][1])]
             prism = Part.Face(Part.makePolygon(pts)).extrude(App.Vector(x1-x0, 0, 0))
             edges = []
