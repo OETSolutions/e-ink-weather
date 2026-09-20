@@ -6,6 +6,7 @@
 #include "datasrc.h"
 #include "epd.h"
 #include "fonts.h"
+#include "geo_ip.h"
 #include "layout_model.h"
 #include "net_http.h"
 #include "net_wifi.h"
@@ -442,6 +443,16 @@ void app_refresh_tick(power_source_t source)
         ESP_LOGW(TAG, "no network (%s); keeping the last good image", esp_err_to_name(e));
         api_note_error("net: connect failed");
         return;
+    }
+
+    /* Fill in a city-level location from the public IP, but ONLY if the user has not set one
+     * (FR-30). This runs on the first refresh after a device joins a network it was just
+     * provisioned for, so the config page the user opens next already has plausible
+     * coordinates in its fields instead of two empty boxes they would have to fill from a
+     * map. It is a DEFAULT, never an overwrite — see geo_ip.c for why that distinction is the
+     * whole point. Cheap on every later boot: one NVS read, no request. */
+    if (geo_ip_fill_if_unset()) {
+        ESP_LOGI(TAG, "location was empty; filled it from the public IP (a city-level guess)");
     }
 
     /* 4 KB, and the size is load-bearing rather than arbitrary.
