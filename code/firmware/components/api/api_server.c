@@ -7,6 +7,9 @@
 #include "cfg_store.h"
 #include "devcfg.h"
 #include "layout_model.h"
+#include "nvs_keys.h"
+#include "prov.h"
+#include "nvs.h"
 #include "bitmap_upload.h"
 #include "bitmap_slot.h"
 #include "api_wire.h"
@@ -304,6 +307,100 @@ static esp_err_t h_status(httpd_req_t *req)
 
 /* ------------------------------------------------------------------ GET/PUT /config -- */
 
+/* Write the location from a config document into the NVS blobs the fetch path reads.
+ *
+ * WHY THIS IS NEEDED AT ALL: the document's `location` field and the NVS lat/lon blobs were
+ * two disconnected stores. The document round-trips through save/load and looks authoritative
+ * in the web app, while app_refresh.c reads ONLY the blobs. So without this, a pin dragged on
+ * the map picker would be saved, echoed back to the user, and then silently IGNORED by the
+ * device — a UI confirming a change that has no effect. FR-24 makes the map the place the
+ * position is chosen; the document is the input and the blobs are what the firmware acts on.
+ *
+ * An absent or malformed location leaves the stored one ALONE rather than clearing it, and
+ * never fails the request: the layout itself has already been validated and stored, and
+ * rejecting the whole PUT over an optional field would be surprising. The user's ability to
+ * remove a location is the factory reset, not a blank field in a document that also carries
+ * the API key. */
+static void note_config_location(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return;
+
+    const cJSON *loc = cJSON_GetObjectItemCaseSensitive(root, "location");
+    const cJSON *la = cJSON_IsObject(loc) ? cJSON_GetObjectItemCaseSensitive(loc, "latitude") : NULL;
+    const cJSON *lo = cJSON_IsObject(loc) ? cJSON_GetObjectItemCaseSensitive(loc, "longitude") : NULL;
+
+    /* Type- and range-checked, for the same reason the portal checks: this value is about to
+     * be interpolated into an OWM URL, so a bogus coordinate must not get that far. */
+    if (cJSON_IsNumber(la) && cJSON_IsNumber(lo) &&
+        la->valuedouble >= -90.0 && la->valuedouble <= 90.0 &&
+        lo->valuedouble >= -180.0 && lo->valuedouble <= 180.0) {
+        /* Reuse the one extra-config writer rather than opening NVS again here — it already
+         * owns the "write only what was supplied" rule for every field it stores. */
+        if (prov_store_extra_config(NULL, NULL, NULL,
+                                    la->valuedouble, lo->valuedouble, 1) == 0) {
+            ESP_LOGI(TAG, "location from the config document stored (%.4f, %.4f)",
+                     la->valuedouble, lo->valuedouble);
+        } else {
+            ESP_LOGW(TAG, "could not store the location from the config document");
+        }
+    }
+    cJSON_Delete(root);
+}
+
+/* Put the stored location back into the returned document.
+ *
+ * WHY THE RESPONSE AND NOT THE STORE: the NVS blobs are the source of truth — the device
+ * writes them itself from the public IP (geo_ip.c) when the user has not chosen a position.
+ * Echoing only what was stored as a document would show a blank or stale location in the app
+ * on a device that knows exactly where it is, and the map would then open on 0,0. Injecting
+ * the real value here means every reader — the map picker, the fields, save-to-file — sees
+ * the same coordinates the firmware will fetch with. */
+static void inject_stored_location(cJSON *root)
+{
+    nvs_handle_t h;
+    double lat = 0, lon = 0;
+    size_t llen = sizeof(lat);
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    const esp_err_t e = nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &lat, &llen);
+    llen = sizeof(lon);
+    const esp_err_t e2 = nvs_get_blob(h, DEVENV_KEY_LOC_LON, &lon, &llen);
+    nvs_close(h);
+    if (e != ESP_OK || e2 != ESP_OK) return;   /* nothing chosen and nothing guessed */
+
+    cJSON *loc = cJSON_GetObjectItemCaseSensitive(root, "location");
+    if (!cJSON_IsObject(loc)) {
+        loc = cJSON_AddObjectToObject(root, "location");
+        if (!loc) return;
+    }
+    /* cJSON_AddNumberToObject replaces an existing member, so this both fills a missing
+     * location and corrects a stale one. */
+    cJSON_DeleteItemFromObjectCaseSensitive(loc, "latitude");
+    cJSON_DeleteItemFromObjectCaseSensitive(loc, "longitude");
+    cJSON_AddNumberToObject(loc, "latitude", lat);
+    cJSON_AddNumberToObject(loc, "longitude", lon);
+}
+
+/* Send a config document with the device's real location merged in. Falls back to sending the
+ * document unchanged if it will not parse or the merge cannot be serialised — a GET that
+ * returns the user's layout is far more useful than an error, and the location is the one
+ * field the device is authoritative about. */
+static esp_err_t api_send_config_json(httpd_req_t *req, const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return api_send_json(req, json, "200 OK");
+
+    inject_stored_location(root);
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return api_send_json(req, json, "200 OK");
+
+    const esp_err_t e = api_send_json(req, out, "200 OK");
+    free(out);
+    return e;
+}
+
 static esp_err_t h_config_get(httpd_req_t *req)
 {
     char *json = NULL;
@@ -311,9 +408,11 @@ static esp_err_t h_config_get(httpd_req_t *req)
         /* Distinguish "never configured" from "corrupt": the former is a normal first-boot
          * state and is a 200 with the default document, so the web app can always load
          * something editable. */
-        return api_send_json(req, cfg_store_default_json(), "200 OK");
+        json = strdup(cfg_store_default_json());
     }
-    const esp_err_t e = api_send_json(req, json, "200 OK");
+    if (!json) return api_send_err(req, "500 Internal Server Error", "oom");
+
+    const esp_err_t e = api_send_config_json(req, json);
     free(json);
     return e;
 }
@@ -340,6 +439,10 @@ static esp_err_t h_config_put(httpd_req_t *req)
         return api_send_err(req, "400 Bad Request",
                         "invalid config: needs numeric schemaVersion and a valid layout");
     }
+
+    /* The layout is stored; now act on the location it carries. Read the body BEFORE freeing
+     * it — this is the only copy. */
+    note_config_location(body);
 
     ESP_LOGI(TAG, "stored config (%d bytes)", n);
     free(body);

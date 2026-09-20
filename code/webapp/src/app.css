@@ -1,0 +1,118 @@
+/* Leaflet's own stylesheet is imported from map-picker.ts so the map is styled wherever the
+ * picker is mounted. This file is only the app shell's chrome. */
+
+:root {
+  color-scheme: light dark;
+  --fg: #111827;
+  --muted: #6b7280;
+  --err: #b91c1c;
+  --line: #8884;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --err: #f87171;
+  }
+}
+
+body {
+  font: 16px/1.5 system-ui, -apple-system, sans-serif;
+  color: var(--fg);
+  margin: 0;
+  padding: 1.5rem;
+  max-width: 46rem;
+}
+
+h1 {
+  font-size: 1.35rem;
+  margin: 0 0 0.25rem;
+}
+
+p.sub {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+p.status {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.35rem;
+  background: #16a34a22;
+  font-size: 0.9rem;
+}
+
+p.status.err {
+  background: #dc262622;
+  color: var(--err);
+}
+
+.fields {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.fields > div {
+  flex: 1;
+}
+
+label {
+  display: block;
+  margin: 0 0 0.2rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem;
+  font-size: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: #8881;
+  color: inherit;
+}
+
+/* The map needs an explicit height: Leaflet fills its container, and a container with no
+ * height collapses to nothing, which looks like the map failed to load. */
+.map {
+  height: 22rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--line);
+  z-index: 1;
+}
+
+.map-status {
+  margin: 0.4rem 0 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.map-status.err {
+  color: var(--err);
+}
+
+.zip {
+  margin-bottom: 1.25rem;
+}
+
+button {
+  width: 100%;
+  padding: 0.8rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: 0;
+  border-radius: 0.35rem;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
