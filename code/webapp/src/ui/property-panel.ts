@@ -16,6 +16,7 @@ import type { AlertLevel, AlertOp, DataBinding, DataSourceKind, Widget } from '.
 import { describeRule } from '../alerts/rules';
 import { describeBinding } from '../data/binding';
 import { formatPlaceholder } from '../data/format';
+import { FACES_AVAILABLE, sizeFor } from '../canvas/face';
 
 export interface PropertyPanelOptions {
   host: HTMLElement;
@@ -234,6 +235,14 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     /* ---- font ---- */
     const font = w.font ?? { size: 64, align: 'left' as const, valign: 'top' as const };
     const tset = el('fieldset', {}, el('legend', {}, 'Text'));
+    /* The two faces the panel HAS, not a free number: the device cannot rasterise an arbitrary
+     * size, so a spinner offering 10-200 would be a control that mostly does nothing. */
+    tset.append(
+      field('Size', select(String(sizeFor(w)), FACES_AVAILABLE.map((f) => ({ value: String(f.px), label: f.label })), (v) => {
+        commit({ font: { ...font, size: Number(v) } });
+        render();
+      })),
+    );
     tset.append(
       field('Align', select(font.align, [
         { value: 'left' as const, label: 'Left' },

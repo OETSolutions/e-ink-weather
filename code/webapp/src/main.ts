@@ -19,6 +19,8 @@ import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-pan
 import { listEntities } from './data/ha';
 import { formatPlaceholder } from './data/format';
 import { evaluateAlerts } from './alerts/rules';
+import { defaultLayout, DEFAULT_LABELS, DEFAULT_RULES } from './presets/default-layout';
+import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { getAuth, putAuth, type AuthState } from './transfer/device';
@@ -54,33 +56,14 @@ function button(label: string, onClick: () => void): HTMLButtonElement {
 }
 
 /**
- * Starter widgets, placed where readings already are, used ONLY when the stored page has none.
+ * The starting point for a device with no layout yet (FR-17).
  *
- * A device that already has a layout keeps it — overwriting a user's arrangement because they
- * opened the config app would be destructive. These exist so a fresh device shows something
- * meaningful the moment it is set up (FR-17's stated use case).
+ * Uses the shipped preset rather than an ad-hoc set of boxes, so a fresh device shows the
+ * dashboard the design was actually made for. A device that ALREADY has widgets keeps them —
+ * overwriting a user's arrangement because they opened the app would be destructive.
  */
-function starterWidgets(): Widget[] {
-  return [
-    {
-      id: 'outdoor',
-      x: 48, y: 76, w: 420, h: 110,
-      role: 'dynamic',
-      binding: { kind: 'owm-current', owmField: 'temp' },
-      format: { decimals: 1, suffix: '°F', fallback: '--' },
-      font: { size: 64, align: 'left', valign: 'top' },
-      alerts: [{ op: 'gt', threshold: 100, level: 'severe' }],
-    },
-    {
-      id: 'indoor',
-      x: 48, y: 256, w: 420, h: 110,
-      role: 'dynamic',
-      binding: { kind: 'ha', entityId: 'sensor.upstairs_hallway_temperature' },
-      format: { decimals: 1, suffix: '°F', fallback: '--' },
-      font: { size: 64, align: 'left', valign: 'top' },
-      alerts: [{ op: 'gt', threshold: 100, level: 'severe' }],
-    },
-  ];
+function starterPage(): Page {
+  return defaultLayout().pages[0]!;
 }
 
 /**
@@ -168,7 +151,7 @@ async function mount(root: HTMLElement): Promise<void> {
    * what it draws. An absent array is therefore the normal shape and must become an empty one
    * rather than being read as a length. */
   if (!Array.isArray(page.widgets)) page.widgets = [];
-  if (page.widgets.length === 0) page.widgets = starterWidgets();
+  if (page.widgets.length === 0) page.widgets = starterPage().widgets;
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
   const editorState: EditorState = { page, values: previewValues(page, alertProbe) };
@@ -327,9 +310,17 @@ async function mount(root: HTMLElement): Promise<void> {
     onChange: () => { /* Save reads the live position. */ },
   });
 
+  /* The labels and rules are the LAYOUT's, not the device's — the device is layout-independent
+   * and only stamps values into boxes, so the static art is the web app's job (FR-1). */
+  const staticLayer = buildStaticLayer(
+    DEFAULT_LABELS.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
+    DEFAULT_RULES.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
+  ).data;
+
   editor = attachEditor({
     canvasEl,
     state: editorState,
+    staticLayer,
     onChange: () => { /* Commit happens on Save, not per gesture. */ },
     onSelect: (id) => {
       editorState.selectedId = id;

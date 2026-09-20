@@ -24,6 +24,7 @@ import {
   type Zone,
 } from './geometry';
 import { renderPage, type ValueField } from './render';
+import { fontIdFor } from './face';
 import type { Bitmap } from './bitmap';
 
 /** The grid widgets snap to, in panel pixels. 8 is fine enough to place anything and coarse
@@ -53,6 +54,15 @@ export interface EditorHandle {
 export interface EditorOptions {
   canvasEl: HTMLCanvasElement;
   state: EditorState;
+  /**
+   * The static layer to compose onto — labels, units and rules.
+   *
+   * WITHOUT THIS THE PREVIEW IS MISLEADING: it would show bare numbers floating on white, with
+   * none of the labels that make a reading legible, so a layout could look fine in the editor
+   * and be confusing on the glass. Defaults to blank, which is correct for a page the user has
+   * not given any static art yet.
+   */
+  staticLayer?: Uint8Array;
   /** Called after a drag or resize commits a change. */
   onChange: (page: Page) => void;
   /** Called when the pointer selects a widget (or clears the selection on empty space). */
@@ -88,6 +98,11 @@ function toPanel(canvasEl: HTMLCanvasElement, e: PointerEvent): { x: number; y: 
   return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
 }
 
+/** An all-white static layer, used when the caller has not supplied one. */
+function blankLayer(): Uint8Array {
+  return new Uint8Array((PANEL_WIDTH * PANEL_HEIGHT) / 8).fill(0xff);
+}
+
 /** A widget's bounds, for the selection outline. */
 function widgetRect(w: Widget): { x: number; y: number; w: number; h: number } {
   return { x: w.x, y: w.y, w: w.w, h: w.h };
@@ -121,12 +136,13 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
       h: w.h,
       alignH: w.font?.align === 'center' ? 'C' : w.font?.align === 'right' ? 'R' : 'L',
       alignV: w.font?.valign === 'middle' ? 'M' : w.font?.valign === 'bottom' ? 'B' : 'T',
-      fontId: w.role === 'dynamic' ? 1 : 0,
+      /* ONE shared rule for face selection — see canvas/face.ts for why role is not
+       * the right key and why a free-form size cannot work. */
+      fontId: fontIdFor(w),
     }));
 
     const values = state.page.widgets.map((w) => state.values[w.id]);
-    const bmp = renderPage(new Uint8Array(PANEL_WIDTH * PANEL_HEIGHT / 8).fill(0xff),
-                           fields, values);
+    const bmp = renderPage(opts.staticLayer ?? blankLayer(), fields, values);
     last = bmp;
 
     /* Paint the framebuffer as an ImageData at PANEL resolution, then let CSS scale it up.

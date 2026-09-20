@@ -48,7 +48,7 @@ static int write_json(const char *path)
     fprintf(f, "  ],\n  \"rules\": [\n");
     for (int i = 0; i < GOLDEN_RULE_COUNT; i++) {
         fprintf(f, "    { \"y\": %d, \"thickness\": %d, \"inset\": %d }%s\n",
-                GOLDEN_RULES[i].y, GOLDEN_RULES[i].thickness, GOLDEN_INSET,
+                GOLDEN_RULES[i].y, GOLDEN_RULES[i].thickness, GOLDEN_RULES[i].inset,
                 i + 1 < GOLDEN_RULE_COUNT ? "," : "");
     }
     fprintf(f, "  ],\n  \"fields\": [\n");
