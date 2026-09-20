@@ -1,0 +1,6 @@
+{
+  "name": "qrcodegen",
+  "version": "1.8.0",
+  "build": { "srcDir": "src", "includeDir": "include" },
+  "dependencies": {}
+}

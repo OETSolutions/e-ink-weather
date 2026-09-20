@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "canvas.h"
 
 /* The provisioning screen: what the panel shows while the device is waiting to be set up.
  *
@@ -20,5 +21,16 @@
  * `pop` is the BLE proof of possession, printed because this screen is only ever visible while
  * the device is deliberately unconfigured — see the security note in the implementation.
  *
+ * Four QR codes are drawn: the setup page, the BLE provisioning payload (encoded HERE, because
+ * it contains this device's own name), and the two app-store listings.
+ *
  * Returns 0, or -1 if the arguments are unusable. The buffer must be EPD_FB_BYTES. */
 int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop);
+
+/* Encode `payload` as a QR code and blit it, scaled to fill a `box`-pixel square at (x, y).
+ *
+ * Exposed for the SAME reason it exists: the auto-provisioning payload carries the device's own
+ * BLE name, so unlike the fixed URLs it cannot be pre-generated at build time and needs a
+ * runtime encoder (lib/qrcodegen). Returns 0 on success, -1 if the payload does not fit or the
+ * box is too small to hold one module per pixel. */
+int provscreen_blit_qr(canvas_t *c, int x, int y, int box, const char *payload);

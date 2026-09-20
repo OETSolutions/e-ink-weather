@@ -5,6 +5,7 @@
 #include "cfg_store.h"
 #include "api_store.h"
 #include "epd.h"
+#include "factory_reset.h"
 #include "layout_model.h"
 #include "nvs_keys.h"
 #include "power.h"
@@ -150,6 +151,10 @@ void app_boot_run(void)
 
     api_reset_cycle_counters();
 
+    /* Bring the reset button up before anything slow, so a user who is holding it while the
+     * device powers on is noticed as early as possible. */
+    factory_reset_begin();
+
     layout_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     if (load_config(&cfg) != 0) {
@@ -191,7 +196,16 @@ void app_boot_run(void)
         epd_sleep();
     }
 
-    /* ---- 3b. Provisioning is deferred to step 8 ---- */
+    /* ---- 3b. Factory reset, if the button is held ----
+     * Deliberately BEFORE the network work and before provisioning. A user holding the button at
+     * power-on is asking to erase everything, and this is the only point that works from every
+     * state — after this the path may block in provisioning, where nothing else polls.
+     *
+     * Placed after the panel has an image so the user is not left staring at a blank screen
+     * while they hold. */
+    if (factory_reset_check_hold()) return;
+
+    /* ---- 3c. Provisioning is deferred to step 8 ---- */
 
     /* ---- 4-6. Network, fetch, render, push ---- */
     app_boot_network_cycle(source);
@@ -284,6 +298,9 @@ void app_serve_loop(void)
          * request never feels stuck. Every wake re-reads the flag, so a request that lands
          * just after a timeout is served on the next pass regardless of the notification. */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        /* The serve loop is where a plugged-in device spends its life, so this is the most
+         * likely place a user actually holds the button. */
+        if (factory_reset_poll()) return;
         if (api_take_full_refresh()) {
             ESP_LOGI(TAG, "refresh requested via API");
             app_refresh_tick(POWER_SOURCE_USB);

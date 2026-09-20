@@ -2,8 +2,86 @@
 #include "canvas.h"
 #include "fonts.h"
 #include "qr_data.h"
+#include "qrcodegen.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* Encode `payload` and blit it as a QR code filling a `box` square at (x, y).
+ *
+ * Used for the auto-provisioning code, whose payload embeds this device's own BLE name and so
+ * cannot be pre-generated. Two ~4 KB work buffers are needed (qrcodegen's temp buffer and the
+ * symbol), which is why the caller keeps this off any small stack.
+ *
+ * The scale is an INTEGER number of pixels per module, chosen as the largest that fits the box.
+ * A fractional scale would give modules differing pixel widths and can stop a scanner
+ * resolving them, so if one module does not fit the box this refuses rather than shrinking. */
+int provscreen_blit_qr(canvas_t *c, int x, int y, int box, const char *payload)
+{
+    if (!c || !payload || !*payload) return -1;
+
+    /* The two work buffers are HEAP-ALLOCATED, not static, and the size is why.
+     *
+     * qrcodegen needs 3,918 bytes for the symbol plus 3,918 for a scratch buffer. As `static`
+     * arrays that is 7.8 KiB of .bss, and on this part .bss abuts the DRAM heap region the
+     * framebuffers come from — so adding them pushed the largest free block down to 61,440
+     * bytes and the render path could no longer allocate its 78,200-byte framebuffer at all.
+     * The device booted with a stale image and an error, which is the exact failure the
+     * renderer's comment warns about. Measured, not guessed: RAM usage rose by 7,864 bytes and
+     * the transient-framebuffer allocation started failing immediately.
+     *
+     * Taken and given back around the one encode, so the cost is a brief 7.8 KiB that is
+     * released before provisioning needs its memory. */
+    uint8_t *qr = malloc(qrcodegen_BUFFER_LEN_MAX);
+    uint8_t *tmp = malloc(qrcodegen_BUFFER_LEN_MAX);
+    if (!qr || !tmp) {
+        free(qr); free(tmp);
+        return -1;
+    }
+
+    /* ECC LOW, and boostEcl off: the payload is ~60 bytes and must stay at a small version so
+     * the modules are large enough to scan at arm's length. Boosting the ECC level would push
+     * the version up and the module size down for protection this screen does not need — it is
+     * displayed on clean glass at close range, not printed and folded. */
+    const int ok = qrcodegen_encodeText(payload, tmp, qr, qrcodegen_Ecc_LOW,
+                                        1, qrcodegen_VERSION_MAX,
+                                        qrcodegen_Mask_AUTO, false);
+    free(tmp);   /* not needed once the symbol is built */
+    if (!ok) {
+        free(qr);
+        return -1;
+    }
+
+    const int size = qrcodegen_getSize(qr);
+    const int k = box / size;
+    if (k < 1) {
+        free(qr);
+        return -1;
+    }
+
+    const int total = k * size;
+    const int ox = x + (box - total) / 2;
+    const int oy = y + (box - total) / 2;
+
+    /* Clear a generous surround. The QR standard's 4-module quiet zone is included by drawing
+     * the light modules of the symbol itself as blank, but the page around it must also be
+     * clear or the code has no contrast against whatever it abuts. */
+    for (int dy = -10; dy < total + 10; dy++)
+        for (int dx = -10; dx < total + 10; dx++)
+            canvas_set_px(c, ox + dx, oy + dy, 0);
+
+    for (int my = 0; my < size; my++) {
+        for (int mx = 0; mx < size; mx++) {
+            if (!qrcodegen_getModule(qr, mx, my)) continue;   /* true = dark */
+            for (int dy = 0; dy < k; dy++)
+                for (int dx = 0; dx < k; dx++)
+                    canvas_set_px(c, ox + mx * k + dx, oy + my * k + dy, 1);
+        }
+    }
+    free(qr);
+    return 0;
+}
 
 /* ------------------------------------------------------------------------------------------
  * LAYOUT. 920x680, landscape. Two columns: instructions on the left, the three QR codes down
@@ -18,14 +96,23 @@
  * cleared the moment provisioning succeeds.
  * --------------------------------------------------------------------------------------- */
 
-/* Column geometry. LEFT_W is set so the WIDEST string at the scale it is drawn at still fits:
- * the AP name at 2x measures 482 px (font_measure), which is what forces 520 rather than
- * something tighter. An overflowing line does not wrap — it runs into the QR column and eats
- * the codes, which a screenshot showed happening at 430. */
-#define MARGIN      36
-#define LEFT_W      520
-#define QR_GAP      30
-#define QR_BOX      150          /* QR module area, square */
+/* Column geometry.
+ *
+ * THE QR BOX IS DERIVED FROM THE PANEL, NOT CHOSEN. A first attempt hardcoded 190 px and the
+ * right-hand column landed at x=920 — one pixel past the 920-wide panel — so a third of two
+ * codes was off the glass. Nothing errored: the modules were simply never drawn, which the
+ * round-trip test caught by finding mismatches at x=920. Deriving the width from what is left
+ * after the text column means the layout cannot overflow however the pieces are resized.
+ *
+ * LEFT_W is set so the widest string at the scale it is drawn at fits: the AP name at 2x
+ * measures 482 px (font_measure). An overflowing line does not wrap — it runs into the QR
+ * column and eats the codes, which a screenshot showed happening at 430. */
+#define MARGIN      30
+#define LEFT_W      486
+#define QR_GAP      18
+#define QR_BOX_W    ((EPD_WIDTH - 2 * MARGIN - LEFT_W - QR_GAP - QR_COL_GAP) / 2)
+#define QR_COL_GAP  18           /* between the two columns of codes */
+#define QR_ROW_GAP  16           /* between the two rows of codes */
 
 static void draw_line_scaled(canvas_t *c, font_id_t f, int x, int y, const char *s, int k);
 
@@ -115,6 +202,7 @@ int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
     if (!fb || !ap_ssid || !*ap_ssid) return -1;
 
     canvas_t c;
+    int all_ok = 1;
     canvas_init(&c, fb);
     canvas_fill(&c, 0);              /* white page */
 
@@ -135,13 +223,15 @@ int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
                    "1. Join this WiFi network on your phone.") + 10;
     draw_line_scaled(&c, FONT_BODY, MARGIN + 22, y, ap_ssid, 2);
     y += font_line_height(FONT_BODY) * 2 + 14;
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "2. Scan the SETUP PAGE code, right.") + 2;
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "2. Scan code 2 and enter your") + 0;
     y += draw_line(&c, FONT_BODY, MARGIN, y,
-                   "Then enter your WiFi, weather API key") + 0;
-    y += draw_line(&c, FONT_BODY, MARGIN, y, "and location.") + 20;
+                   "WiFi, weather API key and location.") + 22;
 
     /* ---- The app path ---- */
     y += draw_line(&c, FONT_BODY, MARGIN, y, "OR - ESP BLE PROVISIONING APP") + 10;
+    y += draw_line(&c, FONT_BODY, MARGIN, y,
+                   "Install it with code 3 or 4, then scan") + 0;
+    y += draw_line(&c, FONT_BODY, MARGIN, y, "code 1 - no typing.") + 14;
     y += draw_line(&c, FONT_BODY, MARGIN, y, "Bluetooth device:") + 2;
     draw_line_scaled(&c, FONT_BODY, MARGIN + 22, y, ap_ssid, 1);
     y += font_line_height(FONT_BODY) + 12;
@@ -151,28 +241,59 @@ int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
         y += font_line_height(FONT_BODY) * 2 + 6;
     }
 
-    /* ---- QR column ---- */
+    /* ---- QR grid: 2 x 2 ----
+     * The auto-provisioning code is FIRST because it is the convenient path: scanning it in the
+     * ESP BLE Provisioning app carries the device name, the PoP and the transport all at once,
+     * so the user never types a device name or a key. */
     const int qx = MARGIN + LEFT_W + QR_GAP;
-    int qy = MARGIN + 24;
+    const int qy0 = MARGIN + 8;
 
-    struct { const qr_code_t *qr; const char *cap; } codes[] = {
-        /* The captions NAME the app. Calling these "iPhone APP" and "Android APP" was too
-         * vague — a reader could not tell they were the ESP BLE Provisioning app, which is the
-         * convenient path and the one the QR is actually for. The captions are kept within the
-         * 150 px column (widest measures 177 px at about 1.2x, which still fits). */
-        { &QR_PORTAL,  "1. SETUP PAGE" },
-        { &QR_IOS,     "2. BLE APP (iOS)" },
-        { &QR_ANDROID, "3. BLE APP (Andrd)" },
+    /* The payload the app expects, per Espressif's documented format:
+     *   {"ver":"v1","name":"<BLE name>","pop":"<PoP>","transport":"ble"}
+     * "name" is what the app matches against the advertiser, so it must be the same string the
+     * device advertises — which is why it is built from the same ap_ssid passed in. */
+    char prov_payload[160];
+    if (pop && *pop) {
+        snprintf(prov_payload, sizeof(prov_payload),
+                 "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"ble\"}",
+                 ap_ssid, pop);
+    } else {
+        snprintf(prov_payload, sizeof(prov_payload),
+                 "{\"ver\":\"v1\",\"name\":\"%s\",\"transport\":\"ble\"}", ap_ssid);
+    }
+
+    struct { const char *cap; const qr_code_t *qr; const char *payload; } codes[] = {
+        { "1. BLE SETUP",            NULL,        prov_payload },
+        { "2. SETUP PAGE",           &QR_PORTAL,  NULL },
+        { "3. iOS APP",              &QR_IOS,     NULL },
+        { "4. ANDROID APP",          &QR_ANDROID, NULL },
     };
 
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
-        draw_qr(&c, qx, qy, QR_BOX, codes[i].qr);
-        /* Caption centred under the code, wrapped onto one line. */
-        const int cw = text_width(FONT_BODY, codes[i].cap);
-        draw_line(&c, FONT_BODY, qx + (QR_BOX - cw) / 2,
-                  qy + QR_BOX + 4, codes[i].cap);
-        qy += QR_BOX + font_line_height(FONT_BODY) + 26;
-    }
+        const int col = (int)(i % 2);
+        const int row = (int)(i / 2);
+        const int cx = qx + col * (QR_BOX_W + QR_COL_GAP);
+        const int cy = qy0 + row * (QR_BOX_W + font_line_height(FONT_BODY) + QR_ROW_GAP);
 
-    return 0;
+        int ok = 1;
+        if (codes[i].qr) {
+            draw_qr(&c, cx, cy, QR_BOX_W, codes[i].qr);
+        } else {
+            /* The runtime-encoded code. A failure here (payload too long, or a box too small
+             * for one module per pixel) leaves the rest of the screen intact and is reported
+             * through the return value rather than a log call: this library is host-tested and
+             * so cannot depend on esp_log. */
+            ok = provscreen_blit_qr(&c, cx, cy, QR_BOX_W, codes[i].payload) == 0;
+        }
+        /* Caption centred under the code, and wrapped onto a second line when it will not fit
+         * the box — a caption that runs into its neighbour is worse than a smaller one. */
+        const int cw = text_width(FONT_BODY, codes[i].cap);
+        if (cw <= QR_BOX_W + QR_COL_GAP) {
+            draw_line(&c, FONT_BODY, cx + (QR_BOX_W - cw) / 2, cy + QR_BOX_W + 2, codes[i].cap);
+        } else {
+            draw_line_scaled(&c, FONT_BODY, cx, cy + QR_BOX_W + 2, codes[i].cap, 1);
+        }
+        if (!ok) all_ok = 0;
+    }
+    return all_ok ? 0 : -1;
 }
