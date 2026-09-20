@@ -37,3 +37,36 @@ typedef enum {
  * classified BATTERY, not USB. Do not "simplify" this to a voltage-only test — that is
  * the one change that would let an unplugged full pack read as mains. */
 power_source_t power_classify(double vbat_volts, double trend_v_per_min);
+
+/* The user's powerMode override (FR-8), carried in the config document.
+ *
+ * WHY THIS EXISTS AT ALL: power_classify() reads VBAT alone, because this board has no
+ * resolvable USB-present pin — so a full resting cell sits above the mains threshold and is
+ * genuinely indistinguishable from USB *at the moment of measurement*. Inferred, therefore
+ * fallible. This is the correction the user applies: 'auto' accepts the inference, and the
+ * two explicit values override it.
+ *
+ * WHAT THE OVERRIDE CANNOT DO: 'always-on' cannot make the device sleep less than USB
+ * already does, and 'battery' does not disable the USB path — it is about which power
+ * BEHAVIOUR the device adopts, not about where the electrons come from. So the override
+ * picks the behaviour and leaves the physical source as measured; a device explicitly set to
+ * 'always-on' while actually on battery is the user's call to make, and the battery reading
+ * in /api/status still reports the truth. */
+typedef enum {
+    POWER_MODE_AUTO = 0,      /* trust the VBAT inference */
+    POWER_MODE_ALWAYS_ON,     /* behave as mains: stay awake, serve the API */
+    POWER_MODE_BATTERY        /* behave as battery: deep-sleep between refreshes */
+} power_mode_t;
+
+/* Whether a mode is one of the three. Returns 1 if usable. */
+int power_mode_is_valid(int mode);
+
+/* Apply the override to a classified source. With POWER_MODE_AUTO (or an unrecognised value)
+ * the classification passes through unchanged, so a config from a newer web app cannot make
+ * the device behave as neither mode. */
+power_source_t power_apply_mode(power_source_t detected, int mode);
+
+/* Parse the config's `powerMode` string ("auto" | "always-on" | "battery"). Returns
+ * POWER_MODE_AUTO for NULL, "", or anything unrecognised — an unknown mode must fall back to
+ * the inference, never to a fixed behaviour the user did not ask for. */
+int power_mode_from_string(const char *s);

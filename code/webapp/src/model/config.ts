@@ -14,6 +14,8 @@ export { PANEL_WIDTH, PANEL_HEIGHT, FB_BYTES } from './canvas-consts';
 export type AlertOp = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne';
 export type AlertLevel = 'none' | 'advisory' | 'warning' | 'severe';
 
+export type PowerMode = 'auto' | 'always-on' | 'battery';
+
 export type DataSourceKind = 'owm-current' | 'owm-daily' | 'owm-alert' | 'ha';
 
 export interface DataBinding {
@@ -75,6 +77,16 @@ export interface Config {
   createdAt: string;
   updateSeconds: number;
   partialRefreshLimit: number;
+  /**
+   * The FR-8 power behaviour override.
+   *
+   * 'auto' accepts the device's VBAT inference, which is fallible: this board has no
+   * resolvable USB-present pin, so a full resting cell sits above the mains threshold and is
+   * indistinguishable from USB at the moment of measurement. The UI must present this as a
+   * three-way control and label 'auto' as *inferred*, so the user knows when they are
+   * trusting a guess rather than correcting one.
+   */
+  powerMode: PowerMode;
   location: LocationConfig;
   /** Which OWM product to use; 'auto' probes One Call 3.0 and falls back (FR-6). */
   owmProduct: 'auto' | 'onecall3' | 'legacy';
@@ -89,6 +101,7 @@ export function emptyConfig(now: Date = new Date()): Config {
     createdAt: now.toISOString(),
     updateSeconds: 900,
     partialRefreshLimit: 5,
+    powerMode: 'auto',
     location: { latitude: 0, longitude: 0, zipCode: '' },
     owmProduct: 'auto',
     ha: { mode: 'rest' },

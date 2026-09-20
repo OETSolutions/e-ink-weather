@@ -2,6 +2,7 @@
 #include <string.h>
 #include "unity.h"
 #include "layout_model.h"
+#include "power.h"   /* the power_mode_t values the parser writes */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -220,6 +221,39 @@ static void test_page_at_with_zero_total_does_not_divide_by_zero(void)
     TEST_ASSERT_EQUAL_INT(0, layout_page_at(&c, 0));
 }
 
+
+/* The FR-8 override must actually reach the struct — a config field the app can set but the
+ * firmware ignores is worse than not offering it, because the UI confirms a change that has
+ * no effect. */
+static void test_power_mode_override_is_parsed(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"powerMode\":\"battery\"}", &c));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_BATTERY, c.power_mode);
+
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"powerMode\":\"always-on\"}", &c));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_ALWAYS_ON, c.power_mode);
+}
+
+/* Absent, or unrecognised, must mean 'auto' — the inference, never an invented behaviour. */
+static void test_power_mode_defaults_to_auto(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse("{\"schemaVersion\":1}", &c));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, c.power_mode);
+
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"powerMode\":\"mains\"}", &c));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, c.power_mode);
+
+    /* Wrong type: not a string, so it cannot be a mode. */
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"powerMode\":7}", &c));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, c.power_mode);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -240,5 +274,7 @@ int main(void)
     RUN_TEST(test_null_and_empty_input_are_rejected);
     RUN_TEST(test_page_at_on_zeroed_config);
     RUN_TEST(test_page_at_with_zero_total_does_not_divide_by_zero);
+    RUN_TEST(test_power_mode_override_is_parsed);
+    RUN_TEST(test_power_mode_defaults_to_auto);
     return UNITY_END();
 }

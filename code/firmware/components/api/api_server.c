@@ -7,6 +7,7 @@
 #include "cfg_store.h"
 #include "devcfg.h"
 #include "layout_model.h"
+#include "power.h"
 #include "nvs_keys.h"
 #include "prov.h"
 #include "apiauth.h"
@@ -500,6 +501,31 @@ static esp_err_t h_config_get(httpd_req_t *req)
     return e;
 }
 
+/* Would this document change the power mode the running boot path is already using?
+ *
+ * Compares against the STORED config, not against a default, so a PUT that merely re-sends
+ * the same document does not restart the device. The comparison is on the parsed mode rather
+ * than the raw string, so "battery" and "auto" in different key orders or with whitespace
+ * still compare equal in meaning.
+ *
+ * Returns 0 on any parse failure: a document that cannot be read cannot be a deliberate mode
+ * change, and restarting on a malformed body would be a denial-of-service against the owner. */
+static int power_mode_differs(const char *new_json)
+{
+    layout_config_t fresh;
+    if (layout_config_parse(new_json, &fresh) != 0) return 0;
+
+    char *stored = NULL;
+    layout_config_t old;
+    memset(&old, 0, sizeof(old));
+    old.power_mode = POWER_MODE_AUTO;      /* matches layout_config_parse's own default */
+    if (cfg_store_get(cfg_store_nvs(), &stored) == 0 && stored) {
+        (void)layout_config_parse(stored, &old);
+        free(stored);
+    }
+    return fresh.power_mode != old.power_mode;
+}
+
 static esp_err_t h_config_put(httpd_req_t *req)
 {
     /* Optional bearer auth (FR-31). Gated because this WRITES the stored config. */
@@ -513,6 +539,19 @@ static esp_err_t h_config_put(httpd_req_t *req)
         free(body);
         return ESP_OK;      /* read_body already answered */
     }
+
+    /* Does this document change the power behaviour the RUNNING boot path is already using?
+     *
+     * THIS MUST BE COMPARED BEFORE THE STORE, and that ordering is the whole subtlety:
+     * power_mode_differs() reads the STORED config, so calling it after cfg_store_put() would
+     * compare the new document against itself and always report "no change" — the restart
+     * would silently never happen, which is exactly the saved-but-ignored failure this
+     * feature exists to prevent. */
+    layout_config_t fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    fresh.power_mode = POWER_MODE_AUTO;      /* matches layout_config_parse's default */
+    const int parsed_ok = (layout_config_parse(body, &fresh) == 0);
+    const int power_changed = parsed_ok && power_mode_differs(body);
 
     /* Validate, then store. cfg_store_put runs schemaVersion -> devcfg_migrate ->
      * layout_config_parse and writes NOTHING unless all three pass. A bad config can
@@ -536,6 +575,47 @@ static esp_err_t h_config_put(httpd_req_t *req)
     /* Force a full refresh: the layout just changed, and a partial cannot clear the previous
      * page's glyphs, so a partial here would leave the old text ghosted behind the new. */
     api_request_full_refresh();
+
+    /* A powerMode change must take effect, and only a reboot can apply it.
+     *
+     * WHY A REBOOT AND NOT A LIVE APPLY: the mode is consulted at exactly one point — before
+     * WiFi init, where the VBAT sense runs — and from there it decides whether this boot ends
+     * in the always-on serve loop or in deep sleep. A USB-powered device is in that serve
+     * loop and never reboots, so without this the owner would set 'battery', watch the config
+     * save, and see absolutely nothing happen — the same "saved but ignored" failure the
+     * powerMode field itself was added to fix. Re-entering the boot path is also what makes
+     * the change safe: the sleep decision is made with the radio OFF, which is required for
+     * the ADC read.
+     *
+     * The reply is sent BEFORE the restart so the browser gets its confirmation rather than a
+     * dropped connection — the same ordering the provisioning handover uses. */
+    if (power_changed) {
+        ESP_LOGW(TAG, "powerMode changed; restarting to apply it");
+
+        /* Warn when the chosen mode will take the device OFF THE NETWORK. 'battery' means
+         * deep sleep, and a sleeping device does not answer HTTP — so the owner can no longer
+         * undo it from the config app. This response is the last moment the device can say
+         * so, and saying it afterwards is no use to anyone. The escape is the factory-reset
+         * button (5 s on KEY1). */
+        char out[256];
+        if (fresh.power_mode == POWER_MODE_BATTERY) {
+            snprintf(out, sizeof(out),
+                     "{\"status\":\"stored\",\"restarting\":true,\"warning\":"
+                     "\"Battery mode puts the display to sleep between updates, so this page "
+                     "will stop responding. To undo it, hold the reset button for 5 seconds.\"}");
+        } else {
+            snprintf(out, sizeof(out),
+                     "{\"status\":\"stored\",\"restarting\":true}");
+        }
+        const esp_err_t e = api_send_json(req, out, "200 OK");
+        /* Only once the body is on the wire. Restarting before the response is flushed would
+         * drop the connection, and the app would report a failure for a change that actually
+         * succeeded — the most confusing possible outcome. If the send failed the client is
+         * already gone, so restarting is still the right thing to do. */
+        vTaskDelay(pdMS_TO_TICKS(600));   /* let lwIP flush the socket */
+        esp_restart();
+        return e;                          /* not reached */
+    }
 
     return api_send_json(req, "{\"status\":\"stored\"}", "200 OK");
 }

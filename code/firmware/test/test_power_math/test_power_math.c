@@ -46,6 +46,65 @@ static void test_full_charge_but_discharging_is_battery_not_usb(void)
     TEST_ASSERT_EQUAL_INT(POWER_SOURCE_BATTERY, power_classify(4.19, -0.05));
 }
 
+
+/* ---- the powerMode override (FR-8) ---- */
+
+/* The default must be the inference, so an absent field changes nothing. */
+static void test_auto_passes_the_detection_through(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_BATTERY,
+        power_apply_mode(POWER_SOURCE_BATTERY, POWER_MODE_AUTO));
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_USB,
+        power_apply_mode(POWER_SOURCE_USB, POWER_MODE_AUTO));
+}
+
+/* The whole reason the field exists: a full resting cell reads as mains, and the user
+ * corrects it. */
+static void test_battery_mode_overrides_a_mains_inference(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_BATTERY,
+        power_apply_mode(POWER_SOURCE_USB, POWER_MODE_BATTERY));
+}
+
+static void test_always_on_overrides_a_battery_inference(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_USB,
+        power_apply_mode(POWER_SOURCE_BATTERY, POWER_MODE_ALWAYS_ON));
+}
+
+/* An unrecognised mode must fall back to the INFERENCE, not invent a behaviour. Passing
+ * garbage through the enum is exactly what a config from a newer web app would do. */
+static void test_invalid_mode_falls_back_to_detection(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_BATTERY, power_apply_mode(POWER_SOURCE_BATTERY, 999));
+    TEST_ASSERT_EQUAL_INT(POWER_SOURCE_USB, power_apply_mode(POWER_SOURCE_USB, -1));
+}
+
+static void test_mode_strings_parse(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, power_mode_from_string("auto"));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_ALWAYS_ON, power_mode_from_string("always-on"));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_BATTERY, power_mode_from_string("battery"));
+}
+
+/* Anything else is 'auto' — never a fixed mode the user did not choose. */
+static void test_unknown_mode_string_is_auto(void)
+{
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, power_mode_from_string(""));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, power_mode_from_string(NULL));
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, power_mode_from_string("ALWAYS-ON"));  /* case-sensitive */
+    TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, power_mode_from_string("mains"));
+}
+
+static void test_mode_validity(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, power_mode_is_valid(POWER_MODE_AUTO));
+    TEST_ASSERT_EQUAL_INT(1, power_mode_is_valid(POWER_MODE_ALWAYS_ON));
+    TEST_ASSERT_EQUAL_INT(1, power_mode_is_valid(POWER_MODE_BATTERY));
+    TEST_ASSERT_EQUAL_INT(0, power_mode_is_valid(3));
+    TEST_ASSERT_EQUAL_INT(0, power_mode_is_valid(-1));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -54,5 +113,12 @@ int main(void)
     RUN_TEST(test_raw_to_volts_uses_denominator_not_max);
     RUN_TEST(test_classification);
     RUN_TEST(test_full_charge_but_discharging_is_battery_not_usb);
+    RUN_TEST(test_auto_passes_the_detection_through);
+    RUN_TEST(test_battery_mode_overrides_a_mains_inference);
+    RUN_TEST(test_always_on_overrides_a_battery_inference);
+    RUN_TEST(test_invalid_mode_falls_back_to_detection);
+    RUN_TEST(test_mode_strings_parse);
+    RUN_TEST(test_unknown_mode_string_is_auto);
+    RUN_TEST(test_mode_validity);
     return UNITY_END();
 }

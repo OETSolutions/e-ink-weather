@@ -174,12 +174,19 @@ void app_boot_run(void)
      * trend as "not falling", so a full pack that is really discharging is not misread as
      * mains. The user's powerMode override in the config is the correction for a wrong
      * guess (FR-8). */
-    const power_source_t source = power_classify(vbat, 0.0);
+    power_source_t source = power_classify(vbat, 0.0);
+    /* Apply the user's FR-8 override. The inference cannot tell a full resting cell from
+     * mains — there is no resolvable USB-present pin on this board — so the config is the
+     * correction, and a device whose owner said "battery" must deep-sleep even while its
+     * pack happens to read above the mains threshold. */
+    const power_source_t detected = source;
+    source = power_apply_mode(source, cfg.power_mode);
     /* Cache it for /api/status: this is the only moment the battery can be read (HW-3). */
     api_note_vbat(vbat, (int)source);
-    ESP_LOGI(TAG, "vbat=%.2fV source=%s", vbat,
+    ESP_LOGI(TAG, "vbat=%.2fV source=%s%s", vbat,
              source == POWER_SOURCE_USB ? "usb"
-             : source == POWER_SOURCE_BATTERY ? "battery" : "unknown");
+             : source == POWER_SOURCE_BATTERY ? "battery" : "unknown",
+             (source != detected) ? " (powerMode override)" : "");
 
     /* ---- 3. Panel: last good image FIRST, before any network work (FR-29) ---- */
     if (epd_init() != ESP_OK) {

@@ -33,6 +33,11 @@ typedef struct {
     int           schema_version;
     int           update_seconds;         /* base device wake interval, >= 30 */
     int           partial_refresh_limit;  /* full refresh after N partials (FR-11) */
+    int           power_mode;             /* a power_mode_t: the FR-8 user override. The
+                                           * firmware reads it because the VBAT inference can
+                                           * be wrong; without this the config field would be
+                                           * settable in the app and silently ignored, which
+                                           * is worse than not offering it. */
     layout_page_t pages[LAYOUT_MAX_PAGES];
     int           page_count;
 } layout_config_t;

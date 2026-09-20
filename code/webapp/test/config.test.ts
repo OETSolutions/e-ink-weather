@@ -24,6 +24,15 @@ describe('config model', () => {
     expect(c.partialRefreshLimit).toBe(5);
     expect(c.owmProduct).toBe('auto');
     expect(c.ha.mode).toBe('rest');
+    expect(c.powerMode).toBe('auto');
+  });
+
+  it('round-trips a NON-DEFAULT powerMode, so the field cannot be silently dropped (FR-8)', () => {
+    const c = emptyConfig();
+    c.powerMode = 'battery';
+    const back = JSON.parse(JSON.stringify(c));
+    expect(back.powerMode).toBe('battery');
+    expect(back).toEqual(c);
   });
 
   it('round-trips through JSON without loss', () => {

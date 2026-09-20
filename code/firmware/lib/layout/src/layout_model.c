@@ -1,5 +1,6 @@
 #include "layout_model.h"
 #include "cJSON.h"
+#include "power.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -27,6 +28,7 @@ int layout_config_parse(const char *json, layout_config_t *out)
     out->update_seconds = 900;          /* 15 min default */
     out->partial_refresh_limit = 5;     /* vendor demo's rule of thumb (FR-11) */
     out->page_count = 1;
+    out->power_mode = POWER_MODE_AUTO;  /* trust the inference unless told otherwise */
     strcpy(out->pages[0].name, "Main");
     out->pages[0].refresh_seconds = 900;
     out->pages[0].weight = 1;
@@ -68,6 +70,13 @@ int layout_config_parse(const char *json, layout_config_t *out)
             out->partial_refresh_limit = v > LAYOUT_MAX_PARTIAL_LIMIT
                                        ? LAYOUT_MAX_PARTIAL_LIMIT : v;
         }
+    }
+
+    /* The FR-8 power override. A non-string value falls back to 'auto' — power_mode_from_string
+     * already treats "" and unknown text as auto, so this only has to guard the type. */
+    cJSON *pm = cJSON_GetObjectItemCaseSensitive(root, "powerMode");
+    if (cJSON_IsString(pm) && pm->valuestring) {
+        out->power_mode = power_mode_from_string(pm->valuestring);
     }
 
     cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");
