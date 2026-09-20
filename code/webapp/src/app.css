@@ -116,3 +116,37 @@ button:disabled {
   opacity: 0.6;
   cursor: default;
 }
+
+/* ---- layout editor ---- */
+
+h2 {
+  font-size: 1.1rem;
+  margin: 2rem 0 0.25rem;
+}
+
+/* The map and the panel both need an explicit size; a canvas with no height collapses and
+   looks like it failed to load. */
+.editorWrap {
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #8881;
+}
+
+/* The canvas backing store stays at panel resolution and CSS scales it; `pixelated` keeps
+   that scale crisp so the preview cannot look smoother than the real 1 bpp output. */
+canvas.panel {
+  image-rendering: pixelated;
+  touch-action: none;      /* a drag on the canvas must not scroll the page */
+  background: #fff;
+  cursor: default;
+}
+
+p.hint {
+  margin: 0.4rem 0 1.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

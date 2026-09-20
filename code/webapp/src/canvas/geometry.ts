@@ -48,6 +48,74 @@ export function applyResize(wd: Widget, zone: Zone, _start: {x:number;y:number},
   return { ...wd, x, y, w, h };
 }
 
+export interface DragOpts {
+  grid: number;
+  /** Panel-space x positions to align to: panel edges and the edges of other widgets. */
+  guidesX: number[];
+  guidesY: number[];
+}
+
+/**
+ * Move a widget by a pointer delta, snapping and clamping it.
+ *
+ * TWO SNAPS ARE TRIED, and the better one wins: the widget's LEFT edge against the guides,
+ * then its RIGHT edge. Without the second, aligning two widgets by their right edges is
+ * impossible — you can only ever align left edges — which is the wrong half of the job for a
+ * right-aligned reading.
+ *
+ * The clamp runs LAST, after snapping. Snapping can push a widget past the panel edge (the
+ * nearest guide to a widget at x=910 might be 920), and clamping before the snap would let
+ * that through. Clamping after means the result is always inside the panel, whatever the snap
+ * chose.
+ */
+export function applyDrag(
+  wd: Widget,
+  _start: { x: number; y: number },
+  dx: number,
+  dy: number,
+  o: DragOpts,
+): Widget {
+  const rawX = wd.x + dx;
+  const rawY = wd.y + dy;
+
+  /* Left edge against the guides, and the right edge against them (converted back to a left
+   * position by subtracting the width). Take whichever moved the widget less. */
+  const snappedLeftX = snap(rawX, o.grid, o.guidesX);
+  const snappedRightX = snap(rawX + wd.w, o.grid, o.guidesX) - wd.w;
+  const x = Math.abs(snappedLeftX - rawX) <= Math.abs(snappedRightX - rawX)
+    ? snappedLeftX
+    : snappedRightX;
+
+  const snappedTopY = snap(rawY, o.grid, o.guidesY);
+  const snappedBottomY = snap(rawY + wd.h, o.grid, o.guidesY) - wd.h;
+  const y = Math.abs(snappedTopY - rawY) <= Math.abs(snappedBottomY - rawY)
+    ? snappedTopY
+    : snappedBottomY;
+
+  const r = clampToPanel({ x, y, w: wd.w, h: wd.h });
+  return { ...wd, ...r };
+}
+
+/**
+ * The alignment guides for a drag: the panel's edges plus every other widget's edges.
+ *
+ * `excludeId` is the widget being dragged — including its own edges would make it snap to
+ * where it already is and fight every pointer move.
+ */
+export function guidesFor(
+  widgets: Widget[],
+  excludeId: string,
+): { x: number[]; y: number[] } {
+  const x = [0, PANEL_W];
+  const y = [0, PANEL_H];
+  for (const wd of widgets) {
+    if (wd.id === excludeId) continue;
+    x.push(wd.x, wd.x + wd.w);
+    y.push(wd.y, wd.y + wd.h);
+  }
+  return { x, y };
+}
+
 export function clampToPanel(r: Rect): Rect {
   let { x, y, w, h } = r;
   if (w > PANEL_W) w = PANEL_W;

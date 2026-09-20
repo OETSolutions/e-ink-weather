@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hitTest, applyResize, clampToPanel, snap } from '../src/canvas/geometry';
+import { hitTest, applyResize, applyDrag, guidesFor, clampToPanel, snap } from '../src/canvas/geometry';
 import type { Widget } from '../src/model/config';
 const w = (o: Partial<Widget> = {}): Widget => ({ id:'a', x:100, y:100, w:200, h:100, role:'dynamic', ...o });
 describe('hit testing', () => {
@@ -43,5 +43,71 @@ describe('clamp and snap', () => {
   });
   it('prefers guide over grid', () => {
     expect(snap(101,8,[100])).toBe(100);
+  });
+});
+
+describe('drag', () => {
+  const o = { grid: 8, guidesX: [0, 920], guidesY: [0, 680] };
+
+  it('moves a widget by the pointer delta, snapped to the grid', () => {
+    /* Grid-aligned dimensions, so BOTH edges can satisfy the grid and the whole box lands
+     * on it. (With a height that is not a multiple of the grid the two edges cannot both
+     * align — see the bottom-edge test below, which is why that is the honest way to check
+     * this rather than asserting x % grid on any widget.) */
+    const r = applyDrag(w({ x: 100, y: 100, w: 200, h: 96 }), { x: 0, y: 0 }, 51, 23, o);
+    expect(r.x % 8).toBe(0);
+    expect(r.y % 8).toBe(0);
+    expect(r.w).toBe(200); /* size is untouched by a move */
+    expect(r.h).toBe(96);
+  });
+
+  /* When the height is NOT a multiple of the grid, only one edge can align, and the code
+   * prefers whichever is closer to the pointer. The result must still have an aligned EDGE —
+   * asserting the top is aligned would be asserting something the geometry cannot promise. */
+  it('aligns an edge even when the widget size is off-grid', () => {
+    const r = applyDrag(w({ x: 100, y: 100, w: 200, h: 100 }), { x: 0, y: 0 }, 51, 23, o);
+    const topAligned = r.y % 8 === 0;
+    const bottomAligned = (r.y + r.h) % 8 === 0;
+    expect(topAligned || bottomAligned).toBe(true);
+    expect(r.y).toBeGreaterThan(100);  /* it still moved down */
+  });
+
+  /* Snapping the RIGHT edge too, or two widgets can never be aligned by their right edges —
+   * which is the alignment a right-justified reading needs. */
+  it('snaps the right edge against a guide, not only the left', () => {
+    /* A guide at 400; widget w=200, so a left of 201 puts the right edge at 401 — 1px off.
+     * The right-edge snap should win and land the left at 200. */
+    const r = applyDrag(w({ x: 100, y: 100 }), { x: 0, y: 0 }, 101, 0,
+                        { grid: 8, guidesX: [400], guidesY: [] });
+    expect(r.x + r.w).toBe(400);
+  });
+
+  it('never lets a drag push a widget out of the panel', () => {
+    const far = applyDrag(w({ x: 100, y: 100 }), { x: 0, y: 0 }, 5000, 5000, o);
+    expect(far.x + far.w).toBeLessThanOrEqual(920);
+    expect(far.y + far.h).toBeLessThanOrEqual(680);
+    const neg = applyDrag(w({ x: 100, y: 100 }), { x: 0, y: 0 }, -5000, -5000, o);
+    expect(neg.x).toBeGreaterThanOrEqual(0);
+    expect(neg.y).toBeGreaterThanOrEqual(0);
+  });
+
+  /* Clamping must happen AFTER the snap: a guide can sit past the panel edge. */
+  it('clamps after snapping so a far guide cannot push it out', () => {
+    const r = applyDrag(w({ x: 700, y: 100 }), { x: 0, y: 0 }, 219, 0,
+                        { grid: 8, guidesX: [960], guidesY: [] });
+    expect(r.x + r.w).toBeLessThanOrEqual(920);
+  });
+});
+
+describe('guides', () => {
+  it('includes the panel edges and other widgets, excluding the one being dragged', () => {
+    const g = guidesFor([w({ id: 'a', x: 100, y: 100 }), w({ id: 'b', x: 300, y: 50, w: 50, h: 50 })], 'a');
+    expect(g.x).toContain(0);
+    expect(g.x).toContain(920);
+    expect(g.x).toContain(300);   /* b's left */
+    expect(g.x).toContain(350);   /* b's right */
+    expect(g.x).not.toContain(100); /* a's own left must not be a guide for a */
+    expect(g.y).toContain(50);
+    expect(g.y).toContain(100);
   });
 });
