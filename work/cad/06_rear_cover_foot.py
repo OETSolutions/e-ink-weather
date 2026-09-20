@@ -52,15 +52,26 @@ HINGE_Y = 5.00                                      # axis just outside the bott
 # The rigid side of the joint is a solid pin and the compliant side is a clip that flexes in
 # the XY plane -- the standard printable arrangement.
 PIN_R = 2.20                                        # rigid pin radius
-# The clip must PRESS on the pin, not run free: a 0.30 mm free-running gap let the stand flop
-# and fall off. A light interference gives controlled rotational friction (a friction hinge),
-# and the clip wall is long enough that even 0.15 mm only reaches ~0.6% strain.
-PIN_PRELOAD = 0.15                                  # interference -> friction. Raised from 0.12:
-                                                    # with no positive detent friction is the only
-                                                    # thing holding the leg when the case is
-                                                    # carried, so the interference IS the holding
-                                                    # force. 0.15 is still ~0.6% wall strain, well
-                                                    # inside PETG's elastic range for this wall.
+# FRICTION IS THE ONLY THING THAT CAN HOLD THE LEG OPEN. Read this before changing it.
+# The user: "The stops are more robust, but they only stop the foot from OPENING!!! The whole
+# problem is that it will just fall shut." MEASURED, and it is a hard geometric fact, not an
+# oversight: as the leg CLOSES, its closest material moves AWAY from the cover -- the leg only
+# ever touches the cover through this clip preload, and that contact does NOT grow as the leg
+# shuts (leg/cover overlap is 15.69 mm3 at every angle from 0 to 63 deg, unchanged). So there is
+# nothing anywhere for a closing-side stop to push against: a stop placed there is simply not
+# reached, and the leg swings past it. That is why a more robust stop changed nothing.
+# The only closure-side hold mechanisms at a pivot are (a) friction, or (b) a detent that
+# protrudes into the bore. (b) was rejected on sight by the user ("Get RID of the nubs!!") and
+# the reason was real -- see [[project-printed-hinge-design]] on how a bore nub splays the
+# clip's free mouth lips. So the holding force is the bore interference, and it is set as high
+# as PETG's elastic range safely allows rather than to a nominal "light friction" value.
+# The two strain models in the toolchain disagree (validator 29 uses the full mouth arc as the
+# flexure length and computes 3.0% here; validator 28 uses a shorter effective length and
+# computes 8.4%). Rather than trust the optimistic one, the preload is set so the PESSIMISTIC
+# model still passes: 0.18 mm gives ~4.3% by that model and ~1.6% by the other. That is still
+# 1.5x the old 0.12, but preload alone cannot close the gap -- see the note above, and the
+# "beefier but still flexible" tension noted at CLIP_W.
+PIN_PRELOAD = 0.18                                  # interference -> friction (see above)
 PIN_CLEAR = -PIN_PRELOAD                            # negative: bore is SMALLER than the pin
 BORE_R = PIN_R+PIN_CLEAR                            # clip bore radius (2.02)
 # NO DETENT -- folded OR open. Read this before re-adding one.
@@ -80,9 +91,10 @@ MOUTH_PIN_ANGLE = 0.0
 # BEEFED UP 2026-09-20. The user: "the hooks on the foot that go around the hinge pin are too
 # weak and need to be beefier." They were 1.6 mm wall x 3.0 mm wide -- the minimum load-bearing
 # wall and the narrowest sane bearing. The ring's radial bending section modulus is
-# CLIP_W*CLIP_WALL^2/6, so at 3.0 x 1.6 it was 1.28 mm3; at 4.5 x 2.0 it is 3.00 mm3, i.e.
-# 2.3x stronger, with 1.5x the axial bearing length so the pin load is spread further.
-CLIP_WALL = 2.00                                    # was MIN_LOAD_WALL (1.6); 1.25x thicker
+# CLIP_W*CLIP_WALL^2/6, so at 3.0 x 1.6 it was 1.28 mm3; at 4.5 x 2.2 it is 3.63 mm3, i.e.
+# 2.8x stronger, with 1.5x the axial bearing length so the pin load is spread further.
+# CLIP_WALL is DERIVED near KNUCKLE_Z (it is not free: it must exactly fill the gap between
+# BORE_R and the cover split plane).
 CLIP_W = 4.50                                       # was 3.00; 1.5x wider bearing
 # ROOT GUSSET: the haunch that joins each clip ring to the leg plate.
 # The ring is a CYLINDER about the hinge axis and the plate is a flat slab, so where the two
@@ -133,10 +145,14 @@ PRINT_RIB_Y = 4.00                                  # print-support rib depth at
 RIB_INSET = 4.00                                    # keep the rib clear of the stop at each end
 KNUCKLE_R = PIN_R                                   # kept for the print-orientation printout
 # Axis height is bounded by the cover depth: the clip's outer top must stay under the cover
-# split plane (z=COVER_T), i.e. KNUCKLE_Z+BORE_R+CLIP_WALL <= COVER_T. With the beefed wall
-# (2.00) the axis drops to -1.02 to keep the clip under the cover -- still clear of the cover's
-# own floor (z -2.88) by 0.10 mm at the clip's outer wall.
-KNUCKLE_Z = COVER_T-(BORE_R+CLIP_WALL)               # -1.02; keeps the clip under the cover
+# split plane, i.e. KNUCKLE_Z+BORE_R+CLIP_WALL <= COVER_T. The axis is pinned to a FIXED value
+# and the wall thickness is derived from it, NOT the other way round -- coupling the axis to
+# BORE_R meant every change to PIN_PRELOAD moved the axis, which invalidated the stop's bearing
+# face (that face is derived against this exact axis). Two things should not share a variable.
+# KNUCKLE_Z = -1.05 is the value the stop face was solved against.
+KNUCKLE_Z = -1.05                                   # FIXED; see STOP_RAMP_P derivation
+CLIP_WALL = COVER_T-KNUCKLE_Z-BORE_R                # derived, so the clip just fits under the
+                                                    # cover: 3.00-(-1.05)-1.85 = 2.20 mm
 
 ARM_W = 6.00                                         # ASSUME; three strong printed necks
 ARM_CENTERS = [FOOT_X+12.0, FOOT_X+FOOT_W/2, FOOT_X+FOOT_W-12.0]
