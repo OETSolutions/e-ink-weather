@@ -4,6 +4,8 @@
   "build": { "srcDir": "src", "includeDir": "include" },
   "dependencies": {
     "baracodadailyhealthtech/cJSON": "^1.7.18",
-    "power": "*"
+    "power": "*",
+    "alerts": "*",
+    "datasrc": "*"
   }
 }

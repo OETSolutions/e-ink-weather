@@ -104,6 +104,7 @@ def main():
 #pragma once
 #define NET_VERIFY_SSID    {c_string(ssid)}
 #define NET_VERIFY_PASS    {c_string(password)}
+#define NET_VERIFY_OWM_KEY {c_string(owm)}
 #define NET_VERIFY_OWM_URL {c_string(url)}
 """
     with open(OUT_PATH, "w") as fh:

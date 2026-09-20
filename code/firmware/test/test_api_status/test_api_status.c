@@ -26,6 +26,11 @@ static api_status_t full_status(void)
     s.uptime_s = 12345;
     s.free_heap = 197396;
     s.free_heap_min = 180000;
+    /* Deliberately much smaller than free_heap: this is the field's whole point. A device can
+     * report plenty of free heap and still be unable to open a TLS connection, because the
+     * handshake needs one contiguous block — a test with the two numbers equal would not catch a
+     * bug that emitted the total here. */
+    s.largest_free_block = 30720;
     s.rssi = -61;
     s.has_rssi = 1;
     s.vbat = 3.87;
@@ -54,6 +59,7 @@ static void test_full_status_is_valid_json_with_all_fields(void)
     TEST_ASSERT_EQUAL_INT(12345, cJSON_GetObjectItem(j, "uptime_s")->valueint);
     TEST_ASSERT_EQUAL_INT(197396, cJSON_GetObjectItem(j, "free_heap")->valueint);
     TEST_ASSERT_EQUAL_INT(180000, cJSON_GetObjectItem(j, "free_heap_min")->valueint);
+    TEST_ASSERT_EQUAL_INT(30720, cJSON_GetObjectItem(j, "largest_free_block")->valueint);
     TEST_ASSERT_EQUAL_INT(-61, cJSON_GetObjectItem(j, "rssi")->valueint);
     TEST_ASSERT_EQUAL_INT(7, cJSON_GetObjectItem(j, "partials_since_full")->valueint);
     TEST_ASSERT_EQUAL_INT(3, cJSON_GetObjectItem(j, "fulls_total")->valueint);

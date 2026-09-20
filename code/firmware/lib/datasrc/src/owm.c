@@ -155,3 +155,98 @@ int owm_has_alerts(const char *json)
     cJSON_Delete(root);
     return has;
 }
+
+/* The field codes from lib/layout/include/widgets.h. Duplicated as literals rather than
+ * including that header: lib/datasrc is a lower layer than lib/layout and must not depend on
+ * it, and the values are part of this function's contract either way. */
+#define OWM_F_TEMP_      0
+#define OWM_F_MIN_       1
+#define OWM_F_MAX_       2
+#define OWM_F_WIND_      3
+#define OWM_F_HUMIDITY_  4
+#define OWM_F_CONDITION_ 5
+#define OWM_F_ICON_      6
+
+/* Copy `src` into out.text as a TEXT result. A string too long for the 64-byte field is
+ * TRUNCATED rather than rejected: a long place name or condition is still worth showing, and
+ * the renderer clips it to the widget box anyway. Returns the value unchanged. */
+static datasrc_value_t text_result(datasrc_value_t out, const char *src, long now)
+{
+    if (!src || !*src) { out.status = DATASRC_ERR_NOT_FOUND; return out; }
+    strncpy(out.text, src, sizeof(out.text) - 1);
+    out.text[sizeof(out.text) - 1] = '\0';
+    out.status = DATASRC_OK;
+    out.is_numeric = 0;
+    out.value = 0.0;
+    out.observed_at = now;
+    return out;
+}
+
+datasrc_value_t owm_parse_current_field(const char *json, int field, long now_unix)
+{
+    datasrc_value_t out; memset(&out, 0, sizeof(out));
+    out.status = DATASRC_ERR_PARSE; out.is_numeric = 1;
+    cJSON *root = root_or_null(json, &out);
+    if (!root) return out;
+
+    cJSON *cur = obj_item(root, "current");
+    cJSON *main, *wind, *weather;
+    if (cur) {
+        /* One Call 3.0: everything is nested under "current". */
+        main    = cur;
+        wind    = cur;
+        weather = cJSON_GetArrayItem(obj_item(cur, "weather"), 0);
+    } else {
+        /* Current Weather 2.5: "main" and "wind" are TOP-LEVEL siblings. 2.5/forecast has
+         * neither (its numbers live under "list"), so every branch below reports NOT_FOUND for
+         * it — which is correct, because a 3-hour block is not a current reading. */
+        main    = obj_item(root, "main");
+        wind    = obj_item(root, "wind");
+        weather = cJSON_GetArrayItem(obj_item(root, "weather"), 0);
+    }
+
+    cJSON *dt = obj_item(cur ? cur : root, "dt");
+    const long obs = cJSON_IsNumber(dt) ? (long)dt->valuedouble : now_unix;
+
+    if (field == OWM_F_CONDITION_) {
+        /* "description" is the human words ("scattered clouds"); "main" is the coarse class
+         * ("Clouds"). A widget showing conditions wants the words. */
+        cJSON *d = obj_item(weather, "description");
+        out = text_result(out, cJSON_IsString(d) ? d->valuestring : NULL, obs);
+        cJSON_Delete(root);
+        return out;
+    }
+    if (field == OWM_F_ICON_) {
+        cJSON *i = obj_item(weather, "icon");
+        out = text_result(out, cJSON_IsString(i) ? i->valuestring : NULL, obs);
+        cJSON_Delete(root);
+        return out;
+    }
+
+    /* Numeric fields. `min`/`max` on the CURRENT reading are today's reported extremes
+     * (2.5/weather's main.temp_min/temp_max); a daily forecast extreme comes from
+     * owm_parse_daily_* instead, which is a genuinely different number. */
+    cJSON *v = NULL;
+    switch (field) {
+        case OWM_F_TEMP_:     v = obj_item(main, "temp");     break;
+        case OWM_F_MIN_:      v = obj_item(main, "temp_min"); break;
+        case OWM_F_MAX_:      v = obj_item(main, "temp_max"); break;
+        case OWM_F_HUMIDITY_: v = obj_item(main, "humidity"); break;
+        case OWM_F_WIND_:     v = obj_item(wind, "speed");    break;
+        default:              break;
+    }
+
+    if (cJSON_IsNumber(v)) {
+        out.status = DATASRC_OK;
+        out.value = v->valuedouble;
+        out.is_numeric = 1;
+        if (field == OWM_F_HUMIDITY_) out.value = v->valuedouble;   /* already 0..100 */
+        out.observed_at = obs;
+    } else {
+        /* Right product, field absent — distinct from a garbled payload, so a caller can tell
+         * a wrong-endpoint request from a network failure (see datasrc.h). */
+        out.status = DATASRC_ERR_NOT_FOUND;
+    }
+    cJSON_Delete(root);
+    return out;
+}

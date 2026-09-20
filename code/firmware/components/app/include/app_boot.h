@@ -47,3 +47,11 @@ void app_serve_loop(void);
  * it is called only when secrets_build.h was generated — a normal build has no such header
  * and the call is not compiled in. Nothing here reaches a tracked file (FR-30). */
 void app_seed_wifi(const char *ssid, const char *pass);
+
+/* Bench-only: store the OpenWeatherMap API key in NVS if none is stored.
+ *
+ * Same contract as app_seed_wifi() and for the same reasons: the production path is
+ * provisioning (FR-30), a bench build needs the key without a phone, and it must NEVER
+ * overwrite an existing key or it would replace a real owner's whenever this image is flashed.
+ * Only compiled in when secrets_build.h exists. */
+void app_seed_owm_key(const char *key);

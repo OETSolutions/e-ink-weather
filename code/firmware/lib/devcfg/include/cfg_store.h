@@ -22,6 +22,15 @@ typedef struct {
     void *ctx;
 } cfg_store_t;
 
+/* The largest document this store will read back, and the limit the API enforces on a write.
+ *
+ * ONE CONSTANT FOR BOTH ENDS, deliberately. These used to be 4096 (here) and 16384 (the API),
+ * and the shipped default layout is 4,424 bytes — so a document in between was ACCEPTED and
+ * stored, then refused on read (NVS returns INVALID_LENGTH rather than truncating), which made
+ * cfg_store_get() fall back to the built-in default with no error anywhere. A user would save a
+ * layout whose size happened to land in that window and watch the device quietly forget it. */
+#define CFG_JSON_MAX_LEN 16384
+
 /* Persist `json` only after validating it. Returns 0 on success.
  *
  * Validation order matters and is the whole point of this function:

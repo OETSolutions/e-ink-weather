@@ -34,6 +34,7 @@ static void app_task(void *arg)
     /* Seed before the boot path reads NVS for credentials. Never overwrites (see
      * app_seed_wifi), so a provisioned device is unaffected. */
     app_seed_wifi(NET_VERIFY_SSID, NET_VERIFY_PASS);
+    app_seed_owm_key(NET_VERIFY_OWM_KEY);
 #endif
     app_boot_run();
     /* app_boot_run() returns only on USB power, where the device must stay awake to serve

@@ -3,10 +3,12 @@
 #include "api_store.h"
 #include "canvas.h"
 #include "cfg_store.h"
+#include "cJSON.h"
 #include "datasrc.h"
 #include "epd.h"
 #include "fonts.h"
 #include "geo_ip.h"
+#include "ha.h"
 #include "layout_model.h"
 #include "net_http.h"
 #include "net_wifi.h"
@@ -16,6 +18,8 @@
 #include "prov.h"
 #include "refresh_policy.h"
 #include "render.h"
+#include "value_resolve.h"
+#include "widgets.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -97,9 +101,10 @@ static int s_shown_slot = -1;
  * upload also triggers a render (so the web app can see what it uploaded), a user who had
  * just pushed a new layout would watch their temperature disappear for reasons that have
  * nothing to do with the layout. Keeping the last value means a transient network failure
- * costs nothing on the glass, which is the same principle as FR-29's last-good image. */
-static datasrc_value_t s_last_temp;
-static int             s_have_last_temp;
+ * costs nothing on the glass, which is the same principle as FR-29's last-good image.
+ *
+ * See s_last_current, declared further down, for what is actually kept. */
+
 
 /* The last successful full refresh, for the datasheet's 24 h rule. Only full refreshes set
  * it: a partial does not clear ghosting, so it cannot postpone the need for one.
@@ -119,6 +124,18 @@ static int hours_since_full(void)
     return h > 24 ? 24 : (int)h;    /* clamp: past the boundary the exact value is moot */
 }
 
+/* Load the stored config, falling back to the documented defaults. A corrupt store must not stop
+ * the device from drawing — the refresh path is the one thing that has to keep working. */
+static int load_config(layout_config_t *out)
+{
+    char *json = NULL;
+    if (cfg_store_get(cfg_store_nvs(), &json) != 0) return -1;
+    if (!json) return -1;
+    const int rc = layout_config_parse(json, out);
+    free(json);
+    return rc;
+}
+
 /* Read the static layer from flash through the streaming renderer, so the 78,200-byte
  * image is never resident in RAM on top of the two framebuffers (which would be 235 KB). */
 static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
@@ -130,7 +147,7 @@ static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
 
 /* Pull the static layer into `dst`. Returns 0 on success.
  *
- * Preference order: the uploaded bitmap slot, then the built-in vendor image. A device that
+ * Preference order: the uploaded bitmap slot, then the built-in boot mark. A device that
  * has never had a bitmap pushed still renders something meaningful rather than a blank
  * panel (FR-29). */
 static int load_static_layer(uint8_t *dst, int *from_slot)
@@ -144,26 +161,74 @@ static int load_static_layer(uint8_t *dst, int *from_slot)
     return 0;
 }
 
-/* The values to stamp, and the boxes they go in. The boxes are the DEFAULT layout's, used
- * only while the web app has not yet pushed a layout; the real fields arrive with the
- * config in Task 17. Keeping a fixed set here means a fresh device shows real readings
- * instead of an empty frame. */
-static const value_field_t DEFAULT_FIELDS[2] = {
-    { 48,  76, 420, 110, 'L', 'T', FONT_VALUE },
-    { 48, 256, 420, 110, 'L', 'T', FONT_VALUE },
-};
+/* ------------------------------------------------------------------------------------------
+ * THE LAYOUT IS THE WEB APP'S, NOT THE FIRMWARE'S
+ *
+ * This used to be `static const value_field_t DEFAULT_FIELDS[2]` — two boxes at fixed
+ * coordinates, stamped with a temperature and a "--". The device therefore rendered a layout
+ * nobody had authored: a user's pushed layout was parsed for scheduling only and then thrown
+ * away, so every widget but the current temperature was blank, and the one reading that did
+ * appear sat in a box the user had not drawn.
+ *
+ * The boxes now come from the document (lib/layout/src/widgets.c), the values from
+ * lib/layout/src/value_resolve.c, and the page from the rotation schedule. The firmware still
+ * never INVENTS a position or a label — it stamps the readings the web app's layout asked for
+ * (FR-1). Keeping that property is what lets a layout change ship with no firmware update.
+ * ------------------------------------------------------------------------------------------ */
 
-static void fmt_temp(char *buf, size_t cap, const datasrc_value_t *v)
+/* The fields to stamp this refresh, and their values. Sized by the parse caps rather than
+ * allocated: this lives on the calling task's stack, and the parse bounds it. */
+typedef struct {
+    layout_widget_t widgets[LAYOUT_MAX_FIELDS];
+    value_field_t   fields[LAYOUT_MAX_FIELDS];
+    char            values[LAYOUT_MAX_FIELDS][40];
+    const char     *value_ptrs[LAYOUT_MAX_FIELDS];
+    int             n;              /* how many the page asked for */
+    int             n_fields;       /* how many are actually stamped (dynamic only) */
+} page_render_t;
+
+/* Turn the parsed widgets into the renderer's field/value arrays.
+ *
+ * Only DYNAMIC widgets are stamped: a 'static' widget is baked into the bitmap by the web app
+ * and stamping it again would put a reading on top of the chrome. */
+static void build_fields(page_render_t *p, const value_sources_t *src,
+                         char (*ids)[48], int n_ids, long now)
 {
-    if (v->status == DATASRC_OK && v->is_numeric) {
-        snprintf(buf, cap, "%.1f", v->value);
-    } else {
-        /* A dash, not "0.0" and not blank. Zero would be a plausible temperature and a
-         * blank would look like a rendering fault; the dash says "no reading" without
-         * pretending to be one. */
-        snprintf(buf, cap, "--");
+    int nf = 0;
+    for (int i = 0; i < p->n; i++) {
+        const layout_widget_t *w = &p->widgets[i];
+        if (w->role != 'd') continue;
+        if (w->w <= 0 || w->h <= 0) continue;       /* nothing to clip to */
+
+        value_field_t *f = &p->fields[nf];
+        f->x = w->x; f->y = w->y; f->w = w->w; f->h = w->h;
+        f->align_h = w->align_h;
+        f->align_v = w->align_v;
+        f->font_id = w->font_id;
+
+        /* The buffer is per-field and the pointer array is parallel to `fields`, because
+         * render_compose_stream() takes `const char *const *` and does not own the strings. */
+        value_format_widget(w, src, ids, n_ids, now, NULL, p->values[nf], sizeof(p->values[nf]));
+        p->value_ptrs[nf] = p->values[nf];
+        nf++;
     }
+    p->n_fields = nf;
 }
+
+/* The last temperature this device successfully fetched, and when.
+ *
+ * WHY IT IS REMEMBERED: a failed fetch must not blank the reading. Without this, an OWM outage
+ * would replace a real temperature with "--" on the next render — and since a bitmap upload also
+ * triggers a render (so the web app can see what it uploaded), a user who had just pushed a new
+ * layout would watch their temperature disappear for reasons that have nothing to do with the
+ * layout. Keeping the last value means a transient network failure costs nothing on the glass,
+ * which is the same principle as FR-29's last-good image.
+ *
+ * It is the CURRENT CONDITIONS document that is kept rather than a formatted string: the widgets
+ * bind to different fields of it (temp, humidity, wind, condition), so remembering the parsed
+ * string would only serve whichever widget happened to be first. */
+static char s_last_current[2048];
+static int  s_have_last_current;
 
 esp_err_t app_render_last_good(void)
 {
@@ -205,37 +270,56 @@ esp_err_t app_render_last_good(void)
     return ESP_OK;
 }
 
-/* Fetch the current temperature from OWM into `out`. Returns 0 on success.
- *
- * One endpoint for now: the free 2.5/weather product, because a key without the One Call
- * subscription — the default state of a new account — cannot reach 3.0 at all. owm.h
- * handles both shapes, so upgrading later is a URL change. */
-static int fetch_current(char *resp, size_t resplen, datasrc_value_t *out)
+/* The credentials every fetch needs, read once from NVS. */
+typedef struct {
+    char   key[64];
+    double lat, lon;
+    char   ha_url[128];
+    char   ha_token[256];
+} fetch_creds_t;
+
+static int read_creds(fetch_creds_t *c)
 {
-    char *json = NULL;
-    if (cfg_store_get(cfg_store_nvs(), &json) != 0) return -1;
-
-    /* The OWM URL is built from the stored location and key. Both live in NVS, written by
-     * the web UI (FR-30); neither is ever compiled in. */
+    memset(c, 0, sizeof(*c));
     nvs_handle_t h;
-    char url[512];
-    char key[64] = {0};
-    double lat = 0, lon = 0;
-    size_t klen = sizeof(key);
-    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_str(h, DEVENV_KEY_OWM_KEY, key, &klen);
-        /* A missing location is not fatal: 0,0 is a defined place (the Gulf of Guinea) and
-         * the resulting reading is obviously wrong, which is better than no reading and a
-         * silent failure. */
-        size_t llen = sizeof(double);
-        nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &lat, &llen);
-        llen = sizeof(double);
-        nvs_get_blob(h, DEVENV_KEY_LOC_LON, &lon, &llen);
-        nvs_close(h);
-    }
-    free(json);
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return -1;
+    size_t n = sizeof(c->key);
+    nvs_get_str(h, DEVENV_KEY_OWM_KEY, c->key, &n);
+    /* A missing location is not fatal: 0,0 is a defined place (the Gulf of Guinea) and the
+     * resulting reading is obviously wrong, which is better than no reading and a silent
+     * failure. */
+    size_t llen = sizeof(double);
+    nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &c->lat, &llen);
+    llen = sizeof(double);
+    nvs_get_blob(h, DEVENV_KEY_LOC_LON, &c->lon, &llen);
+    n = sizeof(c->ha_url);
+    nvs_get_str(h, DEVENV_KEY_HA_URL, c->ha_url, &n);
+    n = sizeof(c->ha_token);
+    nvs_get_str(h, DEVENV_KEY_HA_TOKEN, c->ha_token, &n);
+    nvs_close(h);
+    return 0;
+}
 
-    if (key[0] == '\0') {
+/* The forecast document buffer, and its size is a MEMORY constraint rather than a taste choice.
+ *
+ * MEASURED FAILURE THIS SIZING FIXES: a full 5-day/3-hour response is 16,522 bytes, and holding a
+ * 20 KB buffer for it while the TLS handshake ALSO needs ~20 KB contiguous on this part (a 16 KB
+ * in-buffer plus a 4 KB out-buffer, from MBEDTLS_SSL_IN/OUT_CONTENT_LEN) made the handshake fail
+ * with `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) — observed as "forecast request
+ * failed" and `--` in every forecast box, with a largest-free-block of only 30,720 bytes at that
+ * moment. The device was competing with itself.
+ *
+ * So the request is bounded to the days the layout actually asks for. OWM takes `cnt` as a count
+ * of 3-hour blocks, 8 per day, and the layout's highest `dayIndex` says how many days are needed.
+ * Two days measures ~6.8 KB — well inside this buffer — and a layout that wants more gets more,
+ * up to the 5-day horizon OWM offers anyway. */
+#define FORECAST_BUF_BYTES 12288
+
+/* Fetch the current conditions from OWM. Returns 0 on success, -1 otherwise. */
+static int fetch_current(const fetch_creds_t *c, char *resp, size_t resplen,
+                         datasrc_value_t *out)
+{
+    if (c->key[0] == '\0') {
         ESP_LOGW(TAG, "no OWM key stored; skipping fetch");
         return -1;
     }
@@ -256,24 +340,119 @@ static int fetch_current(char *resp, size_t resplen, datasrc_value_t *out)
      * nothing errors; it simply disagrees with the user's Home Assistant entities, which is
      * the comparison they will make. The spec settles it: `imperial` gives °F and mph and
      * matches those entities. */
+    char url[512];
     snprintf(url, sizeof(url),
              "https://api.openweathermap.org/data/2.5/weather"
-             "?lat=%.6f&lon=%.6f&units=imperial&appid=%s", lat, lon, key);
+             "?lat=%.6f&lon=%.6f&units=imperial&appid=%s", c->lat, c->lon, c->key);
 
     if (net_http_get_json(url, NULL, resp, resplen) != ESP_OK) {
         ESP_LOGW(TAG, "OWM request failed");
         return -1;
     }
 
+    /* Still parsed for its own timestamp, so the daily call cap is credited to the day the
+     * response belongs to. A failed request carries no timestamp, so observed_at stays 0 and
+     * api_owm_note_call() ignores it: a failed request still costs a call, but crediting it to
+     * the wrong day would be worse than undercounting. */
     *out = owm_parse_current_temp(resp, (long)(esp_timer_get_time() / 1000000LL));
-
-    /* Account for the call now that the response has supplied its own timestamp — the day it
-     * belongs to is not knowable before the reply arrives. An error response carries no
-     * timestamp, so observed_at stays 0 and api_owm_note_call() ignores it: a failed request
-     * still costs a call, but crediting it to the wrong day would be worse than undercounting. */
     api_owm_note_call(out->observed_at, 1);
 
     return out->status == DATASRC_OK ? 0 : -1;
+}
+
+/* Fetch the forecast into `buf`. Returns 0 on success.
+ *
+ * `days` is how many days the layout's widgets actually reference, taken from the highest
+ * dayIndex they bind. The request is bounded with OWM's `cnt` (3-hour blocks, 8 per day) rather
+ * than asking for the full 5-day document and discarding most of it: the full response is
+ * 16,522 bytes measured, and carrying that much live while the TLS handshake needs ~20 KB
+ * contiguous made the handshake fail with ALLOC_FAILED (see FORECAST_BUF_BYTES).
+ *
+ * A `days` of 0 means "ask for the whole horizon", which is what an alert-only page wants: the
+ * official alerts ride in this document, so the page needs it fetched but not trimmed. */
+static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int days)
+{
+    if (c->key[0] == '\0') return -1;
+    if (!api_owm_should_call()) {
+        api_note_error("owm: daily call cap reached");
+        return -1;
+    }
+
+    char url[512];
+    if (days > 0) {
+        /* Clamped to 5 days: that is the whole horizon the free 5-day/3-hour product carries,
+         * so asking for more would return the same data with a misleading count. */
+        int cnt = days * 8;
+        if (cnt > 40) cnt = 40;
+        snprintf(url, sizeof(url),
+                 "https://api.openweathermap.org/data/2.5/forecast"
+                 "?lat=%.6f&lon=%.6f&units=imperial&cnt=%d&appid=%s",
+                 c->lat, c->lon, cnt, c->key);
+    } else {
+        snprintf(url, sizeof(url),
+                 "https://api.openweathermap.org/data/2.5/forecast"
+                 "?lat=%.6f&lon=%.6f&units=imperial&appid=%s", c->lat, c->lon, c->key);
+    }
+
+    if (net_http_get_json(url, NULL, buf, buflen) != ESP_OK) {
+        ESP_LOGW(TAG, "forecast request failed");
+        return -1;
+    }
+    /* Credit the call against today, taken from the response's own first block. A response with
+     * no "list" is not a forecast and is not credited to a wrong day. */
+    cJSON *root = cJSON_Parse(buf);
+    if (root) {
+        cJSON *dt = cJSON_GetObjectItemCaseSensitive(
+                        cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(root, "list"), 0), "dt");
+        api_owm_note_call(cJSON_IsNumber(dt) ? (long)dt->valuedouble : 0, 1);
+        cJSON_Delete(root);
+    }
+    return 0;
+}
+
+/* Fetch the page's Home Assistant entities in ONE template call (FR-5a).
+ *
+ * THE KEY OPTIMISATION: HA renders a template server-side, so the device sends one small POST
+ * naming exactly the entities the layout needs and receives one small '|'-separated line
+ * ("68.4|41.2"). N per-entity GETs would be N round trips, and /api/states returns every entity
+ * on the instance — far too large for a 320 KB part with no PSRAM. */
+static int fetch_ha(const fetch_creds_t *c, char (*ids)[48], int n_ids,
+                    char *out, size_t outlen)
+{
+    if (n_ids <= 0) return 0;               /* nothing bound: no request to make */
+    if (c->ha_url[0] == '\0' || c->ha_token[0] == '\0') {
+        ESP_LOGW(TAG, "HA entities are bound but no HA url/token is stored");
+        return -1;
+    }
+
+    /* Build the template body: {"template": "{{ states('a') }}|{{ states('b') }}"}.
+     * ha_template_add_entity() validates each id against HA's grammar, which matters because an
+     * unvalidated id would be interpolated into a Jinja template — a quote in an entity id would
+     * be template injection, not merely a bad request. */
+    char tmpl[600];
+    int len = 0;
+    for (int i = 0; i < n_ids; i++) {
+        const int next = ha_template_add_entity(tmpl, (int)sizeof(tmpl), len, ids[i]);
+        if (next < 0) {
+            ESP_LOGW(TAG, "entity template overflow at %d entities", i);
+            break;
+        }
+        len = next;
+    }
+    if (len == 0) return -1;
+
+    char body[700];
+    const int n = snprintf(body, sizeof(body), "{\"template\":\"%s\"}", tmpl);
+    if (n < 0 || (size_t)n >= sizeof(body)) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/template", c->ha_url);
+
+    if (net_http_post_json(url, c->ha_token, body, out, outlen) != ESP_OK) {
+        ESP_LOGW(TAG, "HA template request failed");
+        return -1;
+    }
+    return 0;
 }
 
 esp_err_t app_fbs_reserve(void)
@@ -406,14 +585,41 @@ static void release_next(void)
 
 void app_refresh_tick(power_source_t source)
 {
-    (void)source;
-
     /* Only the RESIDENT framebuffer is acquired here — s_fb_prev, the frame on the glass.
      * The transient one is taken later, once the radio has been torn down on battery. See the
      * block comment above for why holding both this early starves esp_wifi_init(). */
     if (ensure_prev() != 0) {
         api_note_error("render: out of memory for framebuffers");
         return;
+    }
+
+    /* ---- RELEASE THE RESIDENT FRAME ACROSS THE FETCH, ON USB ----
+     *
+     * This is a MEASURED fix, not a tidy-up. s_fb_prev's only purpose is to be the diff base for
+     * a partial refresh, and on USB a partial is impossible: the second framebuffer cannot be
+     * obtained (measured largest contiguous block 30,720 bytes against the 78,200 a framebuffer
+     * needs), and a partial needs BOTH frames. So on USB it is held for nothing.
+     *
+     * Holding it is what broke the fetch. Measured on this device: /api/status reported 58,820
+     * bytes of free heap while the largest single block was only 30,720, because the resident
+     * 78,200-byte frame splits the free space. The TLS handshake needs ~20 KB CONTIGUOUS (a
+     * 16 KB in-buffer plus a 4 KB out-buffer) and could not get it, so it failed with
+     * `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) and every reading fell back to its
+     * placeholder — the symptom was a panel of "--" with a healthy-looking free_heap.
+     *
+     * Total free heap is the wrong number to reason about here; the largest block is the right
+     * one, which is why /api/status now reports both.
+     *
+     * The panel is bistable and is asleep between pushes, so dropping the buffer costs nothing
+     * visible — the image stays on the glass. It is re-acquired inside the render window below,
+     * where a fresh 78 KB block is free because the forecast buffer has been handed back. */
+    if (source == POWER_SOURCE_USB) {
+        free(s_fb_prev); s_fb_prev = NULL;
+        /* No resident frame means no diff base, so the next push MUST be a full refresh. Resetting
+         * this is what guarantees it: s_shown_slot is what refresh_decide() consults for
+         * "nothing on the glass", and a partial against the re-acquired (uninitialised) buffer
+         * would diff the new layout against garbage and scribble noise onto the panel. */
+        s_shown_slot = -1;
     }
 
     /* WiFi credentials live in NVS, written by provisioning (FR-30) — never compiled in.
@@ -465,14 +671,95 @@ void app_refresh_tick(power_source_t source)
      * satisfiable block down to 77,824 — 376 bytes short of a framebuffer — and the device
      * booted unable to draw anything at all. See app_fbs_reserve().
      *
-     * 4 KB is still ~8x the real response: OWM 2.5/weather for a full document with a long
-     * place name measures ~513 bytes. It cannot be shrunk much further without risking
-     * net_http_get_json() failing with ESP_ERR_NO_MEM on a genuinely larger response, which
-     * would silently stop the display updating. */
+     * 4 KB is still ~8x the current-weather response: OWM 2.5/weather for a full document with
+     * a long place name measures ~521 bytes. The FORECAST document does NOT fit here and is not
+     * asked to — it is ~16.5 KB and gets a transient heap buffer instead (see
+     * FORECAST_BUF_BYTES), because growing this array is exactly what starved the framebuffer. */
     static char resp[4096];
-    datasrc_value_t temp;
-    memset(&temp, 0, sizeof(temp));
-    const int fetched = fetch_current(resp, sizeof(resp), &temp) == 0;
+
+    /* ---- What does this page actually need? ----
+     *
+     * Resolved BEFORE fetching so that one forecast document serves every forecast widget, and
+     * a page with no Home Assistant binding makes no HA request at all. */
+    layout_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (load_config(&cfg) != 0) {
+        ESP_LOGW(TAG, "stored config unparseable; using defaults");
+        cfg.update_seconds = 900;
+        cfg.partial_refresh_limit = 5;
+        cfg.page_count = 1;
+    }
+
+    /* WHICH PAGE: the rotation schedule, from real elapsed time since boot. FR-15 wants the
+     * device to cycle pages on its own, and this is the only place that can happen. */
+    const long elapsed_s = (long)(esp_timer_get_time() / 1000000LL);
+    const int page_index = layout_page_at(&cfg, elapsed_s);
+
+    static page_render_t page;      /* static: ~4 KB of widgets, too big for the 3.5 KB stack */
+    memset(&page, 0, sizeof(page));
+    {
+        char *json = NULL;
+        if (cfg_store_get(cfg_store_nvs(), &json) == 0 && json) {
+            page.n = layout_widgets_parse(json, page_index, page.widgets, LAYOUT_MAX_FIELDS);
+            free(json);
+        }
+        if (page.n < 0) page.n = 0;
+    }
+
+    value_needs_t needs;
+    value_scan_needs(page.widgets, page.n, &needs);
+
+    /* The page's HA entities, in template order. Collected HERE because the second HA widget on
+     * a page reads the second token of the one response line. */
+    char ha_ids[LAYOUT_MAX_FIELDS][48];
+    int ha_want = 0;
+    const int n_ha = value_collect_ha_entities(page.widgets, page.n, ha_ids,
+                                               LAYOUT_MAX_FIELDS, &ha_want);
+
+    fetch_creds_t creds;
+    read_creds(&creds);
+
+    const long now_unix = (long)(esp_timer_get_time() / 1000000LL);
+
+    /* ---- Fetch, one document per source ----
+     *
+     * Each fetch is independent: a forecast failure must not stop the current reading from
+     * appearing, and vice versa. That is why the results are separate strings rather than one
+     * blob. */
+    char *forecast = NULL;
+    static char ha_resp[512];
+    ha_resp[0] = '\0';
+
+    /* The parsed current reading is used for the fetch's success and for the daily-call
+     * bookkeeping (fetch_current credits the call to the response's own day); the widgets then
+     * re-read the DOCUMENT rather than this one value. */
+    datasrc_value_t current;
+    memset(&current, 0, sizeof(current));
+    const int got_current = (fetch_current(&creds, resp, sizeof(resp), &current) == 0);
+
+    if (needs.need_owm_daily || needs.need_owm_alert) {
+        forecast = heap_caps_malloc(FORECAST_BUF_BYTES, MALLOC_CAP_8BIT);
+        if (forecast) {
+            /* `max_day_index` is the highest day any widget references, so the request carries
+             * exactly the days the page will draw. An alert-only page binds no day and gets the
+             * whole horizon, because the official alerts ride in this document. */
+            const int days = needs.need_owm_daily ? needs.max_day_index + 1 : 0;
+            if (fetch_forecast(&creds, forecast, FORECAST_BUF_BYTES, days) != 0) {
+                free(forecast);
+                forecast = NULL;
+            }
+        } else {
+            /* Not fatal — the widgets show their fallback — but worth logging, because the usual
+             * reason is heap pressure and that is worth seeing. */
+            ESP_LOGW(TAG, "no heap for the forecast buffer (%u bytes)", (unsigned)FORECAST_BUF_BYTES);
+        }
+    }
+
+    if (needs.need_ha) {
+        if (fetch_ha(&creds, ha_ids, n_ha, ha_resp, sizeof(ha_resp)) != 0) {
+            ha_resp[0] = '\0';
+        }
+    }
 
     /* The radio is torn down BEFORE the ADC read and before any panel work (HW-3, NFR-3) —
      * but ONLY on battery. On USB the device stays awake to serve the API (FR-31), and the
@@ -481,17 +768,50 @@ void app_refresh_tick(power_source_t source)
         net_wifi_disconnect();
     }
 
-    if (!fetched) {
+    if (!got_current) {
         /* Not fatal, and NOT a reason to skip the render: the panel still gets whatever
          * static layer is live (which is the whole point when the web app has just uploaded
          * one), with the last known reading if there is one. The error is recorded for
          * /api/status either way (FR-33). */
         api_note_error("owm: no current reading");
-        ESP_LOGW(TAG, "fetch failed; using the last known reading");
+        ESP_LOGW(TAG, "fetch failed; widgets fall back to their placeholders");
     } else {
-        s_last_temp = temp;
-        s_have_last_temp = 1;
+        /* Remember the DOCUMENT, not a formatted string: the widgets bind to different fields
+         * of it (temp, humidity, wind, conditions), so caching one number would only serve
+         * whichever widget happened to be first in the page. */
+        const size_t n = strlen(resp);
+        if (n < sizeof(s_last_current)) {
+            memcpy(s_last_current, resp, n + 1);
+            s_have_last_current = 1;
+        }
     }
+
+    /* When this fetch failed, fall back to the document kept from the last one that worked, so
+     * an outage leaves the readings on the glass rather than replacing every one with "--". A
+     * device that has NEVER had a good fetch has nothing to fall back to and correctly shows the
+     * placeholders. */
+    const char *current_doc = NULL;
+    if (got_current) {
+        current_doc = resp;
+    } else if (s_have_last_current) {
+        current_doc = s_last_current;
+        ESP_LOGI(TAG, "using the last good reading document (%u bytes)",
+                 (unsigned)strlen(s_last_current));
+    }
+
+    /* Build the field/value arrays from the page's widgets. A NULL document makes the widgets
+     * that needed it resolve to their own fallback rather than to a wrong number. */
+    const value_sources_t src = {
+        .owm_current = current_doc,
+        .owm_daily   = forecast,
+        .ha_line     = (needs.need_ha && ha_resp[0]) ? ha_resp : NULL,
+    };
+    build_fields(&page, &src, ha_ids, n_ha, now_unix);
+
+    /* The forecast buffer has served its purpose; releasing it here gives the render window the
+     * ~16.5 KB back, which matters on USB where the second framebuffer is already tight. */
+    free(forecast);
+    forecast = NULL;
 
     /* Decide full vs partial through the TESTED policy, never an inline comparison. */
     const int limit = api_partial_limit();
@@ -529,6 +849,16 @@ void app_refresh_tick(power_source_t source)
      * a device that is plugged in and being configured, which is exactly when a full refresh
      * is least objectionable. On battery — the deployed case, where FR-11's partial strategy
      * actually matters for power and flicker — the partial path is unaffected. */
+
+    /* Re-acquire the resident frame if USB released it across the fetch (above). By now the
+     * forecast buffer has been handed back, so one contiguous 78,200-byte block is free again.
+     * s_shown_slot is already -1, so the policy below forces a full refresh — which is the only
+     * kind possible without a diff base. */
+    if (ensure_prev() != 0) {
+        api_note_error("render: out of memory for the framebuffer");
+        return;
+    }
+
     const int have_next = (acquire_next() == 0);
     if (!have_next) {
         ESP_LOGW(TAG, "no second framebuffer (free %u, largest %u); falling back to a full refresh",
@@ -537,22 +867,21 @@ void app_refresh_tick(power_source_t source)
     }
     uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
 
-    /* Build the new frame from the static layer plus the freshest reading we have. */
+    /* Build the new frame from the static layer plus the page's resolved values.
+     *
+     * The static layer and the fields must come from the SAME layout generation, and the slot
+     * number is what ties them: a partial refresh diffs the new frame against the previous one,
+     * so if the web app pushed a NEW layout bitmap while the field list came from an older
+     * config, the diff would compare two unrelated pictures and leave ghosted fragments of the
+     * old layout on the glass. `slot` changes whenever the bitmap changes, and the partial path
+     * below requires s_shown_slot == slot for exactly this reason. */
     int slot = -1;
     if (load_static_layer(work, &slot) != 0) return;
-
-    char tbuf[16];
-    datasrc_value_t shown;
-    memset(&shown, 0, sizeof(shown));
-    if (s_have_last_temp) shown = s_last_temp;
-    else shown.status = DATASRC_ERR_UNAVAILABLE;   /* renders as "--" */
-    fmt_temp(tbuf, sizeof(tbuf), &shown);
-    const char *values[2] = { tbuf, "--" };
 
     canvas_t c;
     canvas_init(&c, work);
     if (render_compose_stream(&c, flash_reader, work,
-                              DEFAULT_FIELDS, values, 2) != 0) {
+                              page.fields, page.value_ptrs, page.n_fields) != 0) {
         ESP_LOGE(TAG, "compose failed");
         return;
     }
@@ -598,9 +927,9 @@ void app_refresh_tick(power_source_t source)
      * that the TLS handshake needs, and the handshake happens before the next render window.
      * Releasing it here and re-acquiring there is what keeps both steps alive. */
     if (have_next) release_next();
-    ESP_LOGI(TAG, "%s refresh done: %s",
+    ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              e == ESP_OK && have_next ? (kind == REFRESH_PARTIAL ? "partial" : "full") : "full",
-             tbuf);
+             page_index, page.n_fields);
 
     /* Back to deep sleep (FR-12). The image is bistable and survives it, and leaving the
      * controller powered costs current for no benefit. On battery the device deep-sleeps

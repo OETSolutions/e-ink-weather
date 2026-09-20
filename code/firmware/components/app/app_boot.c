@@ -118,6 +118,42 @@ void app_seed_wifi(const char *ssid, const char *pass)
     ESP_LOGI(TAG, "seed: %s", e == ESP_OK ? "wrote bench credentials" : "failed");
 }
 
+/* Bench-only: seed the OWM key into NVS if none is stored.
+ *
+ * WHY THE SAME NEVER-OVERWRITE RULE AS app_seed_wifi(): this exists so a bench build can fetch
+ * real weather without being walked through the captive portal, and it must not be able to
+ * clobber a device that a real user has provisioned. An overwrite would silently replace the
+ * owner's key with the developer's every time this image is flashed.
+ *
+ * On a shipped build there is no such header, so this is not compiled and the key arrives only
+ * through provisioning (FR-30). */
+void app_seed_owm_key(const char *key)
+{
+    if (!key || !*key) return;
+
+    esp_err_t ne = nvs_flash_init();
+    if (ne == ESP_ERR_NVS_NO_FREE_PAGES || ne == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        ne = nvs_flash_init();
+    }
+    if (ne != ESP_OK) return;
+
+    nvs_handle_t h;
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+
+    char existing[64] = {0};
+    size_t n = sizeof(existing);
+    if (nvs_get_str(h, DEVENV_KEY_OWM_KEY, existing, &n) == ESP_OK && existing[0] != '\0') {
+        ESP_LOGI(TAG, "seed: OWM key already present, leaving it alone");
+        nvs_close(h);
+        return;
+    }
+    esp_err_t e = nvs_set_str(h, DEVENV_KEY_OWM_KEY, key);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "seed: %s OWM key", e == ESP_OK ? "wrote bench" : "failed to write");
+}
+
 /* Steps 4-6: connect if there are credentials, fetch, render, push.
  *
  * A separate function because the provisioning step has to sit AFTER it — there are no

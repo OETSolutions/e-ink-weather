@@ -347,6 +347,10 @@ static esp_err_t h_status(httpd_req_t *req)
     s.version = version;
     s.uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
     s.free_heap = (uint32_t)esp_get_free_heap_size();
+    /* The largest contiguous block, not the total. Both the TLS handshake (~20 KB) and every
+     * framebuffer (78,200 B) need ONE contiguous allocation, so a device with plenty of total
+     * free heap can still be unable to fetch or draw — and the total alone reports it healthy. */
+    s.largest_free_block = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     const uint32_t now_heap = s.free_heap;
     if (now_heap < s_free_heap_min) s_free_heap_min = now_heap;
     s.free_heap_min = s_free_heap_min;

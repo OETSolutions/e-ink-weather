@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "cfg_store.h"
 
 /* Request framing for the device HTTP API (IF-4).
  *
@@ -19,8 +20,14 @@
  * Bounded deliberately: the device must copy the body to NUL-terminate it before parsing,
  * and an unbounded body is a heap-exhaustion vector on a device with no PSRAM (NFR-2). A
  * real layout — 8 pages of widgets — measured well under 8 KB; 16 KB leaves headroom
- * without letting a hostile or buggy client allocate the device to death. */
-#define API_CONFIG_MAX_LEN 16384
+ * without letting a hostile or buggy client allocate the device to death.
+ *
+ * ALIASED to CFG_JSON_MAX_LEN rather than being a second literal. These two were 4096 and 16384
+ * once, and the gap between them was a real bug: a document the API accepted and stored could
+ * be too large for cfg_store_get() to read back, which made the device quietly fall back to its
+ * built-in default. The read limit and the write limit are the same document, so they are now
+ * the same number — and it is not possible to change one without the other. */
+#define API_CONFIG_MAX_LEN CFG_JSON_MAX_LEN
 
 /* Read an unsigned integer query parameter.
  *

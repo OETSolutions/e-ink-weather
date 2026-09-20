@@ -74,6 +74,7 @@ int api_status_json(const api_status_t *s, char *out, size_t outlen)
     APPEND("\",\"uptime_s\":%lu", (unsigned long)s->uptime_s);
     APPEND(",\"free_heap\":%lu", (unsigned long)s->free_heap);
     APPEND(",\"free_heap_min\":%lu", (unsigned long)s->free_heap_min);
+    APPEND(",\"largest_free_block\":%lu", (unsigned long)s->largest_free_block);
 
     /* RSSI is omitted rather than reported as 0 when there is no reading: 0 dBm is a real
      * (and implausibly strong) signal, so conflating the two would mislead a remote

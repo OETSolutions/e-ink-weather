@@ -40,3 +40,16 @@ datasrc_value_t owm_parse_daily_max(const char *json, int day_index, long now_un
 /* 1 if the response carries at least one government weather alert (One Call 3.0 only).
  * The free 2.5 products have no "alerts" key; absence is a legitimate 0, not an error. */
 int owm_has_alerts(const char *json);
+
+/* One named field of the CURRENT conditions, for BIND_OWM_CURRENT widgets.
+ *
+ * WHY A SINGLE ENTRY POINT rather than one function per field: the two product shapes differ in
+ * WHERE each field lives (One Call nests everything under "current"; 2.5/weather puts
+ * temperature and humidity under "main" and wind under "wind"), and splitting them across
+ * functions would put that shape knowledge in N places and let one of them be wrong. Here the
+ * shape is decided once.
+ *
+ * `field` is a `owm_field_t` (lib/layout/include/widgets.h). For a TEXT field (condition) the
+ * result carries is_numeric = 0 and the words in `text`; a caller that prints `value` for a
+ * condition would print 0.000, which is why is_numeric exists. */
+datasrc_value_t owm_parse_current_field(const char *json, int field, long now_unix);

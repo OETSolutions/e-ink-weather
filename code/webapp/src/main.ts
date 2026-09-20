@@ -24,6 +24,7 @@ import { defaultLayout, DEFAULT_LABELS, DEFAULT_RULES } from './presets/default-
 import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
+import { uploadBitmap } from './transfer/bitmap';
 import { getAuth, putAuth, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
@@ -137,6 +138,26 @@ async function saveConfig(doc: Config): Promise<SaveResult> {
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'Could not reach the device' };
   }
+}
+
+/**
+ * Push the static layer — the labels and chrome — to the device (FR-1, IF-2a).
+ *
+ * WHY THIS IS SEPARATE FROM THE CONFIG PUT: the config says WHERE the value boxes are; this is
+ * the picture they are stamped onto. The device only stamps readings into boxes the web app
+ * defines, so without this upload its "static layer" is the factory boot mark and none of the
+ * labels exist on the glass. The two must be pushed together, and the device ties them with the
+ * bitmap slot number: a partial refresh diffs against the previous frame, so a new picture with
+ * old boxes (or vice versa) would leave ghosted fragments of the old layout.
+ *
+ * ORDER MATTERS: the bitmap FIRST, then the config. The device renders on a config PUT, so
+ * pushing the config first would render one frame with the new boxes over the OLD picture, and
+ * the user would see a momentarily wrong panel before the bitmap landed.
+ */
+async function pushStaticLayer(layer: Uint8Array): Promise<SaveResult> {
+  const up = await uploadBitmap(layer);
+  if (!up.ok) return { ok: false, error: up.error ?? 'The static layer upload failed' };
+  return { ok: true, restarting: false };
 }
 
 async function mount(root: HTMLElement): Promise<void> {
@@ -321,8 +342,11 @@ async function mount(root: HTMLElement): Promise<void> {
   });
 
   /* The labels and rules are the LAYOUT's, not the device's — the device is layout-independent
-   * and only stamps values into boxes, so the static art is the web app's job (FR-1). */
-  const staticLayer = buildStaticLayer(
+   * and only stamps values into boxes, so the static art is the web app's job (FR-1).
+   *
+   * Held in a mutable binding because Save uploads it: the device's "static layer" is otherwise
+   * the factory boot mark, and every label in the layout would be missing from the glass. */
+  let staticLayer = buildStaticLayer(
     DEFAULT_LABELS.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
     DEFAULT_RULES.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
   ).data;
@@ -379,7 +403,10 @@ async function mount(root: HTMLElement): Promise<void> {
       }
     };
     setBtn('saving');
-    const r = await saveConfig(doc);
+    /* The static layer FIRST, then the config: the device renders on a config PUT, so the other
+     * order would draw one frame with the new boxes over the old picture. */
+    const up = await pushStaticLayer(staticLayer);
+    const r = up.ok ? await saveConfig(doc) : up;
     if (r.ok) {
       setBtn('saved');
       setTimeout(() => setBtn('idle'), 2500);

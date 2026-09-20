@@ -20,6 +20,15 @@ typedef struct {
     uint32_t    uptime_s;
     uint32_t    free_heap;        /* current */
     uint32_t    free_heap_min;    /* watermark — the number that matters for a leak */
+    /* The largest single allocation still possible, in bytes.
+     *
+     * WHY THIS IS HERE AND free_heap IS NOT ENOUGH: the TLS handshake needs one contiguous
+     * ~20 KB block, and every framebuffer is a single contiguous 78,200 bytes. A device with
+     * 58 KiB free but no 20 KiB hole cannot open a connection, and `free_heap` alone reports
+     * that device as healthy — measured on this hardware as `mbedtls_ssl_setup returned -0x7F00`
+     * while /api/status showed 58,504 bytes free. This is the number that says whether the next
+     * handshake or render can succeed, so it belongs in the field diagnostic (FR-33). */
+    uint32_t    largest_free_block;
     int         rssi;             /* dBm; 0 means "not connected" */
     int         has_rssi;         /* separates a real 0 dBm from "no reading" */
     double      vbat;             /* volts */

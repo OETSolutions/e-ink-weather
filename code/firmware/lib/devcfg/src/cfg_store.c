@@ -69,7 +69,16 @@ int cfg_store_get(const cfg_store_t *store, char **out_json)
     if (!store || !store->read || !out_json) return -1;
     *out_json = NULL;
 
-    size_t max = 4096;
+    /* Sized from the SAME constant the API accepts, rather than a separate literal.
+     *
+     * WHY THIS MATTERS: this was 4096 while the API accepts up to API_CONFIG_MAX_LEN (16,384),
+     * and the shipped default layout is 4,424 bytes. A document larger than the read buffer is
+     * not truncated by NVS — nvs_get_blob returns ESP_ERR_NVS_INVALID_LENGTH, nvs_read() turns
+     * that into -1, and cfg_store_get() then SILENTLY substituted the built-in default. So a
+     * user whose layout exceeded the limit would see their config saved, then watch the device
+     * revert to a minimal default with no error anywhere. The two ends of the same document must
+     * be the same size. */
+    size_t max = CFG_JSON_MAX_LEN;
     char *buf = malloc(max);
     if (!buf) return -1;
     size_t len = 0;
