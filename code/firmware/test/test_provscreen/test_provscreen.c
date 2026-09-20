@@ -179,6 +179,41 @@ static void test_qr_quiet_zone_is_clear(void)
     }
 }
 
+/* The brand must actually reach the glass. Checked by counting ink in the header rectangle the
+ * badge occupies — and by confirming it is zero when no badge is supplied, which is what catches
+ * a badge that renders invisibly (wrong polarity) or gets erased by the page fill. */
+static void test_badge_is_drawn_when_supplied(void)
+{
+    /* The badge is CENTRED against the title, so its rectangle is the header's top plus half the
+     * leftover. Compute it the same way the render does rather than guessing.
+     *
+     * The "without" case deliberately does NOT expect a blank region: with no badge the title
+     * starts at the margin and its glyphs occupy that space. Asserting "blank" there read as a
+     * failure when the code was right — the point is that the SOLID block covers the rectangle
+     * exactly, which nothing but the badge does. */
+    const int bw = 40, bh = 20;
+    const int line2 = font_line_height(FONT_BODY) * 2;
+    const int y0 = MARGIN + 4;
+    const int by = y0 + (line2 - bh) / 2;
+
+    static uint8_t blk[5 * 40];
+    memset(blk, 0x00, sizeof(blk));            /* all black */
+
+    long with_badge = 0;
+    provscreen_render_branded(fb, "EINK-WEATHER-2045AC", "eink1234", blk, bw, bh);
+    for (int y = by; y < by + bh; y++)
+        for (int x = MARGIN; x < MARGIN + bw; x++) with_badge += inked(x, y);
+
+    long without = 0;
+    provscreen_render(fb, "EINK-WEATHER-2045AC", "eink1234");
+    for (int y = by; y < by + bh; y++)
+        for (int x = MARGIN; x < MARGIN + bw; x++) without += inked(x, y);
+
+    /* A solid badge fills the rectangle completely; the title only speckles it. */
+    TEST_ASSERT_EQUAL_INT(bw * bh, (int)with_badge);
+    TEST_ASSERT_LESS_THAN_INT(bw * bh, (int)without);
+}
+
 static void test_bad_arguments_are_rejected(void)
 {
     TEST_ASSERT_EQUAL_INT(-1, provscreen_render(NULL, "x", "y"));
@@ -203,6 +238,7 @@ int main(void)
     RUN_TEST(test_runtime_provisioning_code_survives_the_blit);
     RUN_TEST(test_payload_names_the_advertised_device);
     RUN_TEST(test_qr_quiet_zone_is_clear);
+    RUN_TEST(test_badge_is_drawn_when_supplied);
     RUN_TEST(test_box_too_small_is_refused);
     RUN_TEST(test_bad_arguments_are_rejected);
     return UNITY_END();

@@ -32,6 +32,11 @@
  * This replaced the vendor GoodDisplay demo image, which had no business on a shipped
  * device: it was a bring-up baseline, not artwork. */
 extern const uint8_t boot_logo[EPD_FB_BYTES];
+/* The header-sized version of the same mark, for the provisioning screen. Generated together
+ * with the splash so the two cannot drift apart. */
+extern const uint8_t boot_badge[];
+extern const int boot_badge_w;
+extern const int boot_badge_h;
 
 static const char *TAG = "refresh";
 
@@ -313,7 +318,10 @@ void app_render_setup_screen(void)
     char ap_ssid[32];
     prov_service_name(ap_ssid, sizeof(ap_ssid));
 
-    if (provscreen_render(work, ap_ssid, PROV_POP_STRING) != 0) {
+    /* Pass the brand badge in HERE rather than drawing it first: the render fills the page
+     * white before composing, so anything drawn beforehand would be erased. */
+    if (provscreen_render_branded(work, ap_ssid, PROV_POP_STRING,
+                                  boot_badge, boot_badge_w, boot_badge_h) != 0) {
         ESP_LOGE(TAG, "setup screen render failed");
         if (have_next) release_next();
         return;

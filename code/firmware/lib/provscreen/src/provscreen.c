@@ -199,6 +199,12 @@ static void draw_qr(canvas_t *c, int x, int y, int box, const qr_code_t *qr)
 
 int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
 {
+    return provscreen_render_branded(fb, ap_ssid, pop, NULL, 0, 0);
+}
+
+int provscreen_render_branded(uint8_t *fb, const char *ap_ssid, const char *pop,
+                              const uint8_t *badge, int badge_w, int badge_h)
+{
     if (!fb || !ap_ssid || !*ap_ssid) return -1;
 
     canvas_t c;
@@ -206,16 +212,25 @@ int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
     canvas_init(&c, fb);
     canvas_fill(&c, 0);              /* white page */
 
-    /* ---- Title ---- */
-    int y = MARGIN;
-    /* 2x, not 3x: "SET UP THIS DISPLAY" at 3x measures 486 px and would run past the QR
-     * column. At 2x it is 324 px and clears the 520 px text column with room to spare. */
-    draw_line_scaled(&c, FONT_BODY, MARGIN, y, "SET UP THIS DISPLAY", 2);
-    y += font_line_height(FONT_BODY) * 2 + 16;
+    /* ---- Header: the brand, then the title ----
+     * The badge is drawn by the CALLER through provscreen_draw_badge() before this runs, because
+     * this library does not know about the firmware's generated assets. The title is offset to
+     * leave room for it; BADGE_W matches the generated badge's width. */
+    int y = MARGIN + 4;
+    const int line2 = font_line_height(FONT_BODY) * 2;   /* the title's height at 2x */
+    if (badge && badge_w > 0 && badge_h > 0) {
+        /* Vertically centred against the title. canvas_blit_1bpp takes the SAME polarity the
+         * asset is packed in (bit clear = black), so this is a straight copy. */
+        const int by = y + (line2 - badge_h) / 2;
+        canvas_blit_1bpp(&c, MARGIN, by, badge, badge_w, badge_h);
+    }
+    const int title_x = MARGIN + (badge ? badge_w + 18 : 0);
+    draw_line_scaled(&c, FONT_BODY, title_x, y, "SET UP DISPLAY", 2);
+    y += (badge_h > line2 ? badge_h : line2) + 14;
 
-    /* A rule under the title, drawn as a filled row of pixels. */
+    /* A rule under the header, drawn as a filled row of pixels. */
     for (int x = MARGIN; x < MARGIN + LEFT_W; x++) canvas_set_px(&c, x, y, 1);
-    y += 24;
+    y += 20;
 
     /* ---- Fastest path: the setup page ---- */
     y += draw_line(&c, FONT_BODY, MARGIN, y, "EASIEST WAY - no app needed") + 12;
