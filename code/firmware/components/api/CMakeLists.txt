@@ -13,5 +13,5 @@
 idf_component_register(
     SRCS "api_server.c" "api_store.c" "api_ota.c"
     INCLUDE_DIRS "include"
-    REQUIRES shared net prov esp_http_server esp_https_ota app_update nvs_flash esp_timer json mbedtls
+    REQUIRES shared net prov webui esp_http_server esp_https_ota app_update nvs_flash esp_timer json mbedtls
 )

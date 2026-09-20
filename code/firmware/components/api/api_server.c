@@ -10,6 +10,7 @@
 #include "power.h"
 #include "nvs_keys.h"
 #include "prov.h"
+#include "webui.h"
 #include "apiauth.h"
 #include "nvs.h"
 #include "bitmap_upload.h"
@@ -909,6 +910,11 @@ esp_err_t api_start(void)
      * web app fetches status while an upload runs. The default 4 is tight enough to make a
      * legitimate client see spurious failures. */
     cfg.max_open_sockets = 7;
+    /* RAISED FROM THE DEFAULT 8, which the API alone now fills (8 endpoints), leaving no slot
+     * for the web UI's catch-all — it failed to register with ESP_ERR_HTTPD_HANDLERS_FULL and
+     * the device served 404s for its own page while the API worked fine. Measured need: 8 API
+     * routes + 1 for the UI, with headroom for the next endpoint. */
+    cfg.max_uri_handlers = 16;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;      /* the OTA handler needs TLS headroom, like net_http */
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -938,6 +944,17 @@ esp_err_t api_start(void)
             ESP_LOGE(TAG, "register %s failed: %s", uris[i].uri, esp_err_to_name(e));
             return e;
         }
+    }
+
+    /* Mount the web UI AFTER the API routes. esp_http_server matches the most recently
+     * registered handler first, so registering this catch-all earlier would shadow every
+     * endpoint — the page would load and then every request it made would return the app
+     * shell. The handler also refuses the API prefix, so a future reorder cannot reintroduce
+     * it. */
+    const esp_err_t ue = webui_mount(s_server);
+    if (ue != ESP_OK) {
+        /* NOT fatal: the device still configures over the API and the serial log. */
+        ESP_LOGW(TAG, "web UI not mounted: %s", esp_err_to_name(ue));
     }
 
     ESP_LOGI(TAG, "API listening (%u endpoints)", (unsigned)(sizeof(uris) / sizeof(uris[0])));
