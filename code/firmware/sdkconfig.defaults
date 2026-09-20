@@ -9,10 +9,60 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # OpenWeatherMap and Home Assistant are reached over HTTPS; without a bundle there is no
 # trust anchor and the handshake fails with a verify error.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # TLS buffers into internal RAM — there is no PSRAM on this part (NFR-2).
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # The device has no console and no operator; a crash must be observable in a log, not a
 # silent reboot. Keep panics loud.
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_ESP_WIFI_IRAM_OPT=n
+# WiFi buffer pools, sized to the measured DRAM budget rather than left at their defaults.
+#
+# THE NUMBERS COME FROM A MEASURED FAILURE, not from taste. This part has 234.2 KiB of heap and
+# no PSRAM. A live radio costs 26.8 KiB in esp_wifi_init() alone, and the transient framebuffer
+# the renderer needs is ONE CONTIGUOUS 76.4 KiB. Measured with heap_caps_print_heap_info() at
+# the moment of failure, the region the transient buffer must come from had 81,492 bytes free
+# but only 77,824 in a single block — 376 bytes short of the 78,200 needed, because the radio's
+# allocations sat between the free pieces. The defaults (10 static RX, 32 management, 32+32
+# dynamic) are sized for a throughput-oriented device; this one holds a connection for about
+# two seconds to fetch one small JSON response.
+#
+# 4 static RX buffers of 1,600 bytes, against a Kconfig minimum of 2. Each is allocated up
+# front from the same region, so these are the bytes that decide whether the panel can draw.
+# More would be safer for burst traffic and there is none here.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+# Management-frame send buffers: the default of 32 is far more than a station that associates,
+# fetches, and disassociates ever needs.
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
+# Dynamic buffers are allocated on demand, so these only cap peak in-flight traffic rather than
+# reserving memory up front. 16 is ample for this workload.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# ---- Provisioning (FR-30) ----
+# NimBLE rather than Bluedroid: the device only needs a GATT server for wifi_prov_mgr, and
+# NimBLE's host is substantially smaller — which matters because the app partition is 1.5 MB
+# and the image is already at ~74%.
+CONFIG_BT_ENABLED=y
+# BLE-only controller. The default is dual-mode (BR/EDR + BLE), which links the
+# Classic Bluetooth stack this device will never use — it is a GATT peripheral for
+# provisioning and nothing else.
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# WiFi IRAM speed optimizations OFF to make room for the BT controller.
+#
+# Enabling BT costs IRAM (the controller's IRAM code), and the link failed with
+# "region `iram0_0_seg' overflowed by 8348 bytes". IDF's own Kconfig documents these two
+# options as the remedy: ESP_WIFI_IRAM_OPT frees >10 KB and ESP_WIFI_RX_IRAM_OPT >17 KB,
+# at the cost of WiFi throughput.
+#
+# That trade is the right way round for this device. It wakes, fetches one small JSON
+# response, and sleeps — a few hundred bytes over a connection that is up for ~2 s. WiFi
+# throughput is irrelevant; being able to provision over BLE at all is not. Note IDF already
+# defaults these to `n` when BT is enabled alongside PSRAM, i.e. this is the supported
+# coexistence configuration, just arrived at explicitly because there is no PSRAM here.

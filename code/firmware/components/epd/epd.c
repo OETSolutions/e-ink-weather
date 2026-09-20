@@ -140,6 +140,28 @@ esp_err_t epd_init_partial(void)
     return first_err;
 }
 
+/* THE PANEL'S ROW ORDER IS BOTTOM-UP.
+ *
+ * Everywhere else in this firmware a framebuffer is in NATURAL order: row 0 is the top of the
+ * picture, which is the order the web canvas editor draws in, the order the golden image is
+ * generated in, and the order a human reads a byte dump in. The controller displays the FIRST
+ * row it receives at the BOTTOM of the glass — its scan is bottom-up — so a frame transmitted
+ * top-first appears upside down.
+ *
+ * This stayed hidden because the only frames ever pushed were symmetric (all-black, all-white)
+ * or the vendor's own gImage_1, which is STORED pre-rotated to compensate for exactly this. So
+ * the vendor image looked right and proved nothing. The first naturally-oriented content — the
+ * composed static layer plus the temperature glyphs — came out mirrored on the glass, which is
+ * how this was finally caught. Confirmed by dumping gImage_1 from src/gimage1_data.c and
+ * rotating it: the vertical flip is the logo the panel displays.
+ *
+ * The flip lives HERE, in the driver, rather than in the renderer, because bottom-up scanning
+ * is a property of this panel. Keeping the framebuffer natural leaves the golden test, the
+ * upload format and the canvas editor all in the order a human expects — only the byte stream
+ * to the glass is reordered. Note it is a ROW flip, not a 180-degree rotation: the columns are
+ * already correct, verified by the same dump (the flipped image reads left to right). */
+#define EPD_TRANSMIT_ROW(y) ((size_t)(EPD_HEIGHT - 1 - (y)) * EPD_PITCH)
+
 /* Returns ESP_OK only if the whole frame — including the refresh completing — succeeded.
  * On timeout the panel is left alone rather than retried, so the previous image stays. */
 esp_err_t epd_write_frame(const uint8_t *fb1bpp)
@@ -148,7 +170,7 @@ esp_err_t epd_write_frame(const uint8_t *fb1bpp)
     epd_write_cmd(0x10);
     if (epd_wait_ready() != ESP_OK) return ESP_ERR_TIMEOUT;
     for (int y = 0; y < EPD_HEIGHT; y++) {
-        epd_expand_1to2(&fb1bpp[(size_t)y * EPD_PITCH], EPD_PITCH, line2);
+        epd_expand_1to2(&fb1bpp[EPD_TRANSMIT_ROW(y)], EPD_PITCH, line2);
         epd_write_data_block(line2, sizeof(line2));
     }
     epd_write_cmd(0x12);           /* DRF: display refresh */
@@ -165,7 +187,7 @@ esp_err_t epd_write_frame_partial(const uint8_t *prev1bpp, const uint8_t *next1b
     epd_write_cmd(0x10);
     if (epd_wait_ready() != ESP_OK) return ESP_ERR_TIMEOUT;
     for (int y = 0; y < EPD_HEIGHT; y++) {
-        size_t off = (size_t)y * EPD_PITCH;
+        const size_t off = EPD_TRANSMIT_ROW(y);
         epd_interleave_1to2(&prev1bpp[off], &next1bpp[off], EPD_PITCH, line2);
         epd_write_data_block(line2, sizeof(line2));
     }

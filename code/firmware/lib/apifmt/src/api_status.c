@@ -97,6 +97,12 @@ int api_status_json(const api_status_t *s, char *out, size_t outlen)
     APPEND(",\"fulls_total\":%d", s->fulls_total);
     APPEND(",\"bitmap_slot\":%d", s->bitmap_slot);
 
+    /* The count is null until a timestamp has been seen, rather than 0: "we have made no
+     * calls" and "we cannot count yet" are different states, and reporting the second as the
+     * first would hide exactly the runaway-refresh bug this counter exists to catch. */
+    if (s->owm_calls_known) APPEND(",\"owm_day_calls\":%d", s->owm_day_calls);
+    else                    APPEND(",\"owm_day_calls\":null");
+
     /* -1 means "never refreshed"; emit null rather than a nonsensical huge age. */
     if (s->last_refresh_age_s < 0) APPEND(",\"last_refresh_age_s\":null");
     else                           APPEND(",\"last_refresh_age_s\":%d", s->last_refresh_age_s);

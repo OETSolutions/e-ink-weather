@@ -2,6 +2,7 @@
 #include "api_internal.h"
 #include "api_ota.h"
 #include "api_status.h"
+#include "owm_counter.h"
 #include "net_wifi.h"
 #include "cfg_store.h"
 #include "devcfg.h"
@@ -46,6 +47,10 @@ static int  s_error_count;
 
 /* Boot-time battery reading, cached because ADC2 cannot be read with WiFi up (HW-3). */
 static double s_vbat;
+
+/* OWM daily call count (spec §3.4). The struct's own have_day flag is what makes "unknown"
+ * distinguishable from "zero calls so far". */
+static owm_counter_t s_owm;
 static int    s_vbat_source;
 static int    s_has_vbat;
 
@@ -137,6 +142,39 @@ int api_partials_since_full(void)
     const int n = s_partials_since_full;
     unlock();
     return n;
+}
+
+/* ---- OWM daily call counter (spec §3.4) -------------------------------------------------
+ *
+ * The spec requires the firmware to "count and cap daily calls and surface the count in
+ * /api/status, so a bug cannot silently burn the quota". The free tier is 1,000 calls/day
+ * against a 10-15 minute refresh (~96-144 calls/day), so the cap should never be reached in
+ * normal operation — which is exactly why it is worth having: it is the tripwire for a bug
+ * that has started refreshing in a loop, and nothing else would make that visible off-device.
+ *
+ * THE ARITHMETIC ITSELF LIVES IN lib/owmcount, host-tested (test/test_owmcount), because the
+ * interesting cases are all calendar arithmetic that the bench cannot reproduce without
+ * waiting a day. This file only holds the state and exposes it to the HTTP handler.
+ *
+ * There is no wall clock on this device: esp_timer_get_time() is documented as "time since
+ * boot" and resets on every wake, so the day index comes from the timestamp already carried
+ * in each OWM response. See api_owm_note_call(). */
+#define API_OWM_DAILY_CAP 1000
+
+int api_owm_should_call(void)
+{
+    lock();
+    const int allowed = owm_counter_should_call(&s_owm, API_OWM_DAILY_CAP);
+    unlock();
+    return allowed;
+}
+
+void api_owm_note_call(long now_unix, int did_call)
+{
+    if (!did_call) return;
+    lock();
+    owm_counter_note_call(&s_owm, now_unix, API_OWM_DAILY_CAP);
+    unlock();
 }
 
 int api_partial_limit(void)
@@ -243,6 +281,8 @@ static esp_err_t h_status(httpd_req_t *req)
     s.partials_since_full = s_partials_since_full;
     s.fulls_total = s_fulls_total;
     s.bitmap_slot = api_live_bitmap_slot();
+    s.owm_day_calls = owm_counter_calls(&s_owm);
+    s.owm_calls_known = owm_counter_known(&s_owm);
     s.last_refresh_age_s = s_last_refresh_us == 0
         ? -1
         : (int)((esp_timer_get_time() - s_last_refresh_us) / 1000000LL);

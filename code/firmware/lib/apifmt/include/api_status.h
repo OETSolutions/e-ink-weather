@@ -36,6 +36,13 @@ typedef struct {
      * landed" — and an interrupted upload is supposed to leave the OLD image live, so the
      * two cases are exactly what an operator needs told apart (IF-2a). */
     int         bitmap_slot;
+    /* OWM calls made in the current calendar day, and whether that count is trustworthy yet
+     * (spec §3.4). Surfaced so a bug cannot silently burn the provider's quota: the free tier
+     * is 1,000/day against a 10-15 minute refresh, so a number approaching the cap means the
+     * device is refreshing in a loop. `calls_known` is 0 until a reading has supplied a
+     * timestamp — without it, "no calls yet" and "we cannot count" would report identically. */
+    int         owm_day_calls;
+    int         owm_calls_known;
     /* Most recent errors, newest first. Entries may be NULL (skipped). */
     const char *errors[API_STATUS_MAX_ERRORS];
     int         error_count;

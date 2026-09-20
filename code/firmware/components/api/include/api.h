@@ -79,3 +79,31 @@ int api_live_bitmap_slot(void);
  * ADC2 from the HTTP handler) returns a plausible wrong number, which is worse than a stale
  * right one: a device on mains would be reported as a half-flat battery. */
 void api_note_vbat(double volts, int source);
+
+/* ---- OWM daily call count and cap (spec §3.4) -------------------------------------------
+ *
+ * The spec requires the firmware to count and cap daily OpenWeatherMap calls and surface the
+ * count in /api/status "so a bug cannot silently burn the quota". The free tier allows 1,000
+ * calls/day and a 10-15 minute refresh uses ~96-144, so the cap is a TRIPWIRE for the
+ * abnormal case (a refresh loop), not a normal operating limit.
+ *
+ * The day is the CALENDAR day, because the provider's quota resets on a calendar boundary —
+ * a rolling 24 h window would cap a device early after it refreshed across midnight. The
+ * timestamp comes from the `dt` field already present in each OWM response, so no wall clock
+ * has to be maintained across deep sleep (there is none: esp_timer_get_time() is documented
+ * as "time since boot" and resets on every wake). */
+
+/* 1 if another call is allowed under the daily cap, 0 if the cap is reached. Call before
+ * making the request — this is what makes the cap actually prevent a call. Returns 1 when no
+ * timestamp has been seen yet: failing open is deliberate, because refusing to fetch on an
+ * unknown day would brick the display, which is worse than a momentarily uncounted call. */
+int api_owm_should_call(void);
+
+/* Record the outcome of a fetch attempt. `now_unix` is the response's own timestamp (from
+ * datasrc_value_t.observed_at); `did_call` is 1 if a request was actually sent.
+ *
+ * WHY A SUCCESSFUL FETCH IS COUNTED EVEN WHEN THE TIMESTAMP IS KNOWN: the timestamp arrives
+ * WITH the response, so the call cannot be attributed to a day until after it has been made.
+ * The count is therefore reconciled on the next attempt — if that one lands on a new calendar
+ * day, the stale day's count is discarded wholesale and the new day starts fresh. */
+void api_owm_note_call(long now_unix, int did_call);

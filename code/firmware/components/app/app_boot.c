@@ -6,7 +6,9 @@
 #include "api_store.h"
 #include "epd.h"
 #include "layout_model.h"
+#include "nvs_keys.h"
 #include "power.h"
+#include "prov.h"
 #include "refresh_policy.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
@@ -93,14 +95,14 @@ void app_seed_wifi(const char *ssid, const char *pass)
     }
 
     nvs_handle_t h;
-    if (nvs_open("devcfg", NVS_READWRITE, &h) != ESP_OK) {
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
         ESP_LOGW(TAG, "seed: cannot open NVS");
         return;
     }
 
     char existing[64] = {0};
     size_t n = sizeof(existing);
-    if (nvs_get_str(h, "wifi_ssid", existing, &n) == ESP_OK && existing[0] != '\0') {
+    if (nvs_get_str(h, DEVENV_KEY_WIFI_SSID, existing, &n) == ESP_OK && existing[0] != '\0') {
         /* Never overwrite: this must not be able to clobber a provisioned device, which is
          * the difference between a bench convenience and a footgun. */
         ESP_LOGI(TAG, "seed: credentials already present, leaving them alone");
@@ -108,11 +110,26 @@ void app_seed_wifi(const char *ssid, const char *pass)
         return;
     }
 
-    esp_err_t e = nvs_set_str(h, "wifi_ssid", ssid);
-    if (e == ESP_OK && pass) e = nvs_set_str(h, "wifi_pass", pass);
+    esp_err_t e = nvs_set_str(h, DEVENV_KEY_WIFI_SSID, ssid);
+    if (e == ESP_OK && pass) e = nvs_set_str(h, DEVENV_KEY_WIFI_PASS, pass);
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "seed: %s", e == ESP_OK ? "wrote bench credentials" : "failed");
+}
+
+/* Steps 4-6: connect if there are credentials, fetch, render, push.
+ *
+ * A separate function because the provisioning step has to sit AFTER it — there are no
+ * credentials to connect with on an unconfigured device, so the fetch cannot run first — and
+ * before the API comes up. Returns nothing: every failure inside is reported through the API
+ * status and the last-good image, which is the FR-29 behaviour.
+ *
+ * On an unconfigured device this deliberately does NOT try to connect. The refresh path is
+ * written to leave the panel showing the last good image when there is no network, which is
+ * what the user sees while they are provisioning. */
+static void app_boot_network_cycle(power_source_t source)
+{
+    app_refresh_tick(source);
 }
 
 void app_boot_run(void)
@@ -174,14 +191,46 @@ void app_boot_run(void)
         epd_sleep();
     }
 
+    /* ---- 3b. Provisioning is deferred to step 8 ---- */
+
     /* ---- 4-6. Network, fetch, render, push ---- */
-    app_refresh_tick(source);
+    app_boot_network_cycle(source);
 
     /* ---- 7. Mark this image good, if it is on probation (FR-32) ----
      * Reaching here means the image booted AND completed a refresh cycle, which is exactly
      * the proof rollback protection is waiting for. Doing this earlier — at the top of
      * app_main, or in the OTA handler — would accept a build that boots but cannot draw. */
     api_ota_mark_valid_if_pending();
+
+    /* ---- 8. Provisioning, if this device has never been set up (FR-30) ----
+     * Placed AFTER the panel has its image so the user sees something on the glass while they
+     * enter credentials, and AFTER the refresh cycle because there are no credentials to
+     * fetch with. On success this does NOT return — it restarts the device (see prov.h).
+     *
+     * The framebuffers are RELEASED first, and that is the whole point of this ordering.
+     * Provisioning is the most memory-hungry thing this firmware does — NimBLE's host and
+     * controller, a SoftAP, the WiFi driver — and holding 152.7 KiB of framebuffers across it
+     * starves esp_wifi_init(), which fails with ESP_ERR_NO_MEM ("Expected to init 10 rx
+     * buffer, actual is 7") and leaves the device unreachable in exactly the state where it
+     * has no other way to be configured. The image is already on the glass and the panel is
+     * bistable, so giving the memory back costs nothing the user can see. */
+    if (!prov_is_configured()) {
+        app_fbs_release();
+
+        const esp_err_t pe = prov_run_if_unconfigured();
+        if (pe != ESP_OK) {
+            /* Provisioning could not even start (no memory, WiFi would not come up). The
+             * device stays reachable and unconfigured rather than boot-looping. Take the
+             * framebuffers back so the API path can still draw, and report honestly if the
+             * network stack's own allocations have made that impossible now. */
+            ESP_LOGE(TAG, "provisioning failed to start: %s", esp_err_to_name(pe));
+            api_note_error("boot: provisioning failed");
+            if (app_fbs_reserve() != ESP_OK) {
+                ESP_LOGE(TAG, "framebuffers could not be re-reserved after the failed start");
+            }
+        }
+        /* Not reached on success: provisioning restarts the device, already configured. */
+    }
 
     if (source == POWER_SOURCE_USB) {
         /* On USB the device must stay awake to serve the API (FR-31), so the server starts

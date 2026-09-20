@@ -3247,6 +3247,27 @@ git commit -m "feat(net): wifi station with bounded reconnect and explicitly siz
 
 ### Task 12: Boot sequence — the ordered wake path (FR-28, FR-29, FR-8, FR-9)
 
+**Status: COMPLETE (2026-09-19), verified on hardware.** The ordered wake path runs:
+NVS → config → `api_reset_cycle_counters` → VBAT with the radio OFF → `power_classify` →
+`epd_init` + `app_render_last_good` + `epd_sleep` → `app_refresh_tick` →
+`api_ota_mark_valid_if_pending` → USB: `api_start` + `app_serve_loop` (never returns) /
+battery: deep sleep for `update_seconds`.
+
+Measured boot: `vbat=4.29V source=usb`, `config: update=900s partial_limit=5 pages=1`,
+`last-good image pushed (slot -1)`, `API listening (6 endpoints)`, and the device obtains
+an IP (192.168.2.98 on the bench network).
+
+**Correction to the original plan text:** `app_render_last_good()` and
+`app_refresh_tick()` were listed here AND under Task 13. They belong to Task 12 — this
+file owns the boot ordering, Task 13 owns the render pipeline they call.
+
+**Defects this task surfaced and fixed (all found by running it on the board):**
+- The default `partialRefreshLimit` was 24 in `cfg_store_default_json()` against FR-11's
+  5, while both code fallbacks said 5. Pinned by a test so the three copies cannot drift.
+- `POST /api/refresh` set a flag nothing consumed (see Task 14).
+- Drawing after `epd_sleep()` timed out on BUSY: the controller ignores commands in deep
+  sleep, and the failure looks exactly like a loose FPC. Added `epd_wake()`.
+
 This is the task that makes the whole device behave, and the one where ordering matters
 for a hardware reason (the ADC2/WiFi conflict).
 
@@ -3825,6 +3846,41 @@ git commit -m "feat(render): composite renderer with clipped value fields and a 
 ---
 
 ### Task 14: Device config API + chunked bitmap upload (FR-31, IF-2a, IF-4)
+
+**Status: COMPLETE (2026-09-19), verified on hardware with `curl`.**
+
+Every endpoint exercised against the board at 192.168.2.98:
+
+| Request | Result |
+|---|---|
+| `GET /api/status` | 200, `rssi:-58 vbat:4.29 power_source:"usb"` |
+| `GET /api/config` | 200, the stored document |
+| `PUT /api/config` (valid) | 200 `{"status":"stored"}`, reads back identical |
+| `PUT /api/config` (truncated JSON) | **400**, config unchanged, device alive, error ringed |
+| `POST /api/bitmap` (complete) | 200 `{"status":"promoted"}`, slot flips, panel repaints |
+| `POST /api/bitmap` (stopped at 3 chunks) | slot stays invalid, **previous image stays live** |
+| `POST /api/bitmap` (stopped at 5 chunks, slot already live) | live slot **unchanged** |
+| `POST /api/bitmap` (wrong CRC) | **409** `checksum mismatch`, live slot unchanged |
+| `POST /api/refresh` | 202, and the panel actually updates |
+| `GET /api/nope` | 404, no crash |
+
+**Visual confirmation:** the bench USB camera shows the uploaded `border` bitmap on the
+glass (black frame, centre block) with the two `--` value placeholders — i.e. the whole
+chain works end to end: chunked HTTP → flash slot → render → panel.
+
+**Files (actual, differs from the list below):** the API is
+`components/api/{api_server.c, api_store.c, api_ota.c}`; the pure formatting and query
+parsing went to `lib/apifmt/` and the upload/slot logic to `lib/upload/` so both are
+host-testable. `components/shared/CMakeLists.txt` exists because PlatformIO's ESP-IDF
+builder never builds `lib/` — without it those libraries are silently absent from the
+image (the build succeeded and produced a byte-identical `firmware.bin`).
+
+**Defects found by the on-hardware step:** `POST /api/refresh` answered 202 "scheduled"
+but nothing consumed the flag — the boot path refreshes exactly once, so after a bitmap
+upload the panel kept the old image while the API reported success. Added the USB serve
+loop (`app_serve_loop`). Also: `net_wifi_connect()` failed with "sta is connected" when
+already associated, dropping every refresh after the first; and `app_refresh_tick()`
+returned early on a failed fetch, so an upload was never drawn during an OWM outage.
 
 **Files:**
 - Create: `firmware/components/api/CMakeLists.txt`

@@ -8,6 +8,9 @@ cannot check for itself.
 
 Checks:
   - every entry is 4 KB sector aligned;
+  - every `app` partition is 64 KB aligned, which the bootloader requires for OTA slots —
+    gen_esp32part.py rejects the whole table otherwise, so this is a build failure, not a
+    runtime one, but it is far cheaper to catch here than after a 40 s rebuild;
   - no partition overlaps another;
   - the table exactly fills the 4 MB flash (no wasted tail, no overflow past the end);
   - the two bitmap slots are large enough for the header plus a full 1bpp frame.
@@ -18,6 +21,9 @@ from pathlib import Path
 
 FLASH_SIZE = 0x400000          # 4 MB, ESP32-WROOM-32D (NFR-2)
 SECTOR = 0x1000
+# The ESP32 bootloader maps each OTA slot at a 64 KB boundary; gen_esp32part.py enforces
+# this with "Partition ota_1 invalid: Offset 0x... is not aligned to 0x10000".
+OTA_ALIGN = 0x10000
 # Must match bitmap_upload.h BITMAP_UPLOAD_TOTAL and the on-flash header.
 BITMAP_SLOT_MIN = 16 + 78200
 
@@ -36,6 +42,7 @@ def parse(path):
         name, ptype, subtype, offset, size = (c.strip() for c in row[:5])
         rows.append({
             "name": name,
+            "type": ptype,
             "offset": int(offset, 0),
             "size": int(size, 0),
         })
@@ -61,6 +68,11 @@ def main():
             errors.append(
                 f"{p['name']}: ends at 0x{p['offset'] + p['size']:X}, "
                 f"past the {FLASH_SIZE:#x} end of flash")
+        # OTA slots must sit on a 64 KB boundary or the bootloader cannot map them.
+        if p["type"] == "app" and p["offset"] % OTA_ALIGN:
+            errors.append(
+                f"{p['name']}: app offset 0x{p['offset']:X} is not "
+                f"{OTA_ALIGN:#x}-aligned (the bootloader requires this for OTA slots)")
 
     # Sort by offset so adjacency is a simple neighbour comparison.
     ordered = sorted(rows, key=lambda p: p["offset"])

@@ -13,5 +13,5 @@ FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
 # be named here.
 idf_component_register(
     SRCS ${app_sources}
-    REQUIRES api app epd net
+    REQUIRES api app epd net prov
 )

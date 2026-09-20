@@ -13,7 +13,11 @@
  *   3. Panel: show the last good image BEFORE any network work, so a network failure never
  *      leaves the panel blank or stale (FR-29).
  *   4-6. Network, fetch, render.
- *   7. Sleep, if on battery.
+ *   7. Mark the image good, if it is on probation (FR-32).
+ *   8. Provisioning, if never configured (FR-30) — and this runs LAST, after the framebuffers
+ *      have been released, because provisioning is the most memory-hungry step and there is
+ *      no PSRAM on this part (NFR-2). See the comment at the call site.
+ *   9. Sleep, if on battery.
  */
 
 /* Run one wake: read state, draw, fetch, refresh, then sleep if on battery. Does not

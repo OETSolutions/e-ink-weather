@@ -1,22 +1,32 @@
 # Name,      Type, SubType, Offset,   Size,     Flags
-# Dual-OTA (FR-32 / NFR-2). Everything below is 4 KB sector aligned, the whole image is
-# exactly 0x400000 (4 MB) with no tail, verified by tools/check_partitions.py.
+# Dual-OTA (FR-32 / NFR-2). Everything below is 4 KB sector aligned, the app partitions are
+# additionally 64 KB aligned (the bootloader requires that for OTA slots), and the whole
+# image is exactly 0x400000 (4 MB) with no tail — all verified by tools/check_partitions.py.
+#
+# The OTA slots are 0x1D0000 (1,900,544 bytes) rather than 0x180000. That is not arbitrary:
+# enabling BLE provisioning (FR-30, wifi_prov_mgr over NimBLE) adds ~270 KB to the app image,
+# which pushed it to 91.7% of a 0x180000 slot — leaving ~130 KB for the entire web app that
+# FR-18 requires be served from this same flash. The `storage` partition that used to sit at
+# the end was declared for web-app assets but never used: Task 21b embeds them in the app
+# image with EMBED_FILES instead of mounting a filesystem, so it was dead space. Its 736 KB
+# is now split between the two OTA slots, taking the app headroom to ~447 KB.
+#
+# 0x20000 + 0x1D0000*2 + 0x20000*2 == 0x400000 exactly.
 nvs,         data, nvs,     0x9000,   0x6000,
 otadata,     data, ota,     0xf000,   0x2000,
 phy_init,    data, phy,     0x11000,  0x1000,
-ota_0,       app,  ota_0,   0x20000,  0x180000,
-ota_1,       app,  ota_1,   0x1A0000, 0x180000,
-# The static-bitmap slots (IF-2a). 0x14000 = 81,920 bytes = the 16-byte header plus the
-# 78,200-byte frame, rounded up to a whole sector so a promote rewrites exactly one sector
-# of header without touching the image. Two of them, because an interrupted upload must
-# leave the PREVIOUS image live — see bitmap_slot.h. NVS is only 24 KB and cannot hold a
-# 78,200-byte bitmap, which is why these are raw partitions.
+ota_0,       app,  ota_0,   0x20000,  0x1D0000,
+ota_1,       app,  ota_1,   0x1F0000, 0x1D0000,
+# The static-bitmap slots (IF-2a). The minimum is the 16-byte header plus the 78,200-byte
+# frame (78,216) rounded to a sector; these are 0x20000 because the leftover flash after the
+# OTA slots is better spent here than left as a gap, and a larger slot leaves room for a
+# future per-page bitmap without touching the table again.
+# Two of them, because an interrupted upload must leave the PREVIOUS image live — see
+# bitmap_slot.h. NVS is only 24 KB and cannot hold a 78,200-byte bitmap, which is why these
+# are raw partitions.
 # Subtype 0x40 is a raw data partition: there is NO filesystem here, the slots are addressed
 # directly with esp_partition_read/write through a bitmap_slot backend. Using `spiffs` (as
 # an earlier revision did) would advertise a mountable FS that does not exist.
 # Resolves spec Q9.
-bitmap_a,    data, 0x40,    0x320000, 0x14000,
-bitmap_b,    data, 0x40,    0x334000, 0x14000,
-# Web-app assets, if the build ever needs to ship them outside the app image. Task 21b
-# currently embeds them in the app via EMBED_FILES, so this is headroom, not a dependency.
-storage,     data, spiffs,  0x348000, 0xB8000,
+bitmap_a,    data, 0x40,    0x3C0000, 0x20000,
+bitmap_b,    data, 0x40,    0x3E0000, 0x20000,

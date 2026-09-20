@@ -1,4 +1,5 @@
 #include "app_boot.h"
+#include "app_refresh.h"
 #include "api.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -46,6 +47,18 @@ static void app_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "e-ink weather display starting");
+
+    /* BEFORE the worker task, and before anything else allocates: the two framebuffers need
+     * one contiguous 76.4 KiB block each, and this part has no PSRAM. Creating a 16 KiB task
+     * first splits the only region large enough for the second one, which makes the render
+     * path fail permanently with a misleading "out of memory" while 199 KB is still free.
+     * See app_fbs_reserve() for the full explanation. */
+    if (app_fbs_reserve() != ESP_OK) {
+        /* Not fatal: the device still boots, serves the API and can be provisioned — it just
+         * cannot draw. Restarting would loop forever against the same constraint, so this is
+         * reported and the boot continues. */
+        ESP_LOGE(TAG, "framebuffers unavailable; the panel cannot be updated this boot");
+    }
 
     BaseType_t ok = xTaskCreate(app_task, "app", APP_TASK_STACK, NULL, APP_TASK_PRIO, NULL);
     if (ok != pdPASS) {
