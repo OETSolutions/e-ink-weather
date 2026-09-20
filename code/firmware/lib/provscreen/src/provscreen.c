@@ -310,5 +310,43 @@ int provscreen_render_branded(uint8_t *fb, const char *ap_ssid, const char *pop,
         }
         if (!ok) all_ok = 0;
     }
+
+    /* ---- The 2.4 GHz warning ----
+     * The panel is a 2.4 GHz-only radio, and this is the one mistake a user cannot recover from
+     * by reading the rest of the page: they select a 5 GHz network, the join is refused, and the
+     * device re-enters provisioning looking, from the phone, exactly like a wrong password.
+     *
+     * It goes UNDER the QR grid rather than on the left, because that is the one large blank
+     * area: the left column already runs to the bottom edge, and a 2x callout there clipped off
+     * the glass. The space is derived from the grid's own row math, so it cannot drift out of
+     * bounds if the codes are resized. */
+    {
+        static const char *warn[2] = { "WARNING!", "2.4 GHz WiFi only" };
+        const int grid_bottom = qy0 + 2 * (QR_BOX_W + font_line_height(FONT_BODY) + QR_ROW_GAP);
+        const int by = grid_bottom + 4;
+        const int th = font_line_height(FONT_BODY) * 2;
+        const int bx = qx - 8;
+        const int bw = 2 * QR_BOX_W + QR_COL_GAP + 16;
+
+        /* Skip rather than overlap the codes: the margin is not worth an unreadable screen. */
+        if (by + 2 * th + 14 <= EPD_HEIGHT - MARGIN) {
+            /* A 3 px outline as four filled edges, so the callout separates from the page. */
+            for (int t = 0; t < 3; t++) {
+                for (int xx = bx; xx < bx + bw; xx++) {
+                    canvas_set_px(&c, xx, by + t, 1);
+                    canvas_set_px(&c, xx, by + 2 * th + 14 - t, 1);
+                }
+                for (int yy = by; yy < by + 2 * th + 14; yy++) {
+                    canvas_set_px(&c, bx + t, yy, 1);
+                    canvas_set_px(&c, bx + bw - 1 - t, yy, 1);
+                }
+            }
+            for (int i = 0; i < 2; i++)
+                draw_line_scaled(&c, FONT_BODY, bx + 14, by + 6 + i * th, warn[i], 2);
+        } else {
+            /* Fallback that needs no room: one bold line under the left column. */
+            draw_line_scaled(&c, FONT_BODY, MARGIN, y, "WARNING: 2.4 GHz WiFi only", 1);
+        }
+    }
     return all_ok ? 0 : -1;
 }
