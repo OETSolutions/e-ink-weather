@@ -21,6 +21,7 @@
  * user out of their own hardware. */
 
 #include "prov.h"
+#include "prov_softap_prov.h"
 #include "nvs_keys.h"
 #include "wifi_provisioning/manager.h"
 
@@ -448,6 +449,13 @@ static esp_err_t start_httpd(void)
         }
     }
     httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, h_404);
+
+    /* Bring up the second provisioning transport on this same server, so the official ESP
+     * SoftAP Provisioning app can configure the device over HTTP. Non-fatal: the portal page
+     * is the primary path, and losing the app must not take the page down with it. */
+    if (prov_softap_prov_start(s_server) != ESP_OK) {
+        ESP_LOGW(TAG, "SoftAP app support unavailable; the portal page still works");
+    }
     return ESP_OK;
 }
 

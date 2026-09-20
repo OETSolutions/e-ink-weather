@@ -31,7 +31,8 @@ idf_component_register(
         "prov_ap.c"      # the setup AP, the config page and the captive-portal redirect
         "prov_dns.c"     # DNS catch-all that makes the page open by itself
         "prov_store.c"   # the one place credentials and config are written to NVS
+        "prov_softap_prov.c" # second transport: HTTP protocomm for the SoftAP app
     INCLUDE_DIRS "include"
-    REQUIRES esp_wifi nvs_flash esp_netif esp_event wifi_provisioning esp_http_server shared
+    REQUIRES esp_wifi nvs_flash esp_netif esp_event wifi_provisioning protocomm esp_http_server json shared
     PRIV_REQUIRES bt lwip
 )

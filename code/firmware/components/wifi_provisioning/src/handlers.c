@@ -228,3 +228,17 @@ esp_err_t get_wifi_ctrl_handlers(wifi_ctrl_handlers_t *ptr)
     ptr->ctrl_reprov  = ctrl_reprov;
     return ESP_OK;
 }
+
+/* ---- this repo: expose the handler tables for the extra SoftAP protocomm instance ----
+ * wifi_prov_setup() takes one scheme, so the portal's second transport (over HTTP) builds its
+ * own protocomm and needs the same endpoint handlers. These just forward to the getters above
+ * with a void* so the public header need not include the private types. */
+esp_err_t wifi_prov_get_config_handlers(void *ptr)
+{
+    return get_wifi_prov_handlers((wifi_prov_config_handlers_t *)ptr);
+}
+
+esp_err_t wifi_prov_get_scan_handlers(void *ptr)
+{
+    return get_wifi_scan_handlers((wifi_prov_scan_handlers_t *)ptr);
+}

@@ -656,6 +656,27 @@ uint16_t wifi_prov_mgr_wifi_scan_result_count(void);
  */
 const wifi_ap_record_t *wifi_prov_mgr_wifi_scan_result(uint16_t index);
 
+/* ---------------------------------------------------------------------------------------
+ * Shared handler access (this repo).
+ *
+ * WHY: a protocomm instance carries exactly ONE transport, and wifi_prov_setup() accepts
+ * exactly one scheme — so a single wifi_prov_mgr serves BLE *or* the SoftAP scheme, never
+ * both. This device offers both (FR-30): BLE for the ESP BLE Provisioning app and the setup
+ * portal for the ESP SoftAP Provisioning app. The second transport is therefore a SECOND
+ * protocomm instance, built in components/prov, which reuses the manager's own endpoint
+ * handlers through these two calls instead of reimplementing the protobuf dispatch.
+ *
+ * Both fill a caller-allocated struct the caller must keep alive:
+ *   - wifi_prov_get_config_handlers()  -> wifi_prov_config_handlers_t
+ *   - wifi_prov_get_scan_handlers()    -> wifi_prov_scan_handlers_t
+ * ------------------------------------------------------------------------------------- */
+
+/** @brief  Fill the prov-config endpoint handlers (see wifi_config.h). */
+esp_err_t wifi_prov_get_config_handlers(void *ptr);
+
+/** @brief  Fill the prov-scan endpoint handlers (see wifi_scan.h). */
+esp_err_t wifi_prov_get_scan_handlers(void *ptr);
+
 #ifdef __cplusplus
 }
 #endif
