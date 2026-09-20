@@ -29,7 +29,29 @@ static int write_json(const char *path)
     fprintf(f, "{\n  \"schemaVersion\": 1,\n  \"updateSeconds\": 900,\n"
                "  \"partialRefreshLimit\": 24,\n  \"pages\": [\n"
                "    { \"name\": \"default\", \"refreshSeconds\": 900, \"weight\": 1 }\n"
-               "  ],\n  \"fields\": [\n");
+               "  ],\n");
+    /* The STATIC LAYER is emitted too, not just the fields.
+     *
+     * WHY: the web app's cross-check (Task 17) has to reproduce this exact image, and the
+     * static layer is most of it — the labels and rules are what the golden is mostly made
+     * of. A fixture with only the fields would force the web test to hardcode the labels
+     * from this header, which is the drift the single-source-of-truth note above exists to
+     * prevent: change a label here, regenerate, and the test would keep checking the old
+     * one against a golden built from the new one. Emitting them keeps the fixture complete. */
+    fprintf(f, "  \"labels\": [\n");
+    for (int i = 0; i < GOLDEN_LABEL_COUNT; i++) {
+        const static_label_t *l = &GOLDEN_LABELS[i];
+        fprintf(f, "    { \"x\": %d, \"y\": %d, \"text\": \"%s\", \"font\": %d }%s\n",
+                l->x, l->y, l->text, l->font_id,
+                i + 1 < GOLDEN_LABEL_COUNT ? "," : "");
+    }
+    fprintf(f, "  ],\n  \"rules\": [\n");
+    for (int i = 0; i < GOLDEN_RULE_COUNT; i++) {
+        fprintf(f, "    { \"y\": %d, \"thickness\": %d, \"inset\": %d }%s\n",
+                GOLDEN_RULES[i].y, GOLDEN_RULES[i].thickness, GOLDEN_INSET,
+                i + 1 < GOLDEN_RULE_COUNT ? "," : "");
+    }
+    fprintf(f, "  ],\n  \"fields\": [\n");
     for (int i = 0; i < GOLDEN_FIELD_COUNT; i++) {
         const value_field_t *v = &GOLDEN_FIELDS[i];
         fprintf(f, "    { \"x\": %d, \"y\": %d, \"w\": %d, \"h\": %d, "
