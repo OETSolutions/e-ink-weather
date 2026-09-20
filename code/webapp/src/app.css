@@ -249,3 +249,38 @@ p.hint {
 }
 
 .hint.warn { color: var(--err); }
+
+/* ---- actions row + token display ---- */
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.actions button { width: auto; flex: 1 1 12rem; }
+
+.actions input[type='file'] {
+  font-size: 0.85rem;
+  padding: 0.35rem;
+  flex: 1 1 100%;
+}
+
+/* The token is a secret the user must copy, so it is shown in a monospace box that does not
+   wrap mid-character and is easy to select. */
+.token {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  padding: 0.5rem;
+  margin: 0.35rem 0;
+  background: #8882;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  word-break: break-all;
+  user-select: all;
+}
+
+.authRow button { width: auto; }

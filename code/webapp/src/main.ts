@@ -20,6 +20,8 @@ import { listEntities } from './data/ha';
 import { formatPlaceholder } from './data/format';
 import { evaluateAlerts } from './alerts/rules';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
+import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
+import { getAuth, putAuth, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -158,7 +160,9 @@ async function mount(root: HTMLElement): Promise<void> {
   let doc: Config = loaded ?? emptyConfig();
 
   /* ---- the page being edited ---- */
-  const page: Page = doc.pages[0] ??
+  /* `let`, not `const`: loading a file REPLACES the document, and the editor holds a reference
+   * to this page, so it must be repointable. */
+  let page: Page = doc.pages[0] ??
     { id: 'main', name: 'Main', refreshSeconds: 900, weight: 1, widgets: [] };
   /* The device's OWN page objects carry no `widgets` key — it stores what it schedules, not
    * what it draws. An absent array is therefore the normal shape and must become an empty one
@@ -202,6 +206,95 @@ async function mount(root: HTMLElement): Promise<void> {
   const alertBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
   alertToggle.append(alertBox, el('span', {}, 'Preview a firing alert'));
   const saveBtn = button('Save to device', () => void doSave());
+
+  /* ---- file save / load (FR-26) ---- */
+  const saveFileBtn = button('Save to file', () => {
+    downloadText(exportConfig(doc), configFilename());
+    status.textContent = 'Saved a copy of this layout to your downloads.';
+    status.classList.remove('err');
+  });
+  const fileInput = el('input', { type: 'file', accept: 'application/json,.json' }) as HTMLInputElement;
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    void (async () => {
+      try {
+        const next = importConfig(await f.text());
+        /* Adopt the loaded document WHOLESALE and re-seed the page the editor holds. The
+         * editor captured `page` at mount, so it must be repointed — otherwise the canvas would
+         * keep showing the old layout while the document held the new one, and Save would then
+         * write a mixture of the two. */
+        doc = next;
+        page = doc.pages[0]!;
+        if (!Array.isArray(page.widgets)) page.widgets = [];
+        editorState.page = page;
+        editorState.selectedId = undefined;
+        editorState.values = previewValues(page, alertProbe);
+        picker.setPosition({ lat: doc.location.latitude, lon: doc.location.longitude });
+        zipInput.value = doc.location.zipCode ?? '';
+        panel.show(undefined);
+        editor.redraw();
+        describe(undefined);
+        status.textContent = `Loaded “${f.name}”. Review it, then Save to device.`;
+        status.classList.remove('err');
+      } catch (e) {
+        status.textContent = e instanceof Error ? e.message : 'Could not read that file.';
+        status.classList.add('err');
+      }
+      fileInput.value = '';   /* allow re-picking the same file */
+    })();
+  });
+
+  /* ---- optional API auth (FR-31) ---- */
+  const authBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const authLabel = el('label', { className: 'toggle' }) as HTMLLabelElement;
+  authLabel.append(authBox, el('span', {}, 'Require a token to change settings'));
+  const authRow = el('div', { className: 'authRow' });
+  let authToken = '';
+
+  function describeAuth(): void {
+    authRow.replaceChildren();
+    if (!authToken) {
+      authRow.append(el('p', { className: 'hint' },
+        'Turn this on to get a token. Anyone without it can still change this display.'));
+      return;
+    }
+    const code = el('code', { className: 'token' }, authToken);
+    authRow.append(
+      el('p', { className: 'hint' }, 'Token — keep it, you will not see it again:'),
+      code,
+      button('Copy', () => void navigator.clipboard?.writeText(authToken)),
+    );
+  }
+
+  authBox.addEventListener('change', () => {
+    void (async () => {
+      /* SEND THE TOKEN WHEN WE HAVE IT, or a device with protection ON would refuse the very
+       * request that turns it off — the user would untick the box, get a 401, and watch the box
+       * spring back with no explanation. The token was returned when protection was enabled and
+       * is held in memory for exactly this. */
+      const r = await putAuth({ enabled: authBox.checked }, authToken ? { token: authToken } : {});
+      if (!r.ok) {
+        /* Revert the box: a checkbox that stays ticked after a failed write would claim the
+         * device is protected when it is not. */
+        authBox.checked = !authBox.checked;
+        status.textContent = `Could not change the auth setting: ${r.error}`;
+        status.classList.add('err');
+        return;
+      }
+      applyAuthState(r.value);
+      status.textContent = r.value.enabled
+        ? 'API token protection is ON. Keep the token safe.'
+        : 'API token protection is OFF.';
+      status.classList.remove('err');
+    })();
+  });
+
+  function applyAuthState(a: AuthState): void {
+    authBox.checked = a.enabled;
+    authToken = a.token;
+    describeAuth();
+  }
 
   function describe(id: string | undefined): void {
     const w = id ? page.widgets.find((x) => x.id === id) : undefined;
@@ -314,7 +407,15 @@ async function mount(root: HTMLElement): Promise<void> {
        panelHost),
     sel,
     alertToggle,
-    saveBtn,
+    el('div', { className: 'actions' }, saveBtn, saveFileBtn),
+    el('h2', {}, 'Layout file'),
+    el('p', { className: 'sub' },
+       'Save a copy, or load one you saved earlier. Loading does not touch the device until ' +
+       'you press Save.'),
+    el('div', { className: 'actions' }, fileInput),
+    el('h2', {}, 'Access'),
+    authLabel,
+    authRow,
   );
 
   describe(undefined);
@@ -325,6 +426,15 @@ async function mount(root: HTMLElement): Promise<void> {
     picker.invalidate();
     editor.resize();
   });
+
+  /* Read the auth state so the checkbox reflects the DEVICE, not the page's default. A
+   * checkbox that starts unticked on a device that is actually protected would invite the user
+   * to "fix" a setting that is already correct. */
+  void (async () => {
+    const r = await getAuth();
+    if (r.ok) applyAuthState(r.value);
+    else describeAuth();
+  })();
 
   /* The HA entity list is fetched once, asynchronously. A failure is not fatal and is explained
    * in the panel rather than shown as an empty picker — "no entities" would read as "your Home
