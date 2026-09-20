@@ -22,6 +22,7 @@
 
 #include "prov.h"
 #include "nvs_keys.h"
+#include "wifi_provisioning/manager.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -71,7 +72,11 @@ static const char PAGE_HTML[] =
 "label{display:block;margin:.75rem 0 .2rem;font-size:.9rem;font-weight:500}"
 "input{width:100%;box-sizing:border-box;padding:.55rem;font-size:1rem;"
 "border:1px solid #8886;border-radius:.35rem;background:#8881}"
+"select{width:100%;box-sizing:border-box;padding:.55rem;font-size:1rem;"
+"border:1px solid #8886;border-radius:.35rem;background:#8881}"
 ".row{display:flex;gap:.75rem}.row>div{flex:1}"
+".row>select{flex:1}.row>button{width:auto;flex:0 0 auto;padding:.55rem .8rem;"
+"background:#8883;color:inherit;font-weight:500}"
 "button{width:100%;padding:.8rem;font-size:1rem;font-weight:600;border:0;"
 "border-radius:.35rem;background:#2563eb;color:#fff}"
 ".hint{font-size:.8rem;opacity:.7;margin:.3rem 0 0}"
@@ -89,6 +94,10 @@ static const char PAGE_HTML[] =
 "password.</p>"
 "<form id=\"f\">"
 "<fieldset><legend>WiFi</legend>"
+"<label for=\"pick\">Pick your network</label>"
+"<div class=\"row\"><select id=\"pick\"><option value=\"\">Scanning…</option></select>"
+"<button type=\"button\" id=\"rescan\" class=\"sec\">Rescan</button></div>"
+"<p class=\"hint\">2.4&nbsp;GHz networks only. If yours is missing, type it below.</p>"
 "<label for=\"ssid\">Network name</label>"
 "<input id=\"ssid\" name=\"ssid\" required autocapitalize=\"none\" "
 "autocorrect=\"off\" spellcheck=\"false\">"
@@ -118,6 +127,23 @@ static const char PAGE_HTML[] =
 "<div id=\"msg\"></div></form><script>"
 "var f=document.getElementById('f'),m=document.getElementById('msg');"
 "function show(t,ok){m.textContent=t;m.className=ok?'ok':'err';}"
+/* Network picker. The device scans for us (it is the one with the radio), and we fill a
+ * <select>. Picking one just fills the text field, so typing still works and a network that
+ * did not appear can be entered by hand. 5 GHz APs are still listed but marked, because a
+ * hidden 2.4/5 GHz distinction is exactly the failure the warning above describes. */
+"var pick=document.getElementById('pick'),ssid=document.getElementById('ssid');"
+"function scan(){pick.innerHTML='<option value=\"\">Scanning…</option>';"
+"fetch('scan',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){"
+"pick.innerHTML='';"
+"if(!j.list||!j.list.length){pick.innerHTML='<option value=\"\">No networks found</option>';return;}"
+"pick.innerHTML='<option value=\"\">Choose a network…</option>';"
+"j.list.forEach(function(n){var o=document.createElement('option');"
+"o.value=n.ssid;o.textContent=n.ssid+(n.rssi?' ('+n.rssi+' dBm)':'');"
+"pick.appendChild(o);});"
+"}).catch(function(){pick.innerHTML='<option value=\"\">Scan failed — type it below</option>';});}"
+"pick.addEventListener('change',function(){if(pick.value)ssid.value=pick.value;});"
+"document.getElementById('rescan').addEventListener('click',scan);"
+"scan();"
 "f.addEventListener('submit',function(e){e.preventDefault();"
 "var d=new URLSearchParams(new FormData(f));"
 "show('Saving\\u2026',true);"
@@ -138,6 +164,91 @@ static esp_err_t h_page(httpd_req_t *req)
      * stale copy would keep posting to an old form after a firmware change. */
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, PAGE_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+/* Escape `s` into `out` for a JSON string. Only the characters a network name can legally
+ * contain that would break the JSON — quote, backslash, and raw control bytes. A non-ASCII
+ * SSID byte passes through as-is, which is valid UTF-8 JSON only if the SSID was UTF-8; an
+ * SSID is an arbitrary byte string, so bytes >= 0x80 are emitted as \u00XX to stay valid. */
+static void json_escape(const char *s, char *out, size_t out_max)
+{
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p && o + 7 < out_max; p++) {
+        if (*p == '"' || *p == '\\') {
+            out[o++] = '\\'; out[o++] = (char)*p;
+        } else if (*p < 0x20) {
+            o += (size_t)snprintf(out + o, out_max - o, "\\u%04x", *p);
+        } else if (*p < 0x80) {
+            out[o++] = (char)*p;
+        } else {
+            o += (size_t)snprintf(out + o, out_max - o, "\\u%04x", *p);
+        }
+    }
+    out[o] = '\0';
+}
+
+static void send_json(httpd_req_t *req, const char *status, const char *json);
+
+/* GET /scan — the network picker's data. Served while the device is in provisioning-only
+ * mode, where the radio is free, so an ordinary blocking scan is the right thing here.
+ *
+ * ONLY 2.4 GHz NETWORKS CAN EVER APPEAR. The radio is 2.4 GHz-only, so it does not see 5 GHz
+ * APs at all — verified on hardware: a live scan here returned 16 entries, every one on a
+ * 2.4 GHz channel. That is why there is no band flag in the JSON: everything listed is
+ * joinable, which is the reassurance the user actually needs. It also means this picker
+ * cannot reproduce the "chose a 5 GHz network" mistake the portal warning describes; that
+ * mistake is only reachable by typing a name by hand.
+ *
+ * The scan is capped at 24 entries and deduplicated by SSID: a mesh or multi-AP home reports
+ * the same name once per BSSID, and a list with "HomeNet2G" four times is worse than useless
+ * on a phone. The strongest BSSID of each name is kept, which is the one most likely to work.
+ * The JSON is built into a fixed 2 KB buffer; 24 escaped 32-byte SSIDs plus per-entry overhead
+ * stays well inside it. */
+static esp_err_t h_scan(httpd_req_t *req)
+{
+    esp_err_t e = wifi_prov_mgr_wifi_scan_start(true, false, 0, 120);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(e));
+        send_json(req, "200 OK", "{\"list\":[]}");
+        return ESP_OK;
+    }
+
+    char *out = malloc(2048);
+    if (!out) {
+        send_json(req, "500 Internal Server Error", "{\"list\":[]}");
+        return ESP_OK;
+    }
+    size_t o = 0;
+    o += (size_t)snprintf(out + o, 2048 - o, "{\"list\":[");
+
+    const uint16_t total = wifi_prov_mgr_wifi_scan_result_count();
+    int emitted = 0;
+    for (uint16_t i = 0; i < total && emitted < 24; i++) {
+        const wifi_ap_record_t *a = wifi_prov_mgr_wifi_scan_result(i);
+        if (!a || a->ssid[0] == '\0') continue;   /* hidden networks cannot be picked */
+
+        /* Results are rssi-descending, so the first time a name is seen is its strongest
+         * BSSID; a later repeat is a weaker one and is skipped. `emitted` is small, so the
+         * O(n^2) check costs nothing. */
+        bool seen = false;
+        for (uint16_t j = 0; j < i && !seen; j++) {
+            const wifi_ap_record_t *b = wifi_prov_mgr_wifi_scan_result(j);
+            if (b && strncmp((const char *)a->ssid, (const char *)b->ssid, 32) == 0) seen = true;
+        }
+        if (seen) continue;
+
+        char esc[8 * 33];
+        json_escape((const char *)a->ssid, esc, sizeof(esc));
+        o += (size_t)snprintf(out + o, 2048 - o, "%s{\"ssid\":\"%s\",\"rssi\":%d}",
+                              emitted ? "," : "", esc, (int)a->rssi);
+        emitted++;
+    }
+    snprintf(out + o, 2048 - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t r = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    free(out);
+    return r;
 }
 
 /* Percent-decode an application/x-www-form-urlencoded value into `out`. Returns 0 on
@@ -326,6 +437,7 @@ static esp_err_t start_httpd(void)
 
     static const httpd_uri_t uris[] = {
         { .uri = "/",     .method = HTTP_GET,  .handler = h_page },
+        { .uri = "/scan", .method = HTTP_GET,  .handler = h_scan },
         { .uri = "/save", .method = HTTP_POST, .handler = h_save },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

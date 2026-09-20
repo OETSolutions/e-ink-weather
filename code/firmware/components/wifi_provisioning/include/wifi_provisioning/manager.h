@@ -629,6 +629,33 @@ esp_err_t wifi_prov_mgr_reset_sm_state_on_failure(void);
  */
 esp_err_t wifi_prov_mgr_reset_sm_state_for_reprovision(void);
 
+/* ---------------------------------------------------------------------------------------
+ * Scan accessors (this repo). The manager implements these in wifi_provisioning_priv.h; they
+ * are promoted to the public header so the firmware's own captive-portal scan endpoint
+ * (components/prov/prov_ap.c, GET /scan) can drive a scan and read the results. Upstream keeps
+ * them private because only the protocomm scan handlers used them, but the portal needs the
+ * same data and this is the only supported way in.
+ * ------------------------------------------------------------------------------------- */
+
+/**
+ * @brief   Start a Wi-Fi scan and (for blocking=true) wait for it.
+ * @return  ESP_OK on success, ESP_ERR_INVALID_STATE if not initialised.
+ */
+esp_err_t wifi_prov_mgr_wifi_scan_start(bool blocking, bool passive,
+                                        uint8_t group_channels, uint32_t period_ms);
+
+/** @brief  True once the started scan has finished. */
+bool wifi_prov_mgr_wifi_scan_finished(void);
+
+/** @brief  Number of results available in the finished scan. */
+uint16_t wifi_prov_mgr_wifi_scan_result_count(void);
+
+/**
+ * @brief   One result by index (rssi-descending order).
+ * @return  NULL if index is out of range.
+ */
+const wifi_ap_record_t *wifi_prov_mgr_wifi_scan_result(uint16_t index);
+
 #ifdef __cplusplus
 }
 #endif
