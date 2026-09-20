@@ -12,3 +12,4 @@ scratch.txt
 firmware/src/secrets_build.h
 secrets_build.h
 secrets_*.h
+tools/__pycache__

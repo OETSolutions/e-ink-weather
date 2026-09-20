@@ -282,26 +282,25 @@ static cJSON* wifi_prov_get_info_json(void)
     /* ---------------------------------------------------------------------------------------
      * LOCAL PATCH: the "wifi_scan" capability is deliberately NOT advertised.
      *
-     * WHY: iOS negotiates a very short BLE supervision timeout (measured here: 720 ms at a
-     * 30 ms interval) and CoreBluetooth refuses to lengthen it — a peripheral-initiated
-     * ble_gap_update_params() is rejected (HCI 0x2A "different transaction collision", then
-     * "rejected"), and so is answering the parameter-update request. With such a tight
-     * timeout, the official app's Wi-Fi scan leaves the link idle past 720 ms and the phone
-     * silently drops it (NimBLE reason 520 = HCI 0x08 "connection timeout"); the app then
-     * hangs forever on "Sending Wi-Fi credentials" because its client library guards the
-     * next step on `if session.isEstablished { ... }` with no else.
+     * WHY: with it advertised, the official iOS app runs a Wi-Fi scan (that is exactly what
+     * the capability means), and the phone then drops the BLE link mid-flow. The app's client
+     * library guards the next step on `if session.isEstablished { ... }` with NO else, so it
+     * hangs forever on "Sending Wi-Fi credentials". Omitting the capability makes the app
+     * offer manual SSID entry instead -- the same path the scanless clients use, which
+     * completes reliably.
      *
-     * Advertising the capability is what makes the app perform that scan
-     * (`scanDeviceForWifiList` in the iOS library scans only `if capabilities.contains("wifi_scan")`).
-     * Omitting it makes the app offer manual SSID entry instead — the same code path the
-     * scanless clients use, which completes reliably. The network list is not lost: the
-     * captive portal at http://192.168.4.1 still shows a scan-backed picker, and it is the
-     * path this device prefers anyway.
+     * WHAT THIS IS NOT: it is not a supervision-timeout problem, though it looked like one.
+     * iOS does connect with a 720 ms timeout, and the app is idle for ~1 s after the scan --
+     * but raising the timeout to 8 s (via a retried ble_gap_update_params(), verified accepted
+     * by the phone: "updated ... supervision timeout 8000 ms") did NOT stop the drop. The
+     * phone disconnects anyway (NimBLE reason 520 / HCI 0x08). So the cause is on the app's
+     * side of the link and cannot be fixed from the device; the capability omission is what
+     * actually makes provisioning work.
      *
      * The scan endpoints stay registered, so a client that ignores the capability and scans
-     * anyway still gets an answer; it is only the *advertisement* that is removed. Measured:
-     * such a forced scan completes and the list is delivered, but the phone still drops the
-     * link afterwards, so the omission is what actually makes the app work.
+     * anyway still gets an answer; it is only the *advertisement* that is removed. The captive
+     * portal at http://192.168.4.1 keeps its own scan-backed picker, so the network list is
+     * available there -- see components/prov/prov_ap.c.
      * ------------------------------------------------------------------------------------- */
     return full_info_json;
 }
