@@ -66,13 +66,22 @@ static void draw_field(canvas_t *c, const value_field_t *f, const char *s)
     int pen_y = f->y + offset_v(f->align_v, f->h, line_h);
     int baseline = pen_y + font_ascent(font);
 
-    for (const char *p = s; *p; p++) {
+    /* Walk by UTF-8 CHARACTER and use the CODEPOINT API.
+     *
+     * Stepping one byte at a time and passing the lead byte to the char-based API could never
+     * find a multi-byte glyph: the char API is one byte, so it would read the NEXT byte in
+     * memory looking for a continuation and fail. The degree sign (U+00B0) is two bytes, and
+     * "68.4°F" would have drawn as "68.4" with the unit silently missing. */
+    const char *p = s;
+    while (*p) {
+        const unsigned cp = font_utf8_next(&p);
+
         const uint8_t *bits = NULL;
         int w = 0, h = 0, bx = 0, by = 0;
-        if (font_glyph(font, *p, &bits, &w, &h) != 0) break;
-        if (font_bearing(font, *p, &bx, &by) != 0) break;
+        if (font_glyph_cp(font, cp, &bits, &w, &h) != 0) break;
+        if (font_bearing_cp(font, cp, &bx, &by) != 0) break;
         blit_glyph_clipped(c, pen_x + bx, baseline + by, bits, w, h, f);
-        pen_x += font_advance(font, *p);
+        pen_x += font_advance_cp(font, cp);
     }
 }
 

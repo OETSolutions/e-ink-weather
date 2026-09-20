@@ -20,6 +20,22 @@ typedef enum {
  * advance for spacing and not the width. */
 int font_glyph(font_id_t font, char ch, const uint8_t **bits, int *w, int *h);
 
+/* ---- codepoint API ----
+ *
+ * WHY THIS EXISTS IN ADDITION TO THE char API: `char ch` is ONE byte, so it cannot carry a
+ * multi-byte character. The degree sign is U+00B0 = two bytes, and a caller that decodes a
+ * string one character at a time (as the renderer must) has a codepoint, not a byte. Passing
+ * just the lead byte to the char API made font_glyph() look at the NEXT byte in memory for a
+ * continuation, find a non-continuation, and fail — so the glyph existed in the atlas and the
+ * renderer still drew nothing.
+ *
+ * A renderer should use these. The char API remains for ASCII-only callers and is a thin
+ * wrapper over font_utf8_next(). */
+unsigned font_utf8_next(const char **p);
+int font_glyph_cp(font_id_t font, unsigned codepoint, const uint8_t **bits, int *w, int *h);
+int font_advance_cp(font_id_t font, unsigned codepoint);
+int font_bearing_cp(font_id_t font, unsigned codepoint, int *bx, int *by);
+
 /* Advance width of one character, in pixels. Never 0 for printable ASCII. */
 int font_advance(font_id_t font, char ch);
 

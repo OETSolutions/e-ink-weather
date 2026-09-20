@@ -53,6 +53,16 @@ def parse_header(path):
                            table.group(1)):
         glyphs.append(tuple(int(g) for g in row.groups()))
 
+    # The optional non-ASCII table (present when the atlas was generated with --extra).
+    extra = []
+    em = re.search(r'EXTRA\[[^\]]+\]\s*=\s*\{(.*?)\n\};', src, re.S)
+    if em:
+        for row in re.finditer(
+                r'\{\s*(\d+)u?,\s*(\d+)u?,\s*(\d+),\s*(\d+),\s*(\d+),\s*(-?\d+),\s*(-?\d+)\s*\}',
+                em.group(1)):
+            cp, off, w, h, adv, bx, by = (int(g) for g in row.groups())
+            extra.append((cp, off, w, h, adv, bx, by))
+
     # The packed bitmap.
     bits_m = re.search(r'BITS\[[^\]]+\]\s*=\s*\{(.*?)\n\};', src, re.S)
     if not bits_m:
@@ -72,6 +82,7 @@ def parse_header(path):
         'descent': num(f'{stem}_DESCENT'),
         'lineHeight': num(f'{stem}_LINE_HEIGHT'),
         'glyphs': glyphs,
+        'extra': extra,
         'bits': bits,
     }
 
@@ -100,6 +111,8 @@ def emit(faces, out_path):
     lines.append('')
     lines.append('export interface Face {')
     lines.append('  firstChar: number;')
+    lines.append('  /** Non-ASCII glyphs, keyed by codepoint. Empty when the face has none. */')
+    lines.append('  extra: Map<number, Glyph>;')
     lines.append('  px: number;')
     lines.append('  ascent: number;')
     lines.append('  descent: number;')
@@ -147,6 +160,14 @@ def emit(faces, out_path):
     for f in faces:
         lines.append(f'export const {f["name"]}: Face = {{')
         lines.append(f'  firstChar: {f["first"]},')
+        if f['extra']:
+            lines.append(f'  extra: new Map<number, Glyph>([')
+            for (cp, off, w, h, adv, bx, by) in f['extra']:
+                lines.append(f'    [{cp}, {{ off: {off}, w: {w}, h: {h}, advance: {adv}, '
+                             f'bx: {bx}, by: {by} }}],')
+            lines.append('  ]),')
+        else:
+            lines.append('  extra: new Map(),')
         lines.append(f'  px: {f["px"]},')
         lines.append(f'  ascent: {f["ascent"]},')
         lines.append(f'  descent: {f["descent"]},')

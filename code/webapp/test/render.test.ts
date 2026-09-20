@@ -147,3 +147,44 @@ describe('renderer vs the firmware golden image (NFR-4, NFR-9)', () => {
     }
   });
 });
+
+/* THE DEGREE SIGN. Without it every imperial temperature renders NOTHING — font_measure()
+ * fails on "68.4°F" and the renderer draws no glyph at all, so the panel would be blank where
+ * the temperature belongs. This is the primary use case, so it is locked here. */
+describe('the degree sign (U+00B0)', () => {
+  it('has a glyph in both faces', () => {
+    expect(BODY.extra.get(0x00b0)).toBeDefined();
+    expect(VALUE.extra.get(0x00b0)).toBeDefined();
+    expect(BODY.extra.get(0x00b0)!.advance).toBeGreaterThan(0);
+    expect(VALUE.extra.get(0x00b0)!.advance).toBeGreaterThan(0);
+  });
+
+  it('measures an imperial temperature instead of failing', () => {
+    const m = fontMeasure(FONT_VALUE, '68.4°F');
+    expect(m).not.toBeNull();
+    /* And the width must include the degree's advance, not silently skip it. */
+    const without = fontMeasure(FONT_VALUE, '68.4F')!;
+    expect(m!.w).toBeGreaterThan(without.w);
+  });
+
+  it('draws ink, so a temperature is not blank on the panel', () => {
+    const withDeg = renderPage(blank(), [field()], ['68.4°F']);
+    const without = renderPage(blank(), [field()], ['68.4F']);
+    const dark = (b: ReturnType<typeof renderPage>) =>
+      b.data.reduce((n, v) => n + [7,6,5,4,3,2,1,0].filter((bit) => ((v >> bit) & 1) === 0).length, 0);
+    expect(dark(withDeg)).toBeGreaterThan(0);
+    /* The ° adds ink of its own, so the two images must differ. */
+    expect(Buffer.compare(Buffer.from(withDeg.data), Buffer.from(without.data))).not.toBe(0);
+  });
+
+  it('still refuses a character that genuinely has no glyph', () => {
+    expect(fontMeasure(FONT_VALUE, '68.4\u20ac')).toBeNull();  /* euro sign: not in the atlas */
+  });
+});
+
+function blank(): Uint8Array {
+  return new Uint8Array(FB_BYTES).fill(0xff);
+}
+function field() {
+  return { x: 48, y: 76, w: 420, h: 110, alignH: 'L', alignV: 'T', fontId: FONT_VALUE };
+}

@@ -226,6 +226,65 @@ static void test_bearing_rejects_bad_arguments(void)
     TEST_ASSERT_NOT_EQUAL(0, font_bearing(FONT_BODY, 'A', NULL, &by));
 }
 
+/* THE DEGREE SIGN (U+00B0). Every imperial temperature is "68.4°F", and a missing glyph does
+ * not degrade gracefully: font_measure() fails and the renderer draws NOTHING, so the panel
+ * would be BLANK where the temperature belongs. That is the primary use case, so it is locked
+ * here as well as in the web renderer. */
+static void test_degree_sign_has_a_glyph(void)
+{
+    const uint8_t *bits = NULL;
+    int w = 0, h = 0;
+    /* The CODEPOINT API, not the char one: 0x00B0 does not fit in a char, which is exactly why
+     * font_glyph_cp exists. Using the byte API here would always fail. */
+    TEST_ASSERT_EQUAL_INT(0, font_glyph_cp(FONT_VALUE, 0x00B0u, &bits, &w, &h));
+    TEST_ASSERT_TRUE(w > 0);
+    TEST_ASSERT_TRUE(h > 0);
+    TEST_ASSERT_NOT_NULL(bits);
+    TEST_ASSERT_TRUE(font_advance_cp(FONT_VALUE, 0x00B0u) > 0);
+}
+
+static void test_imperial_temperature_measures(void)
+{
+    int w = 0, h = 0;
+    /* "68.4" + U+00B0 + "F" */
+    TEST_ASSERT_EQUAL_INT(0, font_measure(FONT_VALUE, "68.4\xC2\xB0" "F", &w, &h));
+
+    int wplain = 0, hp = 0;
+    TEST_ASSERT_EQUAL_INT(0, font_measure(FONT_VALUE, "68.4F", &wplain, &hp));
+    /* The degree must add width. If the engine skipped it, the two would be equal and the
+     * temperature would render as "68.4F" with no unit mark. */
+    TEST_ASSERT_TRUE(w > wplain);
+}
+
+/* A character that genuinely has no glyph must still FAIL, so the fallback path
+ * ("draw nothing") stays reachable and the atlas is not silently returning a wrong glyph. */
+static void test_missing_glyph_still_fails(void)
+{
+    int w = 0, h = 0;
+    /* Euro sign, U+20AC — not in the atlas. */
+    TEST_ASSERT_EQUAL_INT(-1, font_measure(FONT_VALUE, "\xE2\x82\xAC", &w, &h));
+}
+
+/* The char-based API cannot carry a multi-byte character, and that is BY DESIGN rather than a
+ * defect — but it is the trap that made the first fix look right and still draw nothing, so it
+ * is asserted here to keep the codepoint API the obvious one. */
+static void test_char_api_cannot_carry_the_degree_sign(void)
+{
+    const uint8_t *bits = NULL;
+    int w = 0, h = 0;
+    TEST_ASSERT_EQUAL_INT(-1, font_glyph(FONT_VALUE, (char)0xC2, &bits, &w, &h));
+    /* ...while the codepoint API, given the real codepoint, succeeds. */
+    TEST_ASSERT_EQUAL_INT(0, font_glyph_cp(FONT_VALUE, 0x00B0u, &bits, &w, &h));
+}
+
+/* The body face needs it too: labels and the units line use it. */
+static void test_degree_sign_in_the_body_face(void)
+{
+    int w = 0, h = 0;
+    TEST_ASSERT_EQUAL_INT(0, font_measure(FONT_BODY, "68.4\xC2\xB0" "F", &w, &h));
+}
+
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -244,5 +303,11 @@ int main(void)
     RUN_TEST(test_bearings_place_descenders_below_the_baseline);
     RUN_TEST(test_every_glyph_fits_in_the_line_box);
     RUN_TEST(test_bearing_rejects_bad_arguments);
+
+    RUN_TEST(test_degree_sign_has_a_glyph);
+    RUN_TEST(test_imperial_temperature_measures);
+    RUN_TEST(test_missing_glyph_still_fails);
+    RUN_TEST(test_degree_sign_in_the_body_face);
+    RUN_TEST(test_char_api_cannot_carry_the_degree_sign);
     return UNITY_END();
 }

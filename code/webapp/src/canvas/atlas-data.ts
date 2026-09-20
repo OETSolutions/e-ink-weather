@@ -20,6 +20,8 @@ export interface Glyph {
 
 export interface Face {
   firstChar: number;
+  /** Non-ASCII glyphs, keyed by codepoint. Empty when the face has none. */
+  extra: Map<number, Glyph>;
   px: number;
   ascent: number;
   descent: number;
@@ -126,7 +128,7 @@ const BODY_GLYPHS: Glyph[] = [
   { off: 2013, w: 10, h: 4, advance: 13, bx: 2, by: -8 },
 ];
 
-/* 2021 bytes of packed 20px glyph data. */
+/* 2028 bytes of packed 20px glyph data. */
 const BODY_B64 =
   'wMDAwMDAwMDAwADAwMDY2NjIyAxgCEAIQH/wP/AYwBjAEIB/4P/gMIAxgDGAIYAEAAQABAAfAH/AZMBEQGQAdAA+AA+ABMAE' +
   'YMRg5MB/wD8ABAAEAHgIfBjMMMxgfEB4wAGAARwDPgYiDCIIIhg+MBweAD8AYwBjAGMANgAcADwAZmDDYMPAwcB/wD5gwMDA' +
@@ -156,7 +158,7 @@ const BODY_B64 =
   'f8PAcD4DAcN/PiAwMPx4MDAwMDAwMDwcgYGBgYGBg4PD/3nAwMGAwYBhAGMAIwA2ADYAHAAcAAwAwwbDjMOMZoxmiGTYJNg8' +
   'UDhwGHAYcMGAYwAiADYAHAAcABwANgBjAGMAwYDAwMGAwYBhAGMAIwA2ADYAHAAcAAwACAAYAHAAYAD/gH8AAwAGAAwAHAAY' +
   'ADAAYAD/AP+ADBwQEBAQEDBg4DAwEBAQEBwMgICAgICAgICAgICAgICAgICAgICAgICA4OAwMDAwMDAcDBgwMDAwMPDgIAD4' +
-  'wM+AhwA=';
+  'wM+AhwAQfEbGxnw4';
 
 const VALUE_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 16, bx: 0, by: 0 },
@@ -256,7 +258,7 @@ const VALUE_GLYPHS: Glyph[] = [
   { off: 17257, w: 33, h: 14, advance: 43, bx: 5, by: -26 },
 ];
 
-/* 17327 bytes of packed 64px glyph data. */
+/* 17393 bytes of packed 64px glyph data. */
 const VALUE_B64 =
   'f8B/wH/Af8B/wH/Af8B/wH/Af8B/gH+Af4B/gH+Af4B/gH+Af4B/gH+Af4B/gH+Af4B/gH+Af4B/gH+Af4B/gAAAAAAAAAAA' +
   'AAAAAD8Af4B/wP/A/8D/wH/Af4A/AP8H+P8H+H8H+H8H+H8H+H8H+H8H+H8H+H8H+H8H+H8H+H8D+H8D+H8D8H8D8H8D8H8D' +
@@ -498,7 +500,8 @@ const VALUE_B64 =
   '/v7+/v7+/v7+/v7+/v7+/vwAAP+AAP/gAP/wAP/4AP/4AH/8AAf8AAP8AAH+AAH+AAH+AAH+AAH+AAH+AAH+AAH+AAH+AAH+' +
   'AAH+AAH+AAH+AAH/AAD/AAD/wAB//AA//AAf/AAD/AAD/AAf/AA//AB//AD/wAD/AAH/AAH+AAH+AAH+AAH+AAH+AAH+AAH+' +
   'AAH+AAH+AAH+AAH+AAH+AAH+AAP+AAP8AAf8AH/8AP/4AP/4AP/wAP/gAP+AAPwAAADgAAAAB/wAH4AP/wA/gB//gD+AP//A' +
-  'P4B//+A/gH//+P+Af4///wD/A///AP4B//4A/gD//gD+AH/8APwAP/gAAAAHwAA=';
+  'P4B//+A/gH//+P+Af4///wD/A///AP4B//4A/gD//gD+AH/8APwAP/gAAAAHwAAB/AAH/wAP/8Af/+A//+B///B/B/j+A/j8' +
+  'Afj8APj8APz8APz8APj8Afj+A/h/B/h///A//+Af/+AP/4AH/wAB/AA=';
 
 /** Decode a base64 string to bytes without a DOM or Buffer dependency. */
 function b64decode(s: string): Uint8Array {
@@ -517,6 +520,9 @@ function b64decode(s: string): Uint8Array {
 
 export const BODY: Face = {
   firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 2021, w: 7, h: 7, advance: 9, bx: 1, by: -15 }],
+  ]),
   px: 20,
   ascent: 20,
   descent: 5,
@@ -527,6 +533,9 @@ export const BODY: Face = {
 
 export const VALUE: Face = {
   firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 17327, w: 22, h: 22, advance: 29, bx: 4, by: -48 }],
+  ]),
   px: 64,
   ascent: 62,
   descent: 16,

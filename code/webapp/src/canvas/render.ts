@@ -33,17 +33,41 @@ export interface ValueField {
   fontId: number;
 }
 
-function glyphOf(face: Face, ch: string): Glyph | undefined {
-  const idx = ch.charCodeAt(0) - face.firstChar;
-  if (idx < 0 || idx >= face.glyphs.length) return undefined;
-  return face.glyphs[idx];
+/**
+ * Decode a string into codepoints, ONE CHARACTER AT A TIME.
+ *
+ * `for (const ch of s)` already iterates by codepoint in JS, so this is mostly a convenience —
+ * but it is the counterpart of the firmware's utf8_next(), and the two must agree about where
+ * a character ends. The degree sign is U+00B0; a byte-wise walk would fail to find its glyph
+ * and the renderer would draw NOTHING for "68.4°F", leaving a blank where a temperature
+ * belongs. */
+function codepoints(s: string): number[] {
+  const out: number[] = [];
+  for (const ch of s) out.push(ch.codePointAt(0) ?? 0);
+  return out;
+}
+
+/**
+ * Look up a glyph by CODEPOINT.
+ *
+ * ASCII comes from the dense table indexed by (codepoint - firstChar). Anything else — the
+ * degree sign is the only one this project needs — comes from the face's `extra` map, which
+ * holds the handful of named non-ASCII glyphs rather than the ~80 mostly-empty slots that
+ * covering U+00B0 as a contiguous range would require. */
+function glyphFor(face: Face, cp: number): Glyph | undefined {
+  if (cp >= face.firstChar && cp < face.firstChar + face.glyphs.length) {
+    return face.glyphs[cp - face.firstChar];
+  }
+  return face.extra.get(cp);
 }
 
 /** Advance width in pixels. Returns 0 for a character with no glyph, like font_advance(). */
 export function fontAdvance(fontId: number, ch: string): number {
   const face = FACES[fontId];
   if (!face) return 0;
-  return glyphOf(face, ch)?.advance ?? 0;
+  const cps = codepoints(ch);
+  if (cps.length === 0) return 0;
+  return glyphFor(face, cps[0]!)?.advance ?? 0;
 }
 
 /**
@@ -62,9 +86,9 @@ export function fontMeasure(fontId: number, s: string): { w: number; h: number }
   const face = FACES[fontId];
   if (!face) return null;
   let w = 0;
-  for (const ch of s) {
-    const g = glyphOf(face, ch);
-    if (!g) return null;
+  for (const cp of codepoints(s)) {
+    const g = glyphFor(face, cp);
+    if (!g) return null;   /* no glyph: fail rather than guess a width, like font_measure() */
     w += g.advance;
   }
   return { w, h: face.lineHeight };
@@ -142,8 +166,8 @@ function drawField(dst: Bitmap, f: ValueField, s: string | undefined): void {
   const penY = f.y + offsetV(f.alignV, f.h, m.h);
   const baseline = penY + face.ascent;
 
-  for (const ch of s) {
-    const g = glyphOf(face, ch);
+  for (const cp of codepoints(s)) {
+    const g = glyphFor(face, cp);
     if (!g) break;
     blitGlyphClipped(dst, penX + g.bx, baseline + g.by, face, g, f);
     penX += g.advance;
