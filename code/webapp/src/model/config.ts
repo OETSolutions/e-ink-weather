@@ -33,6 +33,15 @@ export interface AlertRule {
   level: Exclude<AlertLevel, 'none'>;
 }
 
+/** How a bound value is rendered as text. Extracted as a named type so the formatter can
+ *  take it without reaching into Widget["format"]. */
+export interface Format {
+  decimals?: number;
+  prefix?: string;
+  suffix?: string;
+  fallback?: string;
+}
+
 export interface Widget {
   id: string;
   x: number;
@@ -43,12 +52,7 @@ export interface Widget {
   role: 'static' | 'dynamic';
   binding?: DataBinding;
   /** How to present a bound value. */
-  format?: {
-    decimals?: number;
-    prefix?: string;
-    suffix?: string;
-    fallback?: string;
-  };
+  format?: Format;
   font?: { size: number; align: 'left' | 'center' | 'right'; valign: 'top' | 'middle' | 'bottom' };
   alerts?: AlertRule[];
   /** Present for alert-bar widgets driven by OWM official alerts. */
@@ -90,7 +94,13 @@ export interface Config {
   location: LocationConfig;
   /** Which OWM product to use; 'auto' probes One Call 3.0 and falls back (FR-6). */
   owmProduct: 'auto' | 'onecall3' | 'legacy';
-  ha: { mode: 'rest' | 'mqtt' | 'off'; baseTopic?: string };
+  ha: {
+    mode: 'rest' | 'mqtt' | 'off';
+    /** Base URL of the HA instance, e.g. http://homeassistant.local:8123. Blank means "not
+     *  configured", which the entity picker reports rather than showing an empty list. */
+    baseUrl?: string;
+    baseTopic?: string;
+  };
   pages: Page[];
 }
 
