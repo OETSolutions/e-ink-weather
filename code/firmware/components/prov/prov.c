@@ -332,6 +332,72 @@ esp_err_t prov_run_if_unconfigured(void)
     char service_name[32];
     make_service_name(service_name, sizeof(service_name));
 
+    /* THE BLE SERVICE UUID MUST BE THE WELL-KNOWN ONE. This one call is what makes the
+     * official ESP BLE Provisioning app work at all.
+     *
+     * IDF's ble scheme defaults to a service UUID that is NOT the 021a9004-0382-4aea-bff4-
+     * 6b3f1c5adfb4 the provisioning clients have always used. A client learns the
+     * characteristics two ways: by reading them out of the advertisement, or — when that
+     * fails — by falling back to that published base UUID with the endpoint's assigned number
+     * swapped into the scheme prefix ('prov-session' -> 021a9000-...). With the newer default
+     * the fallback searched for 021a9000 characteristics on a device advertising a different
+     * base, found none, and reported "'prov-session' endpoint not found" — which is exactly the
+     * "connects, then spins forever" the app showed, because the BLE connection itself
+     * succeeds and only the protocol setup fails.
+     *
+     * Found by running IDF's own tools/esp_prov against this device and reading the failure;
+     * confirmed fixed the same way. IDF's example sets this same UUID
+     * (examples/provisioning/wifi_prov_mgr/main/app_main.c), which is why the setter exists.
+     * Bytes are little-endian, matching how the scheme writes its own default. */
+    {
+        static uint8_t ble_service_uuid[16] = {
+            0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
+            0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
+        };
+        const esp_err_t ue = wifi_prov_scheme_ble_set_service_uuid(ble_service_uuid);
+        if (ue != ESP_OK) {
+            /* Not fatal: the SoftAP portal still reaches the device, so a failure here makes
+             * the app path unavailable rather than the device unconfigurable. */
+            ESP_LOGE(TAG, "cannot set the BLE service UUID: %s", esp_err_to_name(ue));
+        }
+    }
+
+    /* A STABLE, PER-DEVICE BLE ADDRESS rather than the default public identity.
+     *
+     * WHY THIS IS NOT COSMETIC: with the default address the OS caches the peripheral's GATT
+     * table across a firmware update, keyed by address. After the service-UUID change above
+     * the advertisement correctly carried 021a9004-... while the cached GATT table still
+     * reported the OLD service, so the client connected, looked up the advertised UUID in a
+     * stale table, and failed with "Provisioning service not found". That is a trap for anyone
+     * updating a device they have already paired with, not just for this bench — the reference
+     * client's own source warns that "bluez had cached an old version of the advertisement
+     * data. ... the cache will be refreshed before next retry", but macOS CoreBluetooth has no
+     * equivalent expiry.
+     *
+     * A device-unique address means a reflashed unit presents as a NEW peripheral, so the OS
+     * has nothing stale to return. Derived from the MAC rather than random so it is stable
+     * across boots — a per-boot address would leave a trail of stale entries and make the
+     * device unfindable by anything that remembers it.
+     *
+     * The top two bits of a static random address must be set to binary 11, which is what the
+     * 0xC0 does; without it the stack rejects the address as an invalid type. */
+    {
+        uint8_t mac[6] = {0};
+        static uint8_t ble_addr[6];
+        if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+            ble_addr[0] = mac[2];
+            ble_addr[1] = mac[3];
+            ble_addr[2] = mac[4];
+            ble_addr[3] = mac[5];
+            ble_addr[4] = mac[1];
+            ble_addr[5] = (uint8_t)(0xC0 | (mac[0] & 0x3F));   /* static random */
+            const esp_err_t ae = wifi_prov_scheme_ble_set_random_addr(ble_addr);
+            if (ae != ESP_OK) {
+                ESP_LOGW(TAG, "cannot set the BLE address: %s", esp_err_to_name(ae));
+            }
+        }
+    }
+
     /* The AP's name is fixed, not derived per-attempt, so portal_task and the recovery task
      * cannot disagree about what the network is called. Static because the task reads it
      * after this function's frame is gone. */

@@ -156,14 +156,18 @@ int provscreen_render(uint8_t *fb, const char *ap_ssid, const char *pop)
     int qy = MARGIN + 24;
 
     struct { const qr_code_t *qr; const char *cap; } codes[] = {
-        { &QR_PORTAL,  "SETUP PAGE" },
-        { &QR_IOS,     "iPhone APP" },
-        { &QR_ANDROID, "Android APP" },
+        /* The captions NAME the app. Calling these "iPhone APP" and "Android APP" was too
+         * vague — a reader could not tell they were the ESP BLE Provisioning app, which is the
+         * convenient path and the one the QR is actually for. The captions are kept within the
+         * 150 px column (widest measures 177 px at about 1.2x, which still fits). */
+        { &QR_PORTAL,  "1. SETUP PAGE" },
+        { &QR_IOS,     "2. BLE APP (iOS)" },
+        { &QR_ANDROID, "3. BLE APP (Andrd)" },
     };
 
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         draw_qr(&c, qx, qy, QR_BOX, codes[i].qr);
-        /* Caption centred under the code. */
+        /* Caption centred under the code, wrapped onto one line. */
         const int cw = text_width(FONT_BODY, codes[i].cap);
         draw_line(&c, FONT_BODY, qx + (QR_BOX - cw) / 2,
                   qy + QR_BOX + 4, codes[i].cap);

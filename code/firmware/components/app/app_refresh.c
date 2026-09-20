@@ -27,7 +27,11 @@
  * one (Task 21). Declared here rather than included, because it lives in src/ and this is a
  * component — and because it is a placeholder to be deleted, so the dependency should be
  * one line, not an include path. */
-extern const uint8_t gimage_1[EPD_FB_BYTES];
+/* The boot mark shown when no layout bitmap has been uploaded yet. Generated from the
+ * OETSolutions / Aether artwork by tools/gen_boot_logo.py — see that script for the pipeline.
+ * This replaced the vendor GoodDisplay demo image, which had no business on a shipped
+ * device: it was a bring-up baseline, not artwork. */
+extern const uint8_t boot_logo[EPD_FB_BYTES];
 
 static const char *TAG = "refresh";
 
@@ -129,7 +133,7 @@ static int load_static_layer(uint8_t *dst, int *from_slot)
         *from_slot = api_live_bitmap_slot();
         return 0;
     }
-    memcpy(dst, gimage_1, EPD_FB_BYTES);
+    memcpy(dst, boot_logo, EPD_FB_BYTES);
     *from_slot = -1;
     return 0;
 }
