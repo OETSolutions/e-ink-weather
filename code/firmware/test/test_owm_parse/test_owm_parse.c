@@ -197,6 +197,127 @@ static void test_25_error_body_is_not_a_reading(void)
     TEST_ASSERT_EQUAL_INT(0, owm_has_alerts(err));
 }
 
+/* ------------------------------------------------------------ the product toggle (FR-6) -- */
+
+/* Each documented setting parses to its own value. */
+static void test_product_string_parses(void)
+{
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO,     owm_product_from_string("auto"));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, owm_product_from_string("onecall3"));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY,   owm_product_from_string("legacy"));
+}
+
+/* AN UNKNOWN VALUE MUST PROBE, NOT PIN.
+ *
+ * A config from a newer web app could carry a product this firmware does not know. Falling back
+ * to 'legacy' or 'onecall3' would silently pin the device to a product the user never chose, and
+ * on a key that HAS One Call that means quietly losing the official alerts. 'auto' is the only
+ * safe fallback because it discovers the truth instead of assuming it. */
+static void test_unknown_product_falls_back_to_auto_not_a_fixed_product(void)
+{
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, owm_product_from_string(""));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, owm_product_from_string(NULL));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, owm_product_from_string("OneCall3"));  /* case matters */
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, owm_product_from_string("v3"));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, owm_product_from_string("nonsense"));
+}
+
+/* FR-7's question: can this product carry official alerts at all?
+ *
+ * The input is the RESOLVED product, never AUTO: AUTO has not probed and cannot answer, so it
+ * reports 0 rather than a guess. */
+static void test_alert_support_by_product(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, owm_product_has_alerts(OWM_PRODUCT_ONECALL3));
+    TEST_ASSERT_EQUAL_INT(0, owm_product_has_alerts(OWM_PRODUCT_LEGACY));
+    TEST_ASSERT_EQUAL_INT(0, owm_product_has_alerts(OWM_PRODUCT_AUTO));
+}
+
+/* THE TOGGLE MUST CHANGE THE ENDPOINT, not merely the label.
+ *
+ * This is the defect these tests exist for: the product was parsed, stored, and used to decide
+ * FR-7's alert message — while the fetch itself always called the 2.5 pair. The alert bar then
+ * announced "alerts unavailable on this product" on a key that HAD One Call, and a user who
+ * selected 'onecall3' got the free product's data under the premium product's name. Resolving
+ * the product is what ties the setting to the request. */
+static void test_explicit_product_wins_over_the_probe(void)
+{
+    /* The user said which product their key carries; the probe must not override it. Note
+     * ONECALL3 stays ONECALL3 even when the probe says the subscription is absent — that is a
+     * misconfiguration the user needs to see fail, not a silent downgrade. */
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, owm_product_resolve(OWM_PRODUCT_ONECALL3, 0));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, owm_product_resolve(OWM_PRODUCT_ONECALL3, -1));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, owm_product_resolve(OWM_PRODUCT_ONECALL3, 1));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY,   owm_product_resolve(OWM_PRODUCT_LEGACY, 1));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY,   owm_product_resolve(OWM_PRODUCT_LEGACY, -1));
+}
+
+/* AUTO takes the probe's answer, and the tri-state matters: only a definite 1 selects One Call.
+ * An unresolved probe (-1: no key stored, or the API was unreachable) must fall to the free
+ * pair, because a request still has to be made and 2.5 is the product that answers for a key
+ * without the subscription. */
+static void test_auto_resolves_through_the_probe(void)
+{
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, owm_product_resolve(OWM_PRODUCT_AUTO, 1));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY,   owm_product_resolve(OWM_PRODUCT_AUTO, 0));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY,   owm_product_resolve(OWM_PRODUCT_AUTO, -1));
+}
+
+/* THE BUFFER MUST HOLD THE REQUEST THAT FILLS IT.
+ *
+ * This is the defect these tests exist for: the firmware asked OWM for up to cnt=40 while the
+ * buffer receiving it held 12,288 bytes, and a 40-block response measures 16,575. net_http
+ * refuses to hand a parser a clipped document, so the request failed outright and every forecast
+ * widget on such a page rendered "--" — with nothing in the config or on the glass to say why.
+ *
+ * The measured sizes below come from the live API on 2026-09-20 and are the reason the model
+ * exists. If OWM ever makes its documents fatter these bounds fail, which is the point: the
+ * alternative is a silent blank panel. */
+static void test_forecast_buffer_holds_every_request_the_firmware_makes(void)
+{
+    /* (blocks, measured bytes on the live API) */
+    static const struct { int blocks; unsigned measured; } M[] = {
+        {  8,  3512 },
+        { 16,  6819 },
+        { 24, 10069 },
+        { 32, 13314 },
+        { 40, 16575 },
+    };
+    for (unsigned i = 0; i < sizeof(M) / sizeof(M[0]); i++) {
+        const unsigned buf = owm_forecast_buf_bytes(M[i].blocks);
+        TEST_ASSERT_GREATER_THAN_UINT32(M[i].measured, buf);
+    }
+}
+
+/* Every day index the web app offers (0..4 -> 8..40 blocks) must fit the buffer the firmware
+ * actually allocates. The picker's Day 4 and Day 5 were exactly the selections that failed, and
+ * the firmware allocates ONE size for the page (the maximum), so the invariant that matters is
+ * that the largest selectable request still fits that single allocation. */
+static void test_every_selectable_day_fits(void)
+{
+    const unsigned allocated = owm_forecast_buf_bytes(OWM_FORECAST_MAX_BLOCKS);
+    for (int day = 0; day < 5; day++) {
+        const int blocks = (day + 1) * 8;
+        const unsigned needed = owm_forecast_buf_bytes(blocks);
+        TEST_ASSERT_TRUE(blocks <= OWM_FORECAST_MAX_BLOCKS);
+        /* This day's request fits the single allocation the firmware makes for the page. */
+        TEST_ASSERT_TRUE(needed <= allocated);
+        TEST_ASSERT_TRUE(needed > 0);
+    }
+    /* And that allocation must beat the old 12,288 that could not hold 4 or 5 days. */
+    TEST_ASSERT_TRUE(allocated > 12288);
+}
+
+/* A count past the horizon is clamped, never extrapolated: the request cannot ask for more than
+ * the product carries, and the buffer cannot grow without bound because a caller passed nonsense. */
+static void test_forecast_size_clamps_and_rejects(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(owm_forecast_buf_bytes(OWM_FORECAST_MAX_BLOCKS),
+                             owm_forecast_buf_bytes(OWM_FORECAST_MAX_BLOCKS + 500));
+    TEST_ASSERT_EQUAL_UINT32(0, owm_forecast_buf_bytes(0));
+    TEST_ASSERT_EQUAL_UINT32(0, owm_forecast_buf_bytes(-8));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -215,5 +336,13 @@ int main(void)
     RUN_TEST(test_alerts_absent);
     RUN_TEST(test_malformed_json_is_a_parse_error_not_a_zero);
     RUN_TEST(test_25_error_body_is_not_a_reading);
+    RUN_TEST(test_product_string_parses);
+    RUN_TEST(test_unknown_product_falls_back_to_auto_not_a_fixed_product);
+    RUN_TEST(test_alert_support_by_product);
+    RUN_TEST(test_explicit_product_wins_over_the_probe);
+    RUN_TEST(test_auto_resolves_through_the_probe);
+    RUN_TEST(test_forecast_buffer_holds_every_request_the_firmware_makes);
+    RUN_TEST(test_every_selectable_day_fits);
+    RUN_TEST(test_forecast_size_clamps_and_rejects);
     return UNITY_END();
 }

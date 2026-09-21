@@ -12,19 +12,28 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # TLS buffers into internal RAM — there is no PSRAM on this part (NFR-2).
 #
-# SIZED FROM THE REAL PAYLOADS, not from the mbedTLS default. The default 16384 is a generic
-# "large enough for anything" value; this device fetches exactly three documents, all measured
-# against the live API on 2026-09-20:
-#   current weather (2.5/weather)      521 B
-#   forecast, 2 days (2.5/forecast cnt=16)  6,771 B
-#   HA template response                 512 B (the response buffer is 512 B)
-#   ip-api.com geolocation                66 B
-# so the largest possible single TLS record this device receives is ~6.8 KB, and 8192 covers it
-# with headroom. The in-buffer is a CONTIGUOUS allocation made inside the render window, in direct
-# competition with the 78,200-byte framebuffer, so every kilobyte here is a kilobyte the panel
-# cannot use. (Note this is a per-RECORD limit, not a whole-body limit: mbedtls_ssl_read() loops
-# across records, which is why a 16.5 KB body already worked against the 16,384 setting.)
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+# THE IN-BUFFER MUST COVER THE SERVER'S TLS RECORD, NOT THIS DEVICE'S LARGEST BODY. The two are
+# not the same quantity and treating them as one is what this setting got wrong. mbedtls_ssl_read()
+# does loop across records, so a big body is fine in principle — but each individual record has to
+# FIT this buffer, and the RECORD SIZE IS THE SERVER'S CHOICE. A small body can ride in a large
+# record, so sizing from the body tells you nothing about whether the read will succeed.
+#
+# MEASURED FAILURE THIS FIXES (bench, 2026-09-21): at 8192 the firmware fetched 2-day forecasts
+# fine (cnt=16, ~6.8 KB body) and failed EVERYTHING larger — cnt=24 (~10.4 KB), cnt=32, cnt=40
+# (~16.6 KB) — with `esp-tls-mbedtls: read error :-0x7100`, which is
+# MBEDTLS_ERR_SSL_BAD_INPUT_DATA, i.e. a record the buffer cannot hold. The boundary sat at the
+# 8192 setting rather than at any document size, which is what identifies the limit as the record
+# buffer. Every forecast widget on a page binding Day 3, Day 4 or Day 5 rendered "--", while the
+# web app went on offering all five days in its day picker — a silent gap between what the app
+# lets a user ask for and what the device can actually fetch.
+#
+# 16384 is the TLS maximum record payload (2^14), so it covers any record a server may legally
+# send and there is no larger value to consider. This does raise the per-handshake demand that the
+# 8192 was chosen to reduce (see the note below), so it is NOT free: it is affordable because the
+# resident framebuffer is released across the fetch, which is what leaves room for the handshake
+# in the one region big enough for a framebuffer. Verified on the bench, USB mode, with the
+# framebuffer released: 5-day forecasts fetch and render.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 # 4096 already matches the largest request this device SENDS (a JSON body for the HA template,
 # well under 1 KB) — kept as is.
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096

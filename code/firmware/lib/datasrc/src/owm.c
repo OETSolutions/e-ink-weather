@@ -156,6 +156,48 @@ int owm_has_alerts(const char *json)
     return has;
 }
 
+/* -------------------------------------------------------------- which product (FR-6/FR-7) -- */
+
+owm_product_t owm_product_from_string(const char *s)
+{
+    if (!s) return OWM_PRODUCT_AUTO;
+    if (strcmp(s, "onecall3") == 0) return OWM_PRODUCT_ONECALL3;
+    if (strcmp(s, "legacy") == 0)   return OWM_PRODUCT_LEGACY;
+    /* "auto", "", and anything unrecognised all probe. An unknown value must not silently pin
+     * the device to a product the user did not choose — the same rule power_mode_from_string()
+     * follows. */
+    return OWM_PRODUCT_AUTO;
+}
+
+int owm_product_has_alerts(owm_product_t p)
+{
+    /* Only One Call 3.0 carries the "alerts" array. AUTO cannot answer: it has not probed, so
+     * claiming either way would be a guess presented as a fact. */
+    return p == OWM_PRODUCT_ONECALL3;
+}
+
+owm_product_t owm_product_resolve(owm_product_t configured, int onecall_available)
+{
+    /* An explicit setting is the user telling us which product their key carries, so it wins
+     * outright — including 'onecall3' on a key the probe would reject, because that is then a
+     * misconfiguration the user needs to see fail rather than a silent downgrade to the free
+     * tier they did not ask for. */
+    if (configured == OWM_PRODUCT_ONECALL3 || configured == OWM_PRODUCT_LEGACY) return configured;
+
+    /* AUTO. Only a definite "yes" from the probe selects One Call; an unresolved probe (-1)
+     * falls through to the free pair, because a request has to go somewhere and 2.5 is the
+     * product that answers for a key without the subscription. */
+    return (onecall_available == 1) ? OWM_PRODUCT_ONECALL3 : OWM_PRODUCT_LEGACY;
+}
+
+unsigned owm_forecast_buf_bytes(int blocks)
+{
+    if (blocks <= 0) return 0;
+    if (blocks > OWM_FORECAST_MAX_BLOCKS) blocks = OWM_FORECAST_MAX_BLOCKS;
+    return (unsigned)OWM_FORECAST_BASE_BYTES +
+           (unsigned)blocks * (unsigned)OWM_FORECAST_BYTES_PER_BLOCK;
+}
+
 /* The field codes from lib/layout/include/widgets.h. Duplicated as literals rather than
  * including that header: lib/datasrc is a lower layer than lib/layout and must not depend on
  * it, and the values are part of this function's contract either way. */

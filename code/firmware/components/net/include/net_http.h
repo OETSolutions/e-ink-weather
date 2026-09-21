@@ -34,3 +34,19 @@ esp_err_t net_http_get_json(const char *url, const char *bearer,
                             char *out, size_t outlen);
 esp_err_t net_http_post_json(const char *url, const char *bearer,
                              const char *body, char *out, size_t outlen);
+
+/* The same GET, reporting the HTTP status as well.
+ *
+ * WHY A SECOND ENTRY POINT RATHER THAN CHANGING THE FIRST: most callers only need "did it work",
+ * and the existing signature is used from several places where a status parameter would be dead
+ * weight. This one exists for FR-6's One Call probe, which must tell a 401 ("this key has no One
+ * Call subscription" — a NORMAL, expected answer) apart from a transport failure or an oversized
+ * response.
+ *
+ * THE STATUS IS REPORTED EVEN WHEN THE BODY OVERFLOWED `out`, and that combination is the reason
+ * this function exists rather than the caller inferring the answer from `err`. `err` merges every
+ * failure into one value, so a probe built on it treats an over-long body (ESP_ERR_NO_MEM) as
+ * proof that the key is unsubscribed — and then tells the user, on the glass, that official
+ * alerts are unavailable on a key that has them. */
+esp_err_t net_http_get_json_status(const char *url, const char *bearer,
+                                   char *out, size_t outlen, int *status_out);

@@ -468,28 +468,70 @@ static int read_creds(fetch_creds_t *c)
     return 0;
 }
 
+/* The forecast horizon, and the buffer that must hold the response. THE TWO ARE DEFINED TOGETHER
+ * ON PURPOSE — see the note on the size below.
+ *
+ * OWM takes `cnt` as a count of 3-hour blocks, 8 per day, and the layout's highest `dayIndex`
+ * says how many days are needed. 40 blocks is the whole 5-day horizon the free 2.5/forecast
+ * product carries; asking for more returns the same data with a misleading count. */
+#define FORECAST_MAX_BLOCKS OWM_FORECAST_MAX_BLOCKS
+
 /* The forecast document buffer, and its size is a MEMORY constraint rather than a taste choice.
  *
- * MEASURED FAILURE THIS SIZING FIXES: a full 5-day/3-hour response is 16,522 bytes, and holding a
- * 20 KB buffer for it while the TLS handshake ALSO needs ~20 KB contiguous on this part (a 16 KB
- * in-buffer plus a 4 KB out-buffer, from MBEDTLS_SSL_IN/OUT_CONTENT_LEN) made the handshake fail
- * with `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) — observed as "forecast request
- * failed" and `--` in every forecast box, with a largest-free-block of only 30,720 bytes at that
- * moment. The device was competing with itself.
+ * MEASURED FAILURE THIS SIZING FIXES: a full 5-day/3-hour response is 16,575 bytes, and holding a
+ * 20 KB buffer for it while the TLS handshake ALSO needs a contiguous in-buffer on this part made
+ * the handshake fail with `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) — observed as
+ * "forecast request failed" and `--` in every forecast box, with a largest-free-block of only
+ * 30,720 bytes at that moment. The device was competing with itself.
  *
- * So the request is bounded to the days the layout actually asks for. OWM takes `cnt` as a count
- * of 3-hour blocks, 8 per day, and the layout's highest `dayIndex` says how many days are needed.
- * Two days measures ~6.8 KB — well inside this buffer — and a layout that wants more gets more,
- * up to the 5-day horizon OWM offers anyway. */
-#define FORECAST_BUF_BYTES 12288
+ * So the request is bounded to the days the layout actually asks for — but the bound and this
+ * buffer MUST AGREE, and they did not. The request was allowed up to cnt=40 while this was 12,288
+ * bytes, and the response grows ~406 bytes per block (measured live 2026-09-20: 3,512 at cnt=8,
+ * 6,819 at 16, 10,069 at 24, 13,314 at 32, 16,575 at 40). net_http refuses to hand a parser a
+ * clipped document and reports ESP_ERR_NO_MEM, so every request past 3 days failed outright and
+ * EVERY forecast widget fell back to "--" — while the web app happily offers Day 4 and Day 5 in
+ * its day picker. The failure was invisible in the config and silent on the glass.
+ *
+ * The size now comes from owm_forecast_buf_bytes(), which is host-tested (test/test_owm_parse):
+ * the request and the buffer are derived from one rule, so they cannot drift apart again. The
+ * 17 KB this works out to is affordable because the request happens BEFORE the render window,
+ * while the resident framebuffer is released on USB — the same window the old 12,288 fit in. */
+#define FORECAST_BUF_BYTES ((size_t)owm_forecast_buf_bytes(FORECAST_MAX_BLOCKS))
 
-/* Fetch the current conditions from OWM. Returns 0 on success, -1 otherwise. */
+/* Whether this device's key has One Call 3.0 available, once probed.
+ *
+ * TRI-STATE, and all three values are load-bearing:
+ *   -1  not probed yet, or the probe could not reach a verdict
+ *    0  probed: the key is definitively not subscribed (the documented 401/403)
+ *    1  probed: One Call 3.0 answered
+ *
+ * Cached for the process lifetime because the answer is a property of the KEY, not of the
+ * request: re-probing on every refresh would spend a call on a request that is already known to
+ * fail, and on a 10-minute cadence that is 144 wasted calls a day against a quota FR-6a exists
+ * to protect. */
+static int s_onecall_available = -1;
+
+/* Fetch the current conditions from OWM. Returns 0 on success, -1 otherwise.
+ *
+ * `product` decides the ENDPOINT, which is what makes the config toggle real (FR-6). One Call
+ * 3.0 carries current conditions inside its single document, so on that product the forecast
+ * fetch below is the one that supplies them and this returns "nothing to do" — asking
+ * 2.5/weather as well would be a second call for data already held, against a quota. */
 static int fetch_current(const fetch_creds_t *c, char *resp, size_t resplen,
-                         datasrc_value_t *out)
+                         datasrc_value_t *out, owm_product_t product)
 {
     if (c->key[0] == '\0') {
         ESP_LOGW(TAG, "no OWM key stored; skipping fetch");
         return -1;
+    }
+
+    /* One Call 3.0 has no separate current-conditions endpoint: everything rides in the one
+     * document, which fetch_forecast() requests. Composing this into the SAME buffer would mean
+     * a second ~11 KB response held in the render window for no new data. */
+    if (product == OWM_PRODUCT_ONECALL3) {
+        memset(out, 0, sizeof(*out));
+        out->status = DATASRC_ERR_UNAVAILABLE;
+        return 0;
     }
 
     /* The daily cap is checked BEFORE the request, which is the only point at which it can
@@ -528,6 +570,73 @@ static int fetch_current(const fetch_creds_t *c, char *resp, size_t resplen,
     return out->status == DATASRC_OK ? 0 : -1;
 }
 
+/* FR-6's One Call 3.0 probe, run once per process.
+ *
+ * WHY A PROBE RATHER THAN A CONFIG GUESS: One Call 3.0 needs the separate "One Call by Call"
+ * subscription, and a key without it gets a 401. Verified live 2026-09-18 with this project's
+ * key: 3.0 -> 401 "requires a separate subscription", 2.5/weather and 2.5/forecast -> 200. So
+ * "does this key have 3.0" is not knowable from the config, and FR-6 asks for exactly this
+ * auto-detection.
+ *
+ * THE VERDICT IS THE HTTP STATUS, NOT THE RESPONSE BODY — and that distinction is the whole
+ * correctness of this function. An earlier version sized the scratch buffer at 2 KB and treated
+ * ANY failure as "not subscribed". The trimmed One Call document is ~11 KB, so the buffer always
+ * overflowed (net_http returns ESP_ERR_NO_MEM, deliberately, rather than handing a parser a
+ * clipped document), and a key that IS subscribed was reported as unsubscribed. The consequence
+ * was not confined to a log line: FR-7 then told the user on the glass that official alerts were
+ * unavailable on their product, on a key that had them. So the probe now asks for the status and
+ * only the documented 401/403 counts as a definite "no".
+ *
+ * It is a real request, and it costs a call — which is why the answer is cached: the probe runs
+ * ONCE, and on a key without the subscription every later refresh goes straight to 2.5 instead
+ * of paying for another 401. The cap is charged for it, because it is a call.
+ *
+ * Returns 1 available, 0 definitively not subscribed, -1 inconclusive (leave the question open
+ * and fall back to the free pair for now). */
+static int onecall_probe(const fetch_creds_t *c)
+{
+    if (s_onecall_available >= 0) return s_onecall_available;
+    if (c->key[0] == '\0') return -1;           /* nothing to probe with */
+    if (!api_owm_should_call()) return -1;      /* do not spend a call we are not allowed */
+
+    char url[512];
+    snprintf(url, sizeof(url),
+             "https://api.openweathermap.org/data/3.0/onecall"
+             "?lat=%.6f&lon=%.6f&exclude=minutely,hourly,current,daily&units=imperial&appid=%s",
+             c->lat, c->lon, c->key);
+
+    /* The body is DISCARDED — only the status decides — so this buffer is deliberately tiny. It
+     * is not "big enough for the response" and must not be read as if it were: `exclude` trims
+     * the document, but even the alerts-only remainder exceeds 2 KB on a real key, so the request
+     * is EXPECTED to report overflow. That is fine here precisely because the status is still
+     * reported: esp_http_client_perform() completes and the status is read before the sink's
+     * overflow flag is consulted, so a 200 with a clipped body still proves the key is
+     * subscribed. A 2 KB static scratch also keeps a ~11 KB transient out of the render window,
+     * where it would compete with the 78,200-byte framebuffer. */
+    static char probe[2048];
+    int status = 0;
+    const esp_err_t e = net_http_get_json_status(url, NULL, probe, sizeof(probe), &status);
+
+    if (status == 200) {
+        s_onecall_available = 1;
+        ESP_LOGI(TAG, "One Call 3.0 is available for this key");
+    } else if (status == 401 || status == 403) {
+        /* The documented answer for a key without the "One Call by Call" subscription. This is
+         * the NORMAL path, not an error worth surfacing. */
+        s_onecall_available = 0;
+        ESP_LOGI(TAG, "One Call 3.0 not available (no subscription); using the free 2.5 products");
+    } else {
+        /* Anything else — a transport failure, a 5xx, a DNS problem — says nothing about the
+         * subscription, so the question is left OPEN and the free pair is used meanwhile. Latching
+         * a 0 here would permanently downgrade a subscribed key on one flaky request. */
+        ESP_LOGW(TAG, "One Call probe inconclusive (status %d, %s); staying on the free products",
+                 status, esp_err_to_name(e));
+        return -1;
+    }
+    api_owm_note_call(0, 1);        /* a real call, credited to no particular day */
+    return s_onecall_available;
+}
+
 /* Fetch the forecast into `buf`. Returns 0 on success.
  *
  * `days` is how many days the layout's widgets actually reference, taken from the highest
@@ -537,8 +646,13 @@ static int fetch_current(const fetch_creds_t *c, char *resp, size_t resplen,
  * contiguous made the handshake fail with ALLOC_FAILED (see FORECAST_BUF_BYTES).
  *
  * A `days` of 0 means "ask for the whole horizon", which is what an alert-only page wants: the
- * official alerts ride in this document, so the page needs it fetched but not trimmed. */
-static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int days)
+ * official alerts ride in this document, so the page needs it fetched but not trimmed.
+ *
+ * `product` selects the ENDPOINT (FR-6). On One Call 3.0 there is no separate forecast product:
+ * this ONE document carries current conditions, the daily array, and the official alerts, which
+ * is why the tick treats it as the current document too when that product is active. */
+static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int days,
+                          owm_product_t product)
 {
     if (c->key[0] == '\0') return -1;
     if (!api_owm_should_call()) {
@@ -547,11 +661,21 @@ static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int 
     }
 
     char url[512];
-    if (days > 0) {
-        /* Clamped to 5 days: that is the whole horizon the free 5-day/3-hour product carries,
-         * so asking for more would return the same data with a misleading count. */
+    if (product == OWM_PRODUCT_ONECALL3) {
+        /* `minutely` and `hourly` are excluded because no widget binds them and together they
+         * dominate the document (~11 KB of the ~16 KB). `current` and `daily` are KEPT: the
+         * current conditions and the daily min/max are exactly what the page draws, and `alerts`
+         * cannot be excluded without defeating FR-7. */
+        snprintf(url, sizeof(url),
+                 "https://api.openweathermap.org/data/3.0/onecall"
+                 "?lat=%.6f&lon=%.6f&exclude=minutely,hourly&units=imperial&appid=%s",
+                 c->lat, c->lon, c->key);
+    } else if (days > 0) {
+        /* Clamped to the 5-day horizon the free product carries. The clamp and FORECAST_BUF_BYTES
+         * are both derived from FORECAST_MAX_BLOCKS so the request can never outgrow the buffer
+         * that receives it — the mismatch that made every Day 4/5 widget render "--". */
         int cnt = days * 8;
-        if (cnt > 40) cnt = 40;
+        if (cnt > FORECAST_MAX_BLOCKS) cnt = FORECAST_MAX_BLOCKS;
         snprintf(url, sizeof(url),
                  "https://api.openweathermap.org/data/2.5/forecast"
                  "?lat=%.6f&lon=%.6f&units=imperial&cnt=%d&appid=%s",
@@ -563,15 +687,19 @@ static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int 
     }
 
     if (net_http_get_json(url, NULL, buf, buflen) != ESP_OK) {
-        ESP_LOGW(TAG, "forecast request failed");
+        ESP_LOGW(TAG, "%s request failed",
+                 product == OWM_PRODUCT_ONECALL3 ? "onecall" : "forecast");
         return -1;
     }
-    /* Credit the call against today, taken from the response's own first block. A response with
-     * no "list" is not a forecast and is not credited to a wrong day. */
+    /* Credit the call against today, taken from the response's own first timestamp. The two
+     * products carry it in different places ("list"[0]."dt" for 2.5/forecast, the top-level "dt"
+     * for One Call), and a response with neither is not a forecast, so it is not credited to a
+     * day that might be wrong. */
     cJSON *root = cJSON_Parse(buf);
     if (root) {
         cJSON *dt = cJSON_GetObjectItemCaseSensitive(
                         cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(root, "list"), 0), "dt");
+        if (!cJSON_IsNumber(dt)) dt = cJSON_GetObjectItemCaseSensitive(root, "dt");
         api_owm_note_call(cJSON_IsNumber(dt) ? (long)dt->valuedouble : 0, 1);
         cJSON_Delete(root);
     }
@@ -912,6 +1040,21 @@ void app_refresh_tick(power_source_t source, int force_full)
     fetch_creds_t creds;
     read_creds(&creds);
 
+    /* FR-6: which product will ACTUALLY be fetched.
+     *
+     * Resolved ONCE, here, and used for BOTH the endpoint selection below and FR-7's alert
+     * answer — so the alert bar can never describe a different product from the one the fetch
+     * used, which is exactly how the bar came to announce "alerts unavailable" on a key that had
+     * them.
+     *
+     * The probe runs only for AUTO. An explicit setting already says which product the key
+     * carries, so probing would spend a call answering a question the config answered. */
+    const owm_product_t product =
+        (cfg.owm_product == OWM_PRODUCT_AUTO)
+            ? owm_product_resolve(OWM_PRODUCT_AUTO, onecall_probe(&creds))
+            : (owm_product_t)cfg.owm_product;
+    const int onecall = (product == OWM_PRODUCT_ONECALL3);
+
     const long now_unix = (long)(esp_timer_get_time() / 1000000LL);
 
     /* ---- Fetch, one document per source ----
@@ -923,23 +1066,47 @@ void app_refresh_tick(power_source_t source, int force_full)
     static char ha_resp[512];
     ha_resp[0] = '\0';
 
-    /* The parsed current reading is used for the fetch's success and for the daily-call
-     * bookkeeping (fetch_current credits the call to the response's own day); the widgets then
-     * re-read the DOCUMENT rather than this one value. */
     datasrc_value_t current;
     memset(&current, 0, sizeof(current));
-    const int got_current = (fetch_current(&creds, resp, sizeof(resp), &current) == 0);
 
-    if (needs.need_owm_daily || needs.need_owm_alert) {
+    /* On One Call 3.0 there is NO separate current-conditions product: the one document carries
+     * current, daily, and the official alerts together, so it is fetched whenever the page binds
+     * any of the three. On the free tier the two 2.5 products are genuinely independent calls and
+     * each is made only when the page binds something from it. */
+    const int need_forecast_doc = needs.need_owm_daily || needs.need_owm_alert ||
+                                  (onecall && needs.need_owm_current);
+    int got_current = 0;
+
+    if (onecall) {
+        /* Nothing to fetch here: the current conditions arrive inside the One Call document and
+         * are parsed out of it below. Asking 2.5/weather as well would be a second call for data
+         * already held. */
+        got_current = 0;
+    } else {
+        /* The parsed current reading is used for the fetch's success and for the daily-call
+         * bookkeeping (fetch_current credits the call to the response's own day); the widgets
+         * then re-read the DOCUMENT rather than this one value. */
+        got_current = (fetch_current(&creds, resp, sizeof(resp), &current, product) == 0);
+    }
+
+    if (need_forecast_doc) {
         forecast = heap_caps_malloc(FORECAST_BUF_BYTES, MALLOC_CAP_8BIT);
         if (forecast) {
             /* `max_day_index` is the highest day any widget references, so the request carries
              * exactly the days the page will draw. An alert-only page binds no day and gets the
              * whole horizon, because the official alerts ride in this document. */
             const int days = needs.need_owm_daily ? needs.max_day_index + 1 : 0;
-            if (fetch_forecast(&creds, forecast, FORECAST_BUF_BYTES, days) != 0) {
+            if (fetch_forecast(&creds, forecast, FORECAST_BUF_BYTES, days, product) != 0) {
                 free(forecast);
                 forecast = NULL;
+            } else if (onecall) {
+                /* The One Call document IS the current-conditions document, so the reading the
+                 * rest of this function treats as "did the current fetch work" comes out of it.
+                 * Parsing rather than assuming success: a 200 whose body did not survive the
+                 * buffer is not a reading, and treating it as one would cache garbage. */
+                current = owm_parse_current_temp(forecast,
+                                                 (long)(esp_timer_get_time() / 1000000LL));
+                got_current = (current.status == DATASRC_OK);
             }
         } else {
             /* Not fatal — the widgets show their fallback — but worth logging, because the usual
@@ -968,10 +1135,14 @@ void app_refresh_tick(power_source_t source, int force_full)
          * /api/status either way (FR-33). */
         api_note_error("owm: no current reading");
         ESP_LOGW(TAG, "fetch failed; widgets fall back to their placeholders");
-    } else {
+    } else if (!onecall) {
         /* Remember the DOCUMENT, not a formatted string: the widgets bind to different fields
          * of it (temp, humidity, wind, conditions), so caching one number would only serve
-         * whichever widget happened to be first in the page. */
+         * whichever widget happened to be first in the page.
+         *
+         * Only on the free tier: `resp` holds 2.5/weather there, and on One Call the current
+         * conditions live in the forecast document, which is a transient buffer freed below and
+         * must not be cached by reference. */
         const size_t n = strlen(resp);
         if (n < sizeof(s_last_current)) {
             memcpy(s_last_current, resp, n + 1);
@@ -985,7 +1156,10 @@ void app_refresh_tick(power_source_t source, int force_full)
      * placeholders. */
     const char *current_doc = NULL;
     if (got_current) {
-        current_doc = resp;
+        /* On One Call the current conditions come out of the forecast document; on the free tier
+         * they come out of the dedicated 2.5/weather response. Either way the widgets re-read the
+         * DOCUMENT, so the right one has to be handed over. */
+        current_doc = onecall ? forecast : resp;
     } else if (s_have_last_current) {
         current_doc = s_last_current;
         ESP_LOGI(TAG, "using the last good reading document (%u bytes)",
@@ -998,6 +1172,9 @@ void app_refresh_tick(power_source_t source, int force_full)
         .owm_current = current_doc,
         .owm_daily   = forecast,
         .ha_line     = (needs.need_ha && ha_resp[0]) ? ha_resp : NULL,
+        /* FR-7, from the RESOLVED product — the same value the fetches above used, so the bar
+         * cannot describe a different product from the one on the glass. */
+        .owm_alerts_supported = needs.need_owm_alert ? owm_product_has_alerts(product) : 0,
     };
     build_fields(&page, &src, ha_ids, n_ha, now_unix);
 

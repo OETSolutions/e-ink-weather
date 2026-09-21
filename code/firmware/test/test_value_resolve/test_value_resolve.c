@@ -155,12 +155,17 @@ static void test_missing_source_uses_fallback_not_zero(void)
 }
 
 /* The alert bar ships with an EMPTY fallback so quiet weather leaves a blank bar rather than two
- * dashes across the bottom of the panel. */
+ * dashes across the bottom of the panel.
+ *
+ * `owm_alerts_supported = 1` is One Call 3.0 — the product where an empty alert list really does
+ * mean quiet weather. See test_alert_bar_says_so_when_the_product_cannot_alert for the free
+ * tier, where the same empty list means something else entirely. */
 static void test_alert_bar_empty_fallback_is_honoured(void)
 {
     layout_widget_t w = mk(BIND_OWM_ALERT);
     strcpy(w.format.fallback, "");
-    value_sources_t src = { .owm_current = CURRENT, .owm_daily = FORECAST };
+    value_sources_t src = { .owm_current = CURRENT, .owm_daily = FORECAST,
+                            .owm_alerts_supported = 1 };
     char ids[1][48]; char buf[64]; datasrc_value_t v;
     TEST_ASSERT_EQUAL_INT(0, value_format_widget(&w, &src, ids, 0, 0, &v, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_STRING("", buf);
@@ -173,10 +178,64 @@ static void test_owm_alert_renders_when_present(void)
       "{\"alerts\":[{\"sender_name\":\"NWS\",\"event\":\"Red Flag Warning\"}],"
        "\"current\":{\"temp\":70,\"dt\":1758300000}}";
     layout_widget_t w = mk(BIND_OWM_ALERT);
-    value_sources_t src = { .owm_current = with_alert };
+    value_sources_t src = { .owm_current = with_alert, .owm_alerts_supported = 1 };
     char ids[1][48]; char buf[64]; datasrc_value_t v;
     TEST_ASSERT_EQUAL_INT(1, value_format_widget(&w, &src, ids, 0, 0, &v, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_STRING("WEATHER ALERT", buf);
+}
+
+/* FR-7: WHEN THE PRODUCT CANNOT CARRY ALERTS, SAY SO.
+ *
+ * The free 2.5 products have no "alerts" key at all, so an empty alert list is NOT evidence of
+ * quiet weather — it is evidence that this product never has alerts. Rendering the widget's
+ * shipped fallback (the empty string) there puts a blank bar on the glass that the user reads as
+ * "no severe weather". That is the silent degradation FR-7 forbids, so this case must produce
+ * words, and it must do so as a REAL reading (return 1), not as a fallback. */
+static void test_alert_bar_says_so_when_the_product_cannot_alert(void)
+{
+    layout_widget_t w = mk(BIND_OWM_ALERT);
+    strcpy(w.format.fallback, "");
+    /* The free tier: a perfectly good 2.5 document, with no "alerts" key because it has none. */
+    value_sources_t src = { .owm_current = CURRENT, .owm_daily = FORECAST,
+                            .owm_alerts_supported = 0 };
+    char ids[1][48]; char buf[64]; datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget(&w, &src, ids, 0, 0, &v, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("Alerts unavailable on this product", buf);
+    /* It is a known answer, not an unavailable source. */
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+}
+
+/* THE MESSAGE MUST FIT THE RENDER PATH'S PER-WIDGET BUFFER.
+ *
+ * app_refresh.c copies each resolved string into a 40-byte slot (page_render_t.values) with a
+ * plain snprintf, which truncates SILENTLY. An earlier, longer wording for this message reached
+ * the glass cut mid-word — "Offici... on this pro" — with no error in any log, because every
+ * layer between here and the panel did exactly what it was asked. The limit is real, so the text
+ * is sized to it and this test keeps it that way. */
+static void test_degradation_message_fits_the_render_buffer(void)
+{
+    layout_widget_t w = mk(BIND_OWM_ALERT);
+    strcpy(w.format.fallback, "");
+    value_sources_t src = { .owm_current = CURRENT, .owm_alerts_supported = 0 };
+    char ids[1][48]; char buf[64]; datasrc_value_t v;
+    (void)value_format_widget(&w, &src, ids, 0, 0, &v, buf, sizeof(buf));
+    /* 40 bytes including the terminator — the slot size in page_render_t.values. */
+    TEST_ASSERT_LESS_THAN_UINT32(40, (uint32_t)strlen(buf) + 1);
+}
+
+/* The degradation must win even when an alert IS present in the document — a product that cannot
+ * carry alerts cannot be trusted to have parsed one, and silently rendering "WEATHER ALERT" from
+ * a document we have declared alert-less would be the same lie in the other direction. */
+static void test_product_without_alerts_does_not_render_a_found_alert(void)
+{
+    const char *with_alert =
+      "{\"alerts\":[{\"sender_name\":\"NWS\",\"event\":\"Red Flag Warning\"}],"
+       "\"current\":{\"temp\":70,\"dt\":1758300000}}";
+    layout_widget_t w = mk(BIND_OWM_ALERT);
+    value_sources_t src = { .owm_current = with_alert, .owm_alerts_supported = 0 };
+    char ids[1][48]; char buf[64]; datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget(&w, &src, ids, 0, 0, &v, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("Alerts unavailable on this product", buf);
 }
 
 /* THRESHOLD RULES ARE THE WHOLE POINT OF THE ALERT WIDGET. A reading past the threshold
@@ -355,6 +414,10 @@ int main(void)
     RUN_TEST(test_missing_source_uses_fallback_not_zero);
     RUN_TEST(test_alert_bar_empty_fallback_is_honoured);
     RUN_TEST(test_owm_alert_renders_when_present);
+    RUN_TEST(test_alert_bar_says_so_when_the_product_cannot_alert);
+    RUN_TEST(test_product_without_alerts_does_not_render_a_found_alert);
+    RUN_TEST(test_degradation_message_fits_the_render_buffer);
+    RUN_TEST(test_degradation_message_fits_the_render_buffer);
     RUN_TEST(test_threshold_rule_replaces_the_reading);
     RUN_TEST(test_unavailable_reading_never_raises_an_alert);
     RUN_TEST(test_most_severe_rule_wins);

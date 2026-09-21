@@ -281,6 +281,44 @@ async function mount(root: HTMLElement): Promise<void> {
     })();
   });
 
+  /* ---- OpenWeatherMap product (FR-6) ----
+   *
+   * WHY THIS IS A CONTROL AND NOT A HIDDEN DEFAULT: the two products differ in whether official
+   * severe-weather alerts exist at all — One Call 3.0 carries them, the free 2.5 pair does not
+   * (FR-7). A user who has the subscription but cannot find the switch would silently get the
+   * free tier and an alert bar that says "NO ALERTS (PRODUCT)" forever.
+   *
+   * 'Auto' is the default and is labelled as a probe, not a fixed choice: it asks One Call 3.0
+   * once and falls back on the documented not-subscribed response. Saying so matters, because
+   * 'Auto' is what most keys want and the user should not think they have to know their own
+   * subscription status to leave it alone. */
+  const owmSel = el('select', { id: 'owmProduct' }) as HTMLSelectElement;
+  for (const [v, label] of [
+    ['auto', 'Automatic (probe One Call 3.0, fall back)'],
+    ['onecall3', 'One Call 3.0 (official alerts)'],
+    ['legacy', 'Free current + 5-day forecast (no official alerts)'],
+  ] as const) {
+    owmSel.append(el('option', { value: v }, label));
+  }
+  owmSel.value = doc.owmProduct;
+  owmSel.addEventListener('change', () => {
+    doc.owmProduct = owmSel.value as Config['owmProduct'];
+    describeProduct();
+  });
+  const productHint = el('p', { className: 'hint' });
+  function describeProduct(): void {
+    /* State the alert consequence for the CURRENT selection, because it is the one difference a
+     * user will notice on the glass and the one they cannot see until they have already saved. */
+    productHint.textContent = owmSel.value === 'legacy'
+      ? 'Official severe-weather alerts are not available on the free products, so the alert bar '
+        + 'will say so rather than staying blank.'
+      : owmSel.value === 'onecall3'
+        ? 'Requires the "One Call by Call" subscription. Without it every weather fetch fails.'
+        : 'One Call 3.0 is probed once; without the subscription the free products are used and '
+          + 'official alerts are reported as unavailable.';
+  }
+  describeProduct();
+
   /* ---- optional API auth (FR-31) ---- */
   const authBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
   const authLabel = el('label', { className: 'toggle' }) as HTMLLabelElement;
@@ -508,6 +546,13 @@ async function mount(root: HTMLElement): Promise<void> {
        'Save a copy, or load one you saved earlier. Loading does not touch the device until ' +
        'you press Save.'),
     el('div', { className: 'actions' }, fileInput),
+    el('h2', {}, 'Weather source'),
+    el('p', { className: 'sub' },
+       'Which OpenWeatherMap product to fetch from. This decides whether official ' +
+       'severe-weather alerts are available.'),
+    el('div', { className: 'fields' },
+       el('div', {}, el('label', { htmlFor: 'owmProduct' }, 'Product'), owmSel)),
+    productHint,
     el('h2', {}, 'Access'),
     authLabel,
     authRow,

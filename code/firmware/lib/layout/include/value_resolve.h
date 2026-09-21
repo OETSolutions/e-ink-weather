@@ -33,6 +33,14 @@ typedef struct {
     const char *owm_current;    /* 2.5/weather or One Call 3.0 */
     const char *owm_daily;      /* 2.5/forecast or One Call 3.0 */
     const char *ha_line;        /* the '|'-separated template response, or NULL */
+    /* FR-7: can the configured OWM product carry official alerts AT ALL?
+     *
+     * This is NOT the same question as "does this document contain an alert". On One Call 3.0 an
+     * empty alert bar means quiet weather; on the free 2.5 products it means the product has no
+     * alerts to give, and FR-7 requires the firmware to SAY so rather than show a blank bar the
+     * user reads as "no severe weather". Without this flag those two states are indistinguishable
+     * at the point of drawing, which is exactly the silent degradation FR-7 forbids. */
+    int         owm_alerts_supported;
 } value_sources_t;
 
 /* The HA entities a widget set needs, in the order they were first seen — so the caller can

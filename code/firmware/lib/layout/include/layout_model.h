@@ -38,6 +38,14 @@ typedef struct {
                                            * be wrong; without this the config field would be
                                            * settable in the app and silently ignored, which
                                            * is worse than not offering it. */
+    int           owm_product;            /* an owm_product_t: the FR-6 product toggle
+                                           * ('auto' | 'onecall3' | 'legacy'). Read for the
+                                           * same reason as power_mode — a field the app
+                                           * writes and the firmware ignores is a lie in the
+                                           * UI. It also decides FR-7's explicit alert
+                                           * degradation: only One Call 3.0 carries official
+                                           * alerts, so on the free tier the alert bar must
+                                           * say so rather than sit blank. */
     layout_page_t pages[LAYOUT_MAX_PAGES];
     int           page_count;
 } layout_config_t;

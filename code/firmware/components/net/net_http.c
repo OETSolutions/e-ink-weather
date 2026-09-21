@@ -44,6 +44,12 @@ typedef struct {
     http_sink_t         sink;
     SemaphoreHandle_t   done;
     esp_err_t           err;
+    /* The HTTP status, or 0 if no response was received at all. Reported separately from `err`
+     * because the CALLER sometimes needs to tell two failures apart that `err` deliberately
+     * merges: FR-6's One Call probe must distinguish the documented 401 ("this key has no
+     * subscription") from a transport failure or an oversized response, and treating the latter
+     * as the former is what makes a paying key look unsubscribed. */
+    int                 status;
     unsigned            hwm;      /* stack headroom in bytes, measured after the work */
 } http_job_t;
 
@@ -91,6 +97,7 @@ static void http_worker(void *arg)
     esp_err_t perr = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
+    j->status = status;
 
     if (perr != ESP_OK) {
         err = perr;
@@ -112,15 +119,16 @@ finish:
 }
 
 static esp_err_t do_request(const char *url, const char *bearer, const char *body,
-                            char *out, size_t outlen)
+                            char *out, size_t outlen, int *status_out)
 {
     if (!url || !out || outlen == 0) return ESP_ERR_INVALID_ARG;
     out[0] = '\0';
+    if (status_out) *status_out = 0;
 
     http_job_t job = {
         .url = url, .bearer = bearer, .body = body,
         .sink = { .buf = out, .cap = outlen, .len = 0, .overflow = 0 },
-        .done = NULL, .err = ESP_FAIL, .hwm = 0,
+        .done = NULL, .err = ESP_FAIL, .status = 0, .hwm = 0,
     };
     job.done = xSemaphoreCreateBinary();
     if (!job.done) return ESP_ERR_NO_MEM;
@@ -160,6 +168,7 @@ static esp_err_t do_request(const char *url, const char *bearer, const char *bod
 
     s_hwm = job.hwm;
     esp_err_t err = job.err;
+    if (status_out) *status_out = job.status;
     vSemaphoreDelete(job.done);
     return err;
 }
@@ -171,11 +180,17 @@ unsigned net_http_stack_hwm(void)
 
 esp_err_t net_http_get_json(const char *url, const char *bearer, char *out, size_t outlen)
 {
-    return do_request(url, bearer, NULL, out, outlen);
+    return do_request(url, bearer, NULL, out, outlen, NULL);
+}
+
+esp_err_t net_http_get_json_status(const char *url, const char *bearer, char *out, size_t outlen,
+                                   int *status_out)
+{
+    return do_request(url, bearer, NULL, out, outlen, status_out);
 }
 
 esp_err_t net_http_post_json(const char *url, const char *bearer, const char *body,
                              char *out, size_t outlen)
 {
-    return do_request(url, bearer, body, out, outlen);
+    return do_request(url, bearer, body, out, outlen, NULL);
 }

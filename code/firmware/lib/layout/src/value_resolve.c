@@ -102,6 +102,32 @@ static datasrc_value_t resolve_value(const layout_widget_t *w, const value_sourc
             return v;
 
         case BIND_OWM_ALERT: {
+            /* FR-7: degrade EXPLICITLY when the product cannot carry official alerts.
+             *
+             * The order matters. This check comes BEFORE looking in the documents, because on
+             * the free tier a document with no "alerts" key is not evidence of quiet weather —
+             * it is evidence that this product never has alerts. Reporting UNAVAILABLE there
+             * would make the widget print its own fallback, which ships as "" — a blank bar the
+             * user reads as "no severe weather". That is precisely the silent degradation FR-7
+             * forbids, so this state gets its own text. */
+            if (!src->owm_alerts_supported) {
+                v.status = DATASRC_OK;      /* a real, known answer, not a failure */
+                v.is_numeric = 0;
+                /* Says WHICH thing is missing. "No alerts" alone would read as a weather report;
+                 * the point of FR-7 is that the user learns the FEATURE is unavailable on the
+                 * product they picked, which is actionable — they can switch products.
+                 *
+                 * KEPT UNDER 40 BYTES ON PURPOSE. The render path copies each resolved value into
+                 * a 40-byte per-widget buffer (page_render_t.values in app_refresh.c), and
+                 * snprintf there truncates silently — a longer message reached the glass as
+                 * "Offici... on this pro", cut mid-word with no error anywhere. This is the same
+                 * class as the config-store sizing bug: the limit is real and the failure is
+                 * quiet, so the text is sized to the buffer rather than the buffer grown. */
+                snprintf(v.text, sizeof(v.text), "Alerts unavailable on this product");
+                v.observed_at = now_unix;
+                return v;
+            }
+
             if (!src->owm_daily && !src->owm_current) return v;
             /* The alert mechanism looks across BOTH documents: with One Call 3.0 the alerts
              * ride along with the forecast, while on the free tier neither has any. */

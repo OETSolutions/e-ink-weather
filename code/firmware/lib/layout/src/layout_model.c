@@ -1,5 +1,6 @@
 #include "layout_model.h"
 #include "cJSON.h"
+#include "owm.h"
 #include "power.h"
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,7 @@ int layout_config_parse(const char *json, layout_config_t *out)
     out->partial_refresh_limit = 5;     /* vendor demo's rule of thumb (FR-11) */
     out->page_count = 1;
     out->power_mode = POWER_MODE_AUTO;  /* trust the inference unless told otherwise */
+    out->owm_product = OWM_PRODUCT_AUTO; /* probe, since most keys have no One Call plan */
     strcpy(out->pages[0].name, "Main");
     out->pages[0].refresh_seconds = 900;
     out->pages[0].weight = 1;
@@ -77,6 +79,13 @@ int layout_config_parse(const char *json, layout_config_t *out)
     cJSON *pm = cJSON_GetObjectItemCaseSensitive(root, "powerMode");
     if (cJSON_IsString(pm) && pm->valuestring) {
         out->power_mode = power_mode_from_string(pm->valuestring);
+    }
+
+    /* The FR-6 product toggle. Same type-guard rule: a non-string is not a choice, and
+     * owm_product_from_string treats "" and unknown text as 'auto'. */
+    cJSON *op = cJSON_GetObjectItemCaseSensitive(root, "owmProduct");
+    if (cJSON_IsString(op) && op->valuestring) {
+        out->owm_product = owm_product_from_string(op->valuestring);
     }
 
     cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");

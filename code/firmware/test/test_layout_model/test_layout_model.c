@@ -3,6 +3,7 @@
 #include "unity.h"
 #include "layout_model.h"
 #include "power.h"   /* the power_mode_t values the parser writes */
+#include "owm.h"     /* the owm_product_t values the parser writes (FR-6) */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -254,6 +255,39 @@ static void test_power_mode_defaults_to_auto(void)
     TEST_ASSERT_EQUAL_INT(POWER_MODE_AUTO, c.power_mode);
 }
 
+/* FR-6's product toggle is PARSED, for the same reason powerMode is: the web app writes it, and a
+ * field the firmware silently ignores is a lie in the UI — the user picks "One Call 3.0", the app
+ * confirms it, and the device keeps calling the free endpoints. */
+static void test_owm_product_override_is_parsed(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"owmProduct\":\"onecall3\"}", &c));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_ONECALL3, c.owm_product);
+
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"owmProduct\":\"legacy\"}", &c));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_LEGACY, c.owm_product);
+}
+
+/* Absent, unrecognised, or the wrong type must mean 'auto' — which probes. It must never pin the
+ * device to a product the user did not choose, because on a key that HAS One Call that silently
+ * loses the official alerts. */
+static void test_owm_product_defaults_to_auto(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse("{\"schemaVersion\":1}", &c));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, c.owm_product);
+
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"owmProduct\":\"v3\"}", &c));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, c.owm_product);
+
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"owmProduct\":7}", &c));
+    TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, c.owm_product);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -276,5 +310,7 @@ int main(void)
     RUN_TEST(test_page_at_with_zero_total_does_not_divide_by_zero);
     RUN_TEST(test_power_mode_override_is_parsed);
     RUN_TEST(test_power_mode_defaults_to_auto);
+    RUN_TEST(test_owm_product_override_is_parsed);
+    RUN_TEST(test_owm_product_defaults_to_auto);
     return UNITY_END();
 }
