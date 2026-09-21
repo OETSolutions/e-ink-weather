@@ -141,9 +141,21 @@ static esp_err_t do_request(const char *url, const char *bearer, const char *bod
     /* Bounded wait, so a wedged worker fails this wake instead of hanging the device.
      * The HTTP client's own 10 s timeout is the primary bound; this is the backstop. */
     if (xSemaphoreTake(job.done, pdMS_TO_TICKS(30000)) != pdTRUE) {
-        ESP_LOGE(TAG, "TLS task did not finish; failing this wake");
-        vSemaphoreDelete(job.done);
-        return ESP_ERR_TIMEOUT;
+        ESP_LOGE(TAG, "TLS task still running after 30 s; waiting for it to finish");
+        /* WAIT FOR THE WORKER ANYWAY — do NOT return here.
+         *
+         * `job` lives on THIS stack frame and the worker holds `&job` for its whole life,
+         * writing job.sink.buf (the caller's forecast block or a caller stack array) as the
+         * response arrives. Returning on the timeout would unwind this frame and continue the
+         * refresh while a live task was still dereferencing both — a use-after-free that the 30 s
+         * backstop makes REACHABLE rather than theoretical, because esp_http_client's timeout
+         * bounds each SOCKET OPERATION (SO_RCVTIMEO via esp_tls) and not the whole transfer: a
+         * server trickling the body slowly enough to beat the per-read timeout keeps the worker
+         * alive past 30 s.
+         *
+         * Waiting cannot hang forever: every socket read/write is timed out by esp_tls, so the
+         * worker always reaches its own exit. Memory corruption is the worse outcome. */
+        xSemaphoreTake(job.done, portMAX_DELAY);
     }
 
     s_hwm = job.hwm;

@@ -6,6 +6,7 @@
 #include "api_store.h"
 #include "epd.h"
 #include "factory_reset.h"
+#include "gt30.h"
 #include "layout_model.h"
 #include "nvs_keys.h"
 #include "power.h"
@@ -228,6 +229,21 @@ void app_boot_run(void)
              (source != detected) ? " (powerMode override)" : "");
 
     /* ---- 3. Panel: last good image FIRST, before any network work (FR-29) ---- */
+
+    /* Task 6b step 6: report the GT30 font-chip probe once per boot.
+     *
+     * IT MUST RUN BEFORE epd_init(), and that is not a style choice. The probe bit-bangs SCLK and
+     * samples MISO, but once epd_init() brings the hardware SPI bus up those two pins belong to
+     * the SPI peripheral — toggling them from GPIO has no effect, the clock never runs, and the
+     * probe reads a constant and reports the chip ABSENT on a board where it is populated. Called
+     * after epd_init() it produced exactly that false negative on this bench. Before the bus
+     * exists the pins are plain GPIO, which is the state the probe was verified in.
+     *
+     * The chip's glyphs are not used for rendering — the flash atlas is (FR-4a) — so this is purely
+     * the observability the plan promised; the probe caches its result and never blocks. */
+    ESP_LOGI(TAG, "font chip: %s (probed before the SPI bus claims the pins)",
+             gt30_present() ? "present" : "absent");
+
     if (epd_init() != ESP_OK) {
         /* A BUSY timeout means the panel did not answer — a loose FPC or an unpowered
          * panel. Log it and carry on: the device must still come up and stay reachable

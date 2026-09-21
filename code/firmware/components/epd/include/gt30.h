@@ -15,5 +15,11 @@
  *
  * `gt30_present()` probes at most once per boot and caches. Callers MUST treat 0 as a
  * normal, expected outcome and fall back to the flash font atlas (FR-14) — never as an
- * error, and never with a retry loop. */
+ * error, and never with a retry loop.
+ *
+ * CALL IT BEFORE epd_init(). The probe bit-bangs SCLK and samples MISO; after epd_init()
+ * those pins belong to the SPI peripheral, toggling them from GPIO has no effect, and the
+ * probe reads a constant and reports the chip ABSENT on a board where it is present — a
+ * false negative observed on this bench. Before the bus is up they are plain GPIO, which
+ * is the state this probe was verified in. */
 int gt30_present(void);

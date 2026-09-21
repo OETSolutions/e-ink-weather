@@ -18,6 +18,7 @@
 #include "prov.h"
 #include "refresh_policy.h"
 #include "render.h"
+#include "thermal_guard.h"
 #include "value_resolve.h"
 #include "widgets.h"
 #include "esp_heap_caps.h"
@@ -291,6 +292,63 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
  * string would only serve whichever widget happened to be first. */
 static char s_last_current[2048];
 static int  s_have_last_current;
+
+/* HW-1's operating-temperature guard.
+ *
+ * The panel datasheet gives TOPR 0..50 C and warns that drawing outside it produces garbage;
+ * HW-1 requires the firmware to "surface a warning state rather than render garbage". The guard
+ * has existed and been host-tested since Task 6b, but was never CALLED from the render path —
+ * so the requirement was unmet on the device.
+ *
+ * `valid` is false whenever the sensor is unusable, which on this hardware is ALWAYS: the
+ * SSD2677's 0x40 register reads a constant -15 C regardless of ambient (measured 2026-09-18, see
+ * the spec's HW-1 note). Feeding that constant in with valid=1 would report TOO_COLD on a warm
+ * bench and block every render, which is precisely the failure the guard's fourth state exists to
+ * prevent. So the reading is validated against the known-stuck constant and only a reading that
+ * has actually MOVED is trusted.
+ *
+ * Returns 1 when the render must be skipped (genuinely out of range), 0 otherwise — including
+ * THERMAL_UNKNOWN, where HW-1 says render and log rather than block. */
+static int thermal_blocks_render(void)
+{
+    static int s_boot_c = 0;
+    static int s_have_prev = 0;
+
+    int t = 0;
+    const int valid = (epd_read_temp(&t) == ESP_OK);
+
+    if (!valid) {
+        if (!s_have_prev) {
+            ESP_LOGW(TAG, "panel temperature unreadable; guard cannot decide, rendering");
+            s_have_prev = 1;
+        }
+        return 0;
+    }
+
+    /* The first usable reading is remembered but cannot be classified: one sample cannot be told
+     * apart from a stuck constant. It is logged so the value is on the record. */
+    if (!s_have_prev) {
+        s_boot_c = t;
+        s_have_prev = 1;
+        ESP_LOGI(TAG, "panel temperature %d C (first reading; guard needs a second to trust it)", t);
+        return 0;
+    }
+
+    /* A sensor that never changes is the known-stuck case, and must not gate the render. */
+    if (t == s_boot_c) {
+        return 0;
+    }
+
+    const thermal_state_t th = thermal_check(t, 1);
+    if (th == THERMAL_TOO_COLD || th == THERMAL_TOO_HOT) {
+        ESP_LOGE(TAG, "panel temperature %d C is outside the 0..50 C operating range; "
+                      "skipping this refresh (HW-1)", t);
+        api_note_error(th == THERMAL_TOO_COLD ? "thermal: too cold to render"
+                                              : "thermal: too hot to render");
+        return 1;
+    }
+    return 0;
+}
 
 esp_err_t app_render_last_good(void)
 {
@@ -1034,6 +1092,19 @@ void app_refresh_tick(power_source_t source, int force_full)
     if (epd_wake() != ESP_OK) {
         ESP_LOGE(TAG, "panel did not wake");
         api_note_error("render: panel did not wake");
+        if (have_next) release_next();
+        return;
+    }
+
+    /* HW-1: do not draw outside the panel's 0..50 C operating range. Checked HERE, after
+     * epd_wake() and before the push, because the guard's read of the controller's temperature is
+     * an SPI command that only answers on an awake panel — reading it earlier would make the
+     * guard always come back UNKNOWN. The frame is already composed at this point, but nothing is
+     * drawn to a panel outside its range: that is exactly the "garbage on the glass" HW-1 forbids.
+     *
+     * This logs, and records THROUGH api_note_error, which is /api/status's evidence that a
+     * refresh was suppressed and why (FR-33). */
+    if (thermal_blocks_render()) {
         if (have_next) release_next();
         return;
     }
