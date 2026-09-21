@@ -351,45 +351,58 @@ void app_serve_loop(void)
 {
     api_set_refresh_task((void *)xTaskGetCurrentTaskHandle());
 
-    /* The API handler sets the flag and notifies this task; the flag is the durable record
-     * and the notification is only what makes the wait end promptly. Waking on the flag
-     * alone is therefore correct even if a notification is missed — which matters because a
-     * missed notification would otherwise leave a refresh request silently unserved. */
     /* Which refresh the serve loop should be doing, so the periodic and the on-demand paths
      * agree. api_take_full_refresh() already consumes a pending full request; the periodic
      * path only fires when that returned 0, so a user-requested full is never downgraded. */
     int want_full = 0;
+    int elapsed_ms = 0;
+    /* The interval is CACHED, and re-read only when an API request arrives — never on the
+     * per-second tick. api_update_seconds() allocates a CFG_JSON_MAX_LEN (16 KB) buffer through
+     * cfg_store_get() and frees it; doing that every second would drop a 16 KB block into the
+     * heap 900 times between refreshes, which is the exact fragmentation pattern that starves the
+     * 78,200-byte framebuffer on this part. A config change always arrives WITH a refresh request
+     * (PUT /api/config calls api_request_full_refresh), so re-reading on the request is enough to
+     * pick up an interval change and the periodic path never needs to call it. */
+    int interval_ms = api_update_seconds() * 1000;
 
     for (;;) {
-        /* The wait is the CONFIGURED interval, floored at 1 s so a zero cannot spin. A
-         * refresh request short-circuits it via the notification, so the interval governs only
-         * the IDLE case — the "has this device gone stale?" timer. */
-        const int wait_s = api_update_seconds();
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((wait_s > 0 ? wait_s : 1) * 1000));
-        /* The serve loop is where a plugged-in device spends its life, so this is the most
-         * likely place a user actually holds the button. */
+        /* POLL EVERY SECOND, and count up to the configured interval. The wait must NOT be the
+         * whole interval: factory_reset_poll() needs to run repeatedly to see a 5 s button hold
+         * complete, and it is this loop where a plugged-in device is most likely to be held — a
+         * 900 s wait would mean the button could never be held long enough to register. A refresh
+         * request short-circuits the wait via the task notification, so a request is still served
+         * promptly rather than at the next tick. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        elapsed_ms += 1000;
+
         if (factory_reset_poll()) return;
+
         if (api_take_full_refresh()) {
             /* A pending request, whether from POST /api/refresh or a config/bitmap change,
              * forces a FULL refresh: the layout changed and a partial cannot clear the old
-             * glyphs. */
+             * glyphs. Served immediately, not on the interval. The interval is re-read here
+             * because a config change is what a request most often accompanies. */
             ESP_LOGI(TAG, "refresh requested via API");
             want_full = 1;
-        } else {
-            /* THE TIMER FIRED, so this is the periodic refresh.
+            interval_ms = api_update_seconds() * 1000;
+        } else if (elapsed_ms >= interval_ms) {
+            /* THE TIMER ELAPSED, so this is the periodic refresh.
              *
-             * Without this branch a device on mains — the main deployment — refreshed exactly
-             * ONCE, at boot, and never again: update_seconds was consumed only by the
-             * deep-sleep timer on the battery path, and the serve loop's sole trigger was an
-             * API request. Polling every second but re-rendering only on demand means a
-             * plugged-in weather display shows the temperature it woke up with, forever.
+             * Without this a device on mains — the main deployment — refreshed exactly ONCE, at
+             * boot, and never again: update_seconds was consumed only by the deep-sleep timer on
+             * the battery path, and the serve loop's sole trigger was an API request. A
+             * plugged-in weather display then showed the temperature it woke up with, forever.
              *
-             * It carries NO full-refresh request, so refresh_decide() runs normally and the
-             * panel gets the partial-refresh behaviour FR-11 asks for. Forcing a full here
-             * would make a mains device flicker a full refresh every interval. */
-            ESP_LOGI(TAG, "periodic refresh (%d s)", wait_s);
+             * It carries NO full-refresh request, so refresh_decide() runs normally and the panel
+             * gets the partial-refresh behaviour FR-11 asks for. Forcing a full here would make a
+             * mains device flicker a full refresh every interval. */
+            ESP_LOGI(TAG, "periodic refresh (%d s)", interval_ms / 1000);
             want_full = 0;
+        } else {
+            continue;       /* not yet due, and nothing else to do this second */
         }
+
+        elapsed_ms = 0;
         app_refresh_tick(POWER_SOURCE_USB, want_full);
     }
 }
