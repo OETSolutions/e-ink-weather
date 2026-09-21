@@ -1,2 +1,9 @@
 .pio/
-sdkconfig.esp32dev
+# Every GENERATED per-environment sdkconfig, not just the one env that existed when this line was
+# written. `sdkconfig.<env>` is produced by the build from sdkconfig.defaults and is a CACHE: it
+# silently overrides sdkconfig.defaults, so a stale copy makes a settings change look like a no-op
+# (measured: CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192 in defaults had no effect because the generated
+# file still said 16384). Pattern, not a literal, so a new env (e.g. esp32dev-trace) cannot leak a
+# 93 KB generated file into a commit via `git add -A`.
+sdkconfig.esp32dev*
+# sdkconfig.defaults IS tracked — it is the source of truth for these settings.

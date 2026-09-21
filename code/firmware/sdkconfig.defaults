@@ -11,7 +11,22 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # TLS buffers into internal RAM — there is no PSRAM on this part (NFR-2).
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+#
+# SIZED FROM THE REAL PAYLOADS, not from the mbedTLS default. The default 16384 is a generic
+# "large enough for anything" value; this device fetches exactly three documents, all measured
+# against the live API on 2026-09-20:
+#   current weather (2.5/weather)      521 B
+#   forecast, 2 days (2.5/forecast cnt=16)  6,771 B
+#   HA template response                 512 B (the response buffer is 512 B)
+#   ip-api.com geolocation                66 B
+# so the largest possible single TLS record this device receives is ~6.8 KB, and 8192 covers it
+# with headroom. The in-buffer is a CONTIGUOUS allocation made inside the render window, in direct
+# competition with the 78,200-byte framebuffer, so every kilobyte here is a kilobyte the panel
+# cannot use. (Note this is a per-RECORD limit, not a whole-body limit: mbedtls_ssl_read() loops
+# across records, which is why a 16.5 KB body already worked against the 16,384 setting.)
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+# 4096 already matches the largest request this device SENDS (a JSON body for the HA template,
+# well under 1 KB) — kept as is.
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # The device has no console and no operator; a crash must be observable in a log, not a
 # silent reboot. Keep panics loud.

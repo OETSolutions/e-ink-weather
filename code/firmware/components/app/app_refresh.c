@@ -21,6 +21,9 @@
 #include "value_resolve.h"
 #include "widgets.h"
 #include "esp_heap_caps.h"
+#include "heap_trace.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -76,7 +79,49 @@ static int ensure_prev(void)
     if (s_fb_prev) return 0;
 
     s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-    if (!s_fb_prev) {
+    if (s_fb_prev) return 0;
+
+    /* THE FRAMEBUFFER HAS TO WAIT FOR THE NETWORK STACK TO LET GO, AND THAT IS THE WHOLE BUG.
+     *
+     * Measured on the bench (HEAP_TRACE probe): this device has exactly ONE DRAM region large
+     * enough to hold a 78,200-byte framebuffer — region 0x3ffe4350, ~113 KB. On USB the radio
+     * stays up for the API (FR-31), and right after a fetch that region's free space is split by
+     * a few tiny allocations (tens of bytes — the block walk shows 24/84/112 B pieces) into
+     * pieces of 68,428 + 25,308 + 4,104, none of which fits a framebuffer. Within about 800 ms
+     * those pieces COALESCE back into one 98,304-byte block — while `free_heap` does not move by a
+     * single byte (129,492 before and after). So this is not a leak and not a shortage: it is a
+     * transient allocation that sits astride the region and is released by its owner on a timer.
+     *
+     * That is why the failure looked random (~half of plugged-in ticks) and why it never happens
+     * on battery: on battery net_wifi_disconnect() tears the whole stack down BEFORE the render
+     * window, so the region is already clean. On USB there are no credentials to tear down, only
+     * the debris of a completed fetch, and it clears on its own.
+     *
+     * SO THE FIX IS TO WAIT FOR IT, WITH A BOUND. A retry loop that polls until the region is
+     * actually usable converts a coin-flip into a guaranteed draw, and the cost is paid ONLY on
+     * the losing ticks — a healthy tick returns above, on the first malloc, having waited
+     * nothing. The 3 s budget is ~4x the 800 ms the probe measured, so a slower clear still
+     * succeeds; if it genuinely never clears the failure is reported exactly as before.
+     *
+     * The wait is affordable because this condition is a USB one: on battery the radio is torn
+     * down before the render window, so the region is already clean and this first malloc does
+     * not fail. A battery device reaches the loop only under genuine memory pressure, where it
+     * costs one bounded 3 s awake period before reporting the same failure — rare, and not
+     * worth gating on the power source to avoid. */
+    for (int attempt = 0; attempt < 60; attempt++) {
+        vTaskDelay(pdMS_TO_TICKS(50));      /* 60 x 50 ms = 3 s ceiling */
+#if HEAP_TRACE
+        if (attempt % 5 == 0) {
+            ESP_LOGW("heaptrace", "  framebuffer wait %2d: largest=%u free=%u", attempt,
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                     (unsigned)esp_get_free_heap_size());
+        }
+#endif
+        s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
+        if (s_fb_prev) return 0;
+    }
+
+    {
         /* The largest free block is reported, not just the total. Each framebuffer is one
          * contiguous 76 KiB allocation, so total free heap is the wrong number to look at: a
          * device with 200 KiB free but no 76 KiB hole cannot draw, and a message quoting only
@@ -86,9 +131,12 @@ static int ensure_prev(void)
                  (unsigned)EPD_FB_BYTES,
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        /* The region breakdown, only here: this is the one point where "which block is in the
+         * way" is the question, and the dump is too large to print per refresh. */
+        HEAP_DUMP("resident framebuffer allocation failed");
+        HEAP_BLOCKS("resident framebuffer allocation failed");
         return -1;
     }
-    return 0;
 }
 
 /* Which slot's bytes are currently in s_fb_prev. -1 = nothing drawn yet this power cycle. */
@@ -608,6 +656,11 @@ static void release_next(void)
 
 void app_refresh_tick(power_source_t source)
 {
+    /* The render window's heap profile, printed at the four points that bracket it. With
+     * HEAP_TRACE unset these expand to nothing (see heap_trace.h) — they exist so a bench round
+     * can see WHERE the contiguous block goes without re-instrumenting and re-flashing. */
+    HEAP_DIAG("tick entry");
+
     /* Only the RESIDENT framebuffer is acquired here — s_fb_prev, the frame on the glass.
      * The transient one is taken later, once the radio has been torn down on battery. See the
      * block comment above for why holding both this early starves esp_wifi_init(). */
@@ -615,27 +668,24 @@ void app_refresh_tick(power_source_t source)
         api_note_error("render: out of memory for framebuffers");
         return;
     }
+    HEAP_DIAG("after ensure_prev");
 
-    /* ---- RELEASE THE RESIDENT FRAME ACROSS THE FETCH, ON USB ----
+    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH ----
      *
-     * This is a MEASURED fix, not a tidy-up. s_fb_prev's only purpose is to be the diff base for
-     * a partial refresh, and on USB a partial is impossible: the second framebuffer cannot be
-     * obtained (measured largest contiguous block 30,720 bytes against the 78,200 a framebuffer
-     * needs), and a partial needs BOTH frames. So on USB it is held for nothing.
+     * s_fb_prev is held only to be the diff base for a partial refresh. A partial needs BOTH
+     * frames, and two 76.4 KiB frames plus the radio do not fit (see the DRAM budget note), so the
+     * frame is released here and the render falls back to a full refresh — which needs only one.
      *
-     * Holding it is what broke the fetch. Measured on this device: /api/status reported 58,820
-     * bytes of free heap while the largest single block was only 30,720, because the resident
-     * 78,200-byte frame splits the free space. The TLS handshake needs ~20 KB CONTIGUOUS (a
-     * 16 KB in-buffer plus a 4 KB out-buffer) and could not get it, so it failed with
-     * `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) and every reading fell back to its
-     * placeholder — the symptom was a panel of "--" with a healthy-looking free_heap.
+     * This is LOAD-BEARING FOR TLS, and measurably so: the TLS handshake needs ~20 KB CONTIGUOUS
+     * (an 8 KB in-buffer, a 4 KB out-buffer, the X.509 certificate verification, and the task's
+     * own stack), and with the frame resident the largest free block in the big DRAM region is
+     * only ~30 KB and it is fragmented further by the config read — measured, the certificate
+     * verification then fails with -0x2880 (X509_ALLOC_FAILED) and EVERY reading falls back to
+     * "--". Verified on the bench both ways: holding the frame makes the fetch fail on every
+     * tick, not occasionally.
      *
-     * Total free heap is the wrong number to reason about here; the largest block is the right
-     * one, which is why /api/status now reports both.
-     *
-     * The panel is bistable and is asleep between pushes, so dropping the buffer costs nothing
-     * visible — the image stays on the glass. It is re-acquired inside the render window below,
-     * where a fresh 78 KB block is free because the forecast buffer has been handed back. */
+     * The panel is bistable and asleep between pushes, so releasing costs nothing visible: the
+     * image stays on the glass and is re-acquired below. */
     if (source == POWER_SOURCE_USB) {
         free(s_fb_prev); s_fb_prev = NULL;
         /* No resident frame means no diff base, so the next push MUST be a full refresh. Resetting
@@ -644,6 +694,7 @@ void app_refresh_tick(power_source_t source)
          * would diff the new layout against garbage and scribble noise onto the panel. */
         s_shown_slot = -1;
     }
+    HEAP_DIAG("after USB release of prev");
 
     /* WiFi credentials live in NVS, written by provisioning (FR-30) — never compiled in.
      * net_wifi_connect() needs them explicitly, so they are read here rather than assumed. */
@@ -735,6 +786,7 @@ void app_refresh_tick(power_source_t source)
     }
     free(cfg_json);
     if (page.n < 0) page.n = 0;
+    HEAP_DIAG("after config read+free");
 
     value_needs_t needs;
     value_scan_needs(page.widgets, page.n, &needs);
@@ -850,9 +902,31 @@ void app_refresh_tick(power_source_t source)
      * ~16.5 KB back, which matters on USB where the second framebuffer is already tight. */
     free(forecast);
     forecast = NULL;
+    HEAP_DIAG("after forecast free");
 
-    /* Decide full vs partial through the TESTED policy, never an inline comparison. */
-    const int limit = api_partial_limit();
+    /* The TLS worker's stack headroom, in the trace build only. net_http_stack_hwm() has existed
+     * since the TLS work but nothing ever READ it, so NET_TLS_TASK_STACK's 16 KB was never
+     * justified by the measurement its own comment demands — and that 16 KB is a contiguous DRAM
+     * allocation competing with the 78,200-byte framebuffer in this very window. Printing it here
+     * is what makes shrinking the stack an evidence-based change rather than a gamble. */
+#if HEAP_TRACE
+    ESP_LOGI("heaptrace", "%-28s %u bytes of stack never touched",
+             "tls stack headroom", net_http_stack_hwm());
+#endif
+
+    /* Decide full vs partial through the TESTED policy, never an inline comparison.
+     *
+     * The limit comes from the config THIS TICK ALREADY PARSED, not from api_partial_limit().
+     * That function re-reads the stored document through cfg_store_get(), which mallocs the full
+     * 16,384-byte CFG_JSON_MAX_LEN block — and this line is INSIDE the render window, in the gap
+     * between releasing the resident framebuffer and re-acquiring it. A transient 16 KB block
+     * landing in the freshly-freed 76 KB hole is precisely the fragmentation that makes the
+     * re-acquire fail, which is silent on the glass. Measured with HEAP_TRACE: the window opens
+     * with one clean 110,592-byte block, and that is the whole margin the framebuffer needs.
+     *
+     * `cfg` is already parsed above and layout_config_parse() seeds the same default (5) and the
+     * same clamp, so this is the identical number with no allocation. */
+    const int limit = cfg.partial_refresh_limit;
     const int forced_full = api_take_full_refresh();
     /* "Nothing on the glass" is tracked separately from the partial counter: the counter is
      * reset to 0 BY a full refresh, so treating 0 as "nothing drawn" would make every
@@ -888,16 +962,19 @@ void app_refresh_tick(power_source_t source)
      * is least objectionable. On battery — the deployed case, where FR-11's partial strategy
      * actually matters for power and flicker — the partial path is unaffected. */
 
-    /* Re-acquire the resident frame if USB released it across the fetch (above). By now the
-     * forecast buffer has been handed back, so one contiguous 78,200-byte block is free again.
-     * s_shown_slot is already -1, so the policy below forces a full refresh — which is the only
-     * kind possible without a diff base. */
+    /* Re-acquire the resident frame that USB released across the fetch (above). The wait inside
+     * ensure_prev() is what makes this reliable on USB — see its comment for why the region is
+     * briefly unusable and how long it takes to clear. s_shown_slot is already -1, so the policy
+     * below forces a full refresh — the only kind possible without a diff base. */
+    HEAP_DIAG("before re-acquire of prev");
     if (ensure_prev() != 0) {
         api_note_error("render: out of memory for the framebuffer");
         return;
     }
+    HEAP_DIAG("after re-acquire of prev");
 
     const int have_next = (acquire_next() == 0);
+    HEAP_DIAG(have_next ? "after transient acquired" : "transient unavailable");
     if (!have_next) {
         ESP_LOGW(TAG, "no second framebuffer (free %u, largest %u); falling back to a full refresh",
                  (unsigned)esp_get_free_heap_size(),
@@ -976,6 +1053,7 @@ void app_refresh_tick(power_source_t source)
      * that the TLS handshake needs, and the handshake happens before the next render window.
      * Releasing it here and re-acquiring there is what keeps both steps alive. */
     if (have_next) release_next();
+    HEAP_DIAG("after transient released");
     api_record_page(page_index);
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              e == ESP_OK && have_next ? (kind == REFRESH_PARTIAL ? "partial" : "full") : "full",
