@@ -75,8 +75,12 @@ for i,(kx0,kx1,ky0,ky1) in enumerate(HATCH_KEYS):
           (i+1,col.Volume,"OK" if col.Volume<=0.001 else "FAIL"))
     if col.Volume>0.001:fails.append("notch %d is not cut through the cover"%(i+1))
 
-# The keys must stay inside the bay footprint plus their notches -- nothing may lap behind the
-# cover, because a feature wider than the hole cannot be printed or inserted (the old lip bug).
+# The inner portion must stay inside the bay plus the notches, EXCEPT for the deliberate
+# retention lip on the -X end. The old rule ("nothing may lap behind the cover") was written
+# when the only such feature was the uninstallable perimeter ring; the user has since explicitly
+# asked for an inside lip on the screw-opposite edge, and it is installed by TILT, so it does
+# not need to pass through the hole. The lip is therefore excluded here and checked on its own
+# below (present, under SOLID cover, clear of the chassis, and no seated interference).
 notch=None
 for kx0,kx1,ky0,ky1 in HATCH_KEYS:
     n=rprism((kx1-kx0)+2*HATCH_KEY_CLEAR,(ky1-ky0)+2*HATCH_KEY_CLEAR,3.0,
@@ -84,8 +88,11 @@ for kx0,kx1,ky0,ky1 in HATCH_KEYS:
     notch=n if notch is None else notch.fuse(n)
 baybox=rprism(BAY[1]-BAY[0],BAY[3]-BAY[2],3.0,BAY[0],BAY[2],-0.5,m.COVER_T+1.0)
 inner=hatch.common(Part.makeBox(400,400,m.COVER_T+0.1,App.Vector(-200,-200,0.0)))
-esc=inner.cut(baybox.fuse(notch)).Volume
-print("  hatch inner portion outside bay+notches: %.4f mm3 %s"%(esc,"OK" if esc<=0.001 else "FAIL"))
+_lip=m.HATCH_LIP_X0-0.05
+lipbox=Part.makeBox((m.HATCH_LIP_X1-_lip)+0.1,(m.HATCH_KEY1_Y1-m.HATCH_KEY1_Y0)+0.1,
+                    m.HATCH_LIP_T+0.1,App.Vector(_lip,m.HATCH_KEY1_Y0-0.05,m.HATCH_LIP_Z0-0.05))
+esc=inner.cut(baybox.fuse(notch).fuse(lipbox)).Volume
+print("  hatch inner portion outside bay+notches+lip: %.4f mm3 %s"%(esc,"OK" if esc<=0.001 else "FAIL"))
 if esc>0.001:fails.append("hatch projects past the bay without a notch")
 
 # The screw actually exists, passes through real flange material from the outside, and threads
@@ -137,6 +144,51 @@ ev=hatch.common(edge_probe).Volume
 print("  hatch material between the slot and the plate's +Y edge (must be 0): %.4f mm3 %s"
       %(ev,"OK" if ev<=0.001 else "FAIL -- exit is a closed hole, not an open cutout"))
 if ev>0.001:fails.append("hatch USB exit is a closed hole; it must be an open cutout off the edge")
+
+print("\n=== -X RETENTION LIP (opposite the screw) ===")
+# The user: "still needs a lip that goes on the INSIDE of the rear cover on the opposite edge
+# from where the screw attaches. Do it." Requirements: it must exist, it must reach UNDER SOLID
+# cover (not sit in the key notch's void), and it must be clear of the chassis behind.
+lip = hatch.common(Part.makeBox(400,400,m.HATCH_LIP_T+0.5,
+                                App.Vector(-200,-200,m.HATCH_LIP_Z0+0.01)))
+print("  lip volume above the cover's inside face: %.2f mm3 %s"
+      %(lip.Volume,"OK" if lip.Volume>20 else "FAIL"))
+if lip.Volume<=20: fails.append("no retention lip on the screw-opposite edge")
+# The bite. NOTE the geometry: the cover is z 0..3.0 and the lip is z 3.0..4.5, so they are
+# ADJACENT in z and do not overlap -- a plain common() returns 0 and means nothing. What makes
+# this a retention lip is that it sits BEHIND the cover's inside face with its XY footprint
+# over SOLID cover material, so lifting the hatch drives the lip into the cover. Measure that:
+# sample the lip's own XY footprint and count how much of it is over solid (un-notched) cover.
+_bx0,_bx1 = m.HATCH_LIP_X0,m.HATCH_LIP_X1
+_by0,_by1 = m.HATCH_KEY1_Y0,m.HATCH_KEY1_Y1
+_n=solid_pts=0
+_x=_bx0+0.1
+while _x<_bx1:
+    _y=_by0+0.1
+    while _y<_by1:
+        _n+=1
+        if cover.isInside(App.Vector(_x,_y,1.5),1e-6,True) and \
+           not notch.isInside(App.Vector(_x,_y,1.5),1e-6,True):
+            solid_pts+=1
+        _y+=0.4
+    _x+=0.4
+_frac=100.0*solid_pts/max(1,_n)
+print("  lip footprint over SOLID cover (the bite): %.0f%% of %d samples %s"
+      %(_frac,_n,"OK" if _frac>=20 else "FAIL"))
+if _frac<20: fails.append("retention lip does not bite under solid cover")
+# seated interference with the cover must still be zero
+print("  seated hatch/cover intersection: %.4f mm3 %s"
+      %(hatch.common(cover).Volume,"OK" if hatch.common(cover).Volume<=0.001 else "FAIL"))
+if hatch.common(cover).Volume>0.001: fails.append("retention lip interferes with the cover")
+# and it must clear the chassis behind the cover
+_adoc=App.openDocument(os.path.join(HERE,"EInk_Weather_Display_Assembly.FCStd"))
+_ch=None
+for _o in _adoc.Objects:
+    if _o.Name=="PRINT_REAR_CHASSIS": _ch=_o.Shape
+if _ch is not None:
+    cv=lip.common(_ch).Volume
+    print("  lip vs chassis behind the cover: %.4f mm3 %s"%(cv,"OK" if cv<=0.001 else "FAIL"))
+    if cv>0.001: fails.append("retention lip hits the chassis")
 
 print("\n=== TOOL-FREE REMOVAL ===")
 # The plate has a half-round finger scallop in its +Y edge, replacing the earlier 31.6 x 5.0 mm

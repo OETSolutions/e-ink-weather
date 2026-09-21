@@ -64,6 +64,14 @@ if _mfx: _env_seed.update({"FOOT_X": (CASE_W - _env_seed["FOOT_W"]) / 2.0, "FOOT
 # Second stage: constants the generator derives from other generator constants.
 for _n in ("POCKET_CLEAR", "WEB_Y0", "WEB_Z1", "ARM_T", "CLIP_ROOT_Z", "PIN_ROOT"):
     _env_seed[_n] = _const(_n)
+# The bearing constants: CLIP_W is now DERIVED from BEARING_W. They are declared on one line as
+# "BEARING_X0, BEARING_X1 = CASE_W/2-25.0, CASE_W/2+25.0", which the single-name _const regex
+# cannot see, so they are read here explicitly.
+_mb = re.search(r"^BEARING_X0,\s*BEARING_X1\s*=\s*([^,]+),\s*([^#\n]+)", _src, re.M)
+if _mb:
+    _env_seed["BEARING_X0"] = float(eval(_mb.group(1).strip(), {"__builtins__": {}}, _env_seed))
+    _env_seed["BEARING_X1"] = float(eval(_mb.group(2).strip(), {"__builtins__": {}}, _env_seed))
+    _env_seed["BEARING_W"] = _env_seed["BEARING_X1"] - _env_seed["BEARING_X0"]
 
 PIN_R = _const("PIN_R");            _env["PIN_R"] = PIN_R
 MOUTH_PIN_ANGLE = _const("MOUTH_PIN_ANGLE")

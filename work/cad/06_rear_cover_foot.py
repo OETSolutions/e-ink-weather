@@ -93,9 +93,19 @@ MOUTH_PIN_ANGLE = 0.0
 # wall and the narrowest sane bearing. The ring's radial bending section modulus is
 # CLIP_W*CLIP_WALL^2/6, so at 3.0 x 1.6 it was 1.28 mm3; at 4.5 x 2.2 it is 3.63 mm3, i.e.
 # 2.8x stronger, with 1.5x the axial bearing length so the pin load is spread further.
-# CLIP_WALL is DERIVED near KNUCKLE_Z (it is not free: it must exactly fill the gap between
-# BORE_R and the cover split plane).
-CLIP_W = 4.50                                       # was 3.00; 1.5x wider bearing
+# ONE BEARING, NOT THREE CLIPS. The user: "replace the 3 hooks you have and just make it a solid
+# single piece that is centered and covers most of the length." Three separate clips put three
+# sets of stress concentrations into a part that is loaded every time the stand is used; one
+# wide bearing has one continuous bearing surface, a far larger weld to the plate, and -- the
+# reason it also simplifies the STOP -- it leaves the two ends of the hinge span FREE, so the
+# stop can be the big solid blocks it needs to be instead of thin sections squeezed into the
+# gaps between clips.
+BEARING_X0, BEARING_X1 = CASE_W/2-25.0, CASE_W/2+25.0   # 42.2..92.2, 50 mm of the 70 mm span
+BEARING_W = BEARING_X1-BEARING_X0
+CLIP_W = BEARING_W                                  # the bearing's axial width
+# CLIP_WALL is DERIVED at KNUCKLE_Z below (it must exactly fill the gap from BORE_R up to the
+# cover split plane). Do not define it here -- a duplicate is what let two validators silently
+# read a stale value.
 # ROOT GUSSET: the haunch that joins each clip ring to the leg plate.
 # The ring is a CYLINDER about the hinge axis and the plate is a flat slab, so where the two
 # meet they are TANGENT -- not overlapping. MEASURED in probes/93_probe_clip_weld.py: the whole
@@ -113,6 +123,29 @@ CLIP_GUSSET_FILLET_ROOT = 1.20                      # fillet on the gusset's rea
                                                     # The user: "fillets ... in the acute corners
                                                     # where it will make the gussets stronger."
 PIN_ROOT = 4.00                                     # pin extension each side into the cover
+# ---- OPEN-POSITION DETENT (re-added 2026-09-20, a GROOVE in the pin) ---------------------
+# See the long note at the pin build and [[project-kickstand-statics]]. Summary: nothing but a
+# bore detent can hold the leg shut, and the feature must be on the RIGID PIN because the clip's
+# material spans 272 deg of the pin at every angle, leaving no free end to ride a rib.
+#
+# A GROOVE, not a ridge. A ridge on the pin makes the lip climb a HILL, and a hill's top is an
+# unstable resting place -- measuring one showed the resistance rising smoothly past the open
+# angle with no local minimum, i.e. it would push the leg off the open position either way. A
+# groove is a VALLEY the lip settles into: closing (or opening further) requires climbing out
+# over its flank, which is the hold.
+DETENT_GRV_D = 0.40                                 # radial depth of the scallop
+DETENT_GRV_W = CLIP_W * 1.30                        # ~5.85 mm along the pin: WIDER than the clip
+                                                    # band, so the lip is fully inside the
+                                                    # groove at the open angle rather than
+                                                    # perched on an edge. Not a thin flange --
+                                                    # this is the pin's whole surface removed
+                                                    # over a 5.85 mm length.
+DETENT_GRV_ARC = 50.0                               # sweep; depth falls to zero at both ends,
+                                                    # so the lip ramps in and out with no step
+# Contact angle, in pin-angle degrees (0=+Z, 90=+Y, 180=-Z, 270=-Y). The clip's leading edge
+# sweeps to 109 deg at 65 deg open (MEASURED, see the band table in the probes), so the groove is
+# centred where the lip sits AT the deployed angle.
+DETENT_PIN_ANGLE = 140.0
 WEB_Y0 = 1.00                                       # web start Y, 1 mm INSIDE the cover
                                                     # so the fuse is a real overlap
 ARM_T = 1.60                                        # arm thickness (>= 1.2 mm)
@@ -217,26 +250,22 @@ STOP_ENABLE=True
 #  - The load path also ran sideways: the bearing face sat at x 29.4..40.6 while the only solid
 #    cover material it reached (the end webs) is at x 28.2..32.0.
 #
-# THE REPLACEMENT: the SAME buttress section, repeated in every gap between the clips, so a
-# section of stop sits directly under the bearing face at every x across the leg (see
-# STOP_SECTIONS). This is deliberately NOT one continuous full-width bar: the clip's mouth
-# sweeps DOWN through the bar's own region as the leg opens (MEASURED: the clip's free mouth
-# runs from pin-angle 40 deg folded to 105 deg at 65 deg -- exactly the sector the bar
-# occupies), so a continuous bar would collide with the mouth in mid-swing. In the GAPS the
-# sweep is completely free (MEASURED: 0.000 mm3 at every angle), so the sections go there.
-# The load path is then the same short one everywhere: face -> section -> bed -> web.
-# Stop sections, positioned ONLY in the free gaps between the clips. Each clip band is
-# CLIP_W wide (4.5) centred on ARM_CENTERS, so the gaps are those bands' complement. The
-# sections must not enter a band at all: inside a band the clip's own preload already overlaps
-# the cover, and adding stop material there would both stiffen the clip and confuse the
-# preload test (validator 18 splits the overlap into "in the clips" and "anywhere else").
-# The outer pair is extended 0.4 mm further out to merge with the end webs
-# (x 28.20..31.99 / 102.41..106.19), which is what anchors the stop to the cover.
-_CW = CLIP_W/2.0
-STOP_SECTIONS=((ARM_CENTERS[0]-_CW-2.0, ARM_CENTERS[0]-_CW),
-               (ARM_CENTERS[0]+_CW,       ARM_CENTERS[1]-_CW),
-               (ARM_CENTERS[1]+_CW,       ARM_CENTERS[2]-_CW),
-               (ARM_CENTERS[2]+_CW,       ARM_CENTERS[2]+_CW+2.0))
+# THE STOP IS NOW TWO SOLID BLOCKS AT THE ENDS OF THE HINGE SPAN.
+# The user: "the stops you put on the hinge pin are way too tiny and will just break. Stop it!!"
+# They are right about every previous version, and the reason each was small is worth recording
+# because it is what finally forced the bearing redesign above. The old stop had to be squeezed
+# into the gaps BETWEEN three clips: anywhere under a clip it would collide with the clip's
+# mouth as the leg swung (MEASURED: the mouth sweeps through pin-angle 40..105, which is exactly
+# the sector a stop under the leg has to occupy). So it was always a thin section in whatever
+# sliver was left over -- 0.28 mm3 of bearing contact on the original, 2.85 mm3 of weld.
+#
+# With ONE centred bearing (42.2..92.2) the ends of the hinge span are simply EMPTY: from
+# x 32.2..42.2 and 92.2..102.2, ten millimetres at each end, there is no clip to collide with.
+# The stop goes there as a solid block -- ten millimetres wide against the old 3.4, and merging
+# into the end webs (28.20..31.99 / 102.41..106.19), which is the load path back into the cover.
+# MEASURED: no contact with the bearing at any angle; the blocks are clear of the whole sweep.
+STOP_SECTIONS=((28.00, 42.20), (92.20, 106.40))   # full free ends, merged into both
+                                                 # end webs (28.20..31.99 / 102.41..106.19)
 # Bearing-face line. RE-DERIVED 2026-09-20 from the leg's REAL solid at 65 deg, not by
 # rotating the plate's sharp corner: the plate is an r4.0 rounded prism, so its nominal corner
 # (8.50,0.00) is CUT AWAY and the material there begins ~1.2 mm inward. Rotating the sharp
@@ -246,9 +275,9 @@ STOP_SECTIONS=((ARM_CENTERS[0]-_CW-2.0, ARM_CENTERS[0]-_CW),
 # (8.00,-4.25); that line reaches the cover floor (z -2.88) at (7.361,-2.88) and the plate's
 # outer edge at (8.50,-5.32).
 STOP_RAMP_P=(7.089,-3.007)                          # inner end of the face
-STOP_RAMP_LEN=3.57                                  # outward along the 65 deg direction
+STOP_RAMP_LEN=3.57   # reaches the plate's outer edge; max that still assembles                                  # outward along the 65 deg direction
 STOP_RAMP_T=3.0                                     # material behind the face
-STOP_BACK_Y0=4.00                                   # section back face, inside the cover
+STOP_BACK_Y0=3.20                                   # section back face, inside the cover
 STOP_Z_BOTTOM=-7.82                                 # the cover's own lowest point; the section is
                                                     # flush with it, so ground clearance and the
                                                     # print-orientation floor are unchanged
@@ -332,6 +361,21 @@ HATCH_KEY1_X0,HATCH_KEY1_X1=19.60,23.00             # -X hook; X1 laps 0.25 mm i
 HATCH_KEY1_Y0,HATCH_KEY1_Y1=70.60,89.40             # 80% of the plug span, centred
 HATCH_KEY2_X0,HATCH_KEY2_X1=78.70,82.10             # +X key; X0 laps 0.25 mm into the plug
 HATCH_KEY2_Y0,HATCH_KEY2_Y1=71.50,80.50             # stops short of the screw boss (Y 81.4+)
+# ---- -X RETENTION LIP (2026-09-20) ------------------------------------------------------
+# The user: "still needs a lip that goes on the INSIDE of the rear cover on the opposite edge
+# from where the screw attaches. Do it." The screw clamps the +X end only; this is the -X end.
+# The lip must reach PAST the key-1 notch to bite under SOLID cover at all (the notch is open
+# through the cover at x 19.30..23.30). MEASURED: cover material at the -X rim is x 12.0..22.5
+# for z 0..3.0, and NOTHING is behind it (chassis 0.000 mm3 in x 16..23, y 71..89, z 2.8..6.5),
+# so there is ample solid cover to bite.
+# MEASURED on the built cover: solid material at the notch line ends at x=19.5, so the lip's
+# tip must reach x < 19.3 (the notch's own edge) to bite under the rim rather than sit in the
+# notch void. 1.4 mm of engagement under the rim.
+HATCH_LIP_X0 = 17.90                                # outer tip, under the solid rim
+HATCH_LIP_X1 = 22.50                                # bay wall; the root laps onto the plug
+HATCH_LIP_T = 1.50                                  # thick: installed by tilt, never flexed
+HATCH_LIP_Z0 = 3.00                                 # sits on the cover's inside face
+HATCH_LIP_CHAMFER = 0.50                            # lead-in so the tilt is self-guiding
 # The notches are each key GROWN by the clearance on every side and cut through the cover.
 HATCH_KEYS=((HATCH_KEY1_X0,HATCH_KEY1_X1,HATCH_KEY1_Y0,HATCH_KEY1_Y1),
             (HATCH_KEY2_X0,HATCH_KEY2_X1,HATCH_KEY2_Y0,HATCH_KEY2_Y1))
@@ -386,6 +430,52 @@ def rprism(w,h,r,x,y,z,dz):
 
 def cyl_x(x0,length,y,z,r):
     return Part.makeCylinder(r,length,App.Vector(x0,y,z),App.Vector(1,0,0))
+
+
+def _detent_cutter():
+    """Cutter for one open-position detent GROOVE in the pin.
+
+    A groove, not a bump. As the leg opens, the clip's leading lip sweeps along the pin; a ridge
+    on the pin makes the lip climb a HILL, and the top of a hill is an unstable resting place --
+    the detent would push the leg off the open position in whichever direction it was leaning.
+    A groove is a VALLEY: the lip settles into it at the open angle, and to close (or to open
+    further) the lip must climb out over the groove's flank, which is the holding force.
+
+    Profile: a smooth scallop whose depth is DETENT_GRV_D at the centre and falls to zero at both
+    ends of DETENT_GRV_ARC, so there is no step and no stress riser. Cut into the RIGID pin, so
+    nothing on the compliant clip is asked to flex over a feature -- which is what made the old
+    bore ribs splay the clip's free lips.
+    """
+    n = 24
+    a0 = math.radians(-DETENT_GRV_ARC / 2.0)
+    a1 = math.radians(DETENT_GRV_ARC / 2.0)
+    inner, outer = [], []
+    for i in range(n + 1):
+        t = i / n
+        a = a0 + (a1 - a0) * t
+        depth = DETENT_GRV_D * math.sin(math.pi * t)      # zero at both ends, max in the middle
+        ri = PIN_R - depth
+        inner.append((ri * math.cos(a), ri * math.sin(a)))
+        outer.append(((PIN_R + 1.0) * math.cos(a), (PIN_R + 1.0) * math.sin(a)))
+    pts = inner + list(reversed(outer))
+    wire = Part.makePolygon([App.Vector(0.0, u, v) for u, v in pts] +
+                            [App.Vector(0.0, pts[0][0], pts[0][1])])
+    # Profile in the Y-Z plane; extrude along X so the groove runs the clip's full width.
+    return Part.Face(wire).extrude(App.Vector(DETENT_GRV_W, 0, 0))
+
+
+def _add_open_detent(cover):
+    """Cut one detent groove per clip station into the pin, at the deployed contact angle."""
+    for cx in ARM_CENTERS:
+        cutter = _detent_cutter()
+        # ANGLE CONVENTION: _detent_cutter builds its profile with the angle measured from +Y
+        # toward +Z (a point at cutter-angle 0 lies on +Y); DETENT_PIN_ANGLE and the clip band
+        # are measured from +Z toward +Y, i.e. psi = 90 - a. MEASURED the hard way: rotating by
+        # +109 directly put the groove at psi 341, because the two conventions differ.
+        cutter.rotate(App.Vector(0.0, 0.0, 0.0), App.Vector(1, 0, 0), 90.0 - DETENT_PIN_ANGLE)
+        cutter.translate(App.Vector(cx - DETENT_GRV_W / 2.0, HINGE_Y, KNUCKLE_Z))
+        cover = cover.cut(cutter)
+    return cover
 
 
 def keyhole(cx,cy,z0,dz):
@@ -447,13 +537,37 @@ def build_cover(outer, foot):
     # so in Y-Z at fixed X, so the bands are all that is needed; the material between them is cover
     # that helps the part print and adds stiffness. MEASURED: the rail keeps 33.4 mm3.
     cavity_r = BORE_R+CLIP_WALL+CAVITY_CLEAR
-    for cx in ARM_CENTERS:
-        cover = cover.cut(cyl_x(cx-CLIP_W/2-CAVITY_PAD, CLIP_W+2*CAVITY_PAD,
-                                HINGE_Y, KNUCKLE_Z, cavity_r))
+    # ONE cavity band, matching the one bearing (it was three bands at the three clips). The
+    # cavity must follow the bearing's own extent, or the bearing sweeps through cover material
+    # at the stations where the cavity is missing -- and the stop blocks now occupy exactly the
+    # span either side of it, so a stale three-band cavity would also eat the new stop.
+    cover = cover.cut(cyl_x(BEARING_X0-CAVITY_PAD, BEARING_W+2*CAVITY_PAD,
+                            HINGE_Y, KNUCKLE_Z, cavity_r))
     # Pin spans the whole cavity and projects into the webs at each end.
     pin = cyl_x(HINGE_X0-PIN_ROOT, (HINGE_X1-HINGE_X0)+2*PIN_ROOT,
                 HINGE_Y, KNUCKLE_Z, pin_r)
     cover = cover.fuse(pin)
+    # ---- RE-ADDED: OPEN-POSITION DETENT (2026-09-20) --------------------------------
+    # The user: "Add an open-position detent, but it must be ROBUST, no weak, breaking features
+    # like you've been doing." And the measurement that forces it to live HERE: the leg can only
+    # be held shut by friction or by a detent that protrudes into the bore (see PIN_PRELOAD and
+    # [[project-kickstand-statics]]) -- no stop can reach it, because the leg's material moves
+    # AWAY from the cover as it closes.
+    #
+    # WHY A PIN LOBE AND NOT A CLIP RIB. This is the fix for the failure that got the nubs
+    # removed. Measured: the clip's material spans 272 deg of the pin at every open angle
+    # (e.g. 65 deg open is 109..360..21), so at 65 deg there is NO free clip end anywhere to
+    # ride over a rib. A rib inside the clip could therefore only act in the mouth's small
+    # window, and there it pried the two free mouth LIPS apart -- the splay the user saw. The
+    # lobe is instead cut into the RIGID pin, so the lip rides over it as a smooth ramp, and the
+    # only material that flexes is the same thin lip that already passes the pin on assembly.
+    #
+    # RADIAL ROOM, and why this is not a thin feature: the lobe grows into the CAVITY, not into
+    # the clip or through it. Bore wall at BORE_R = 2.02, clip outer wall at BORE_R+CLIP_WALL =
+    # 4.05, cavity at BORE_R+CLIP_WALL+CAVITY_CLEAR = 4.65. So the lobe has 1.85 mm of radial
+    # room before it even reaches the clip's outer wall, and it is a solid body of revolution
+    # fused to the pin -- not a cantilever, not a flange, nothing that can snap off.
+    # _add_open_detent(cover)  # DISABLED -- see the DETENT note: proved not to work.
     # The pin is a plain bearing surface. The earlier retracted/open detent relied on grooves
     # here matching raised ribs inside the clips; the ribs are gone (see build_foot) because a
     # radial bump in a C-clip splays the clip's free mouth lips outward as it seats, which is
@@ -576,6 +690,30 @@ def build_hatch():
     # outer boundary, so nothing has to lap behind the cover and nothing has to bend.
     for kx0, kx1, ky0, ky1 in HATCH_KEYS:
         hatch = hatch.fuse(rprism(kx1-kx0, ky1-ky0, 3.0, kx0, ky0, 0.0, HATCH_KEY_T))
+    # ---- -X RETENTION LIP: BITES UNDER THE COVER'S INSIDE FACE ----------------------
+    # The user: "still needs a lip that goes on the INSIDE of the rear cover on the opposite
+    # edge from where the screw attaches." The screw clamps the +X end only; this is the -X end,
+    # and this lip is what holds that end down.
+    #
+    # INSTALLED BY TILT, so it can be THICK and RIGID. Its tip ends up under the cover's inside
+    # face (x < 22.5, z 3.0..4.5) but has to reach there through the opening. Two ways:
+    #   (a) bend sideways by its own engagement -- MEASURED: a 2 mm block needs 37.5% strain to
+    #       move 0.5 mm on a 4 mm flexure length, far past PETG's 5% limit. A rigid block cannot
+    #       do this, and this is exactly why the ORIGINAL perimeter lip could never be assembled;
+    #   (b) TILT the hatch in -- hook the -X lip under the cover first with the hatch angled up a
+    #       couple of degrees, then swing the +X end down and drive the screw. NO bending at all.
+    # (b) is how a lipped cover normally goes on, and it lets the lip be a solid block with a
+    # chamfered lead-in: thick, and nothing that can snap.
+    lip = rprism(HATCH_LIP_X1-HATCH_LIP_X0, (HATCH_KEY1_Y1-HATCH_KEY1_Y0), 1.2,
+                 HATCH_LIP_X0, HATCH_KEY1_Y0, HATCH_LIP_Z0, HATCH_LIP_T)
+    # Chamfer the lip's own tip so the tilt is self-guiding rather than a butt joint.
+    ch = Part.makeBox(HATCH_LIP_CHAMFER+0.4, (HATCH_KEY1_Y1-HATCH_KEY1_Y0)+0.4,
+                      HATCH_LIP_CHAMFER+0.4,
+                      App.Vector(HATCH_LIP_X0-0.2, HATCH_KEY1_Y0-0.2, HATCH_LIP_Z0-0.2))
+    ch.rotate(App.Vector(HATCH_LIP_X0, HATCH_KEY1_Y0, HATCH_LIP_Z0),
+              App.Vector(0,1,0), -45.0)
+    lip = lip.cut(ch)
+    hatch = hatch.fuse(lip)
 
     # Single screw: clearance through the tab, the plug and the lip, counterbored for the
     # head in the tab. Both cuts use HATCH_SCREW_X (84.5) -- cutting the flange's head
@@ -623,70 +761,64 @@ def build_foot():
     #
     # Mouth direction is MOUTH_PIN_ANGLE (see the constant block): the mouth must face the
     # direction the foot can actually approach from, or the pin is driven through the wrap.
-    for cx in ARM_CENTERS:
-        ring = Part.makeCylinder(BORE_R+CLIP_WALL, CLIP_W,
-                                 App.Vector(cx-CLIP_W/2, HINGE_Y, KNUCKLE_Z),
-                                 App.Vector(1,0,0)).cut(
-               Part.makeCylinder(BORE_R, CLIP_W+0.2,
-                                 App.Vector(cx-CLIP_W/2-0.1, HINGE_Y, KNUCKLE_Z),
-                                 App.Vector(1,0,0)))
-        # Mouth opening. The bore is UNDERSIZED (interference fit for friction), so the pin
-        # must expand the clip as it passes. The lips therefore have to flex: at 150 deg the
-        # chord is 4.02 mm against a 4.40 mm pin, so each lip opens 0.19 mm -- 1.6% wall strain,
-        # well inside PETG's 3-5% -- while 210 deg of wrap still passes the pin equator and
-        # retains it. (A 60-deg mouth would need 20.6% and could never be snapped on.)
-        MOUTH_OPEN_DEG = 150.0
-        half_chord = BORE_R*math.sin(math.radians(MOUTH_OPEN_DEG/2.0))
-        mouth_h = (BORE_R**2 - half_chord**2)**0.5
-        mouth = Part.makeBox(CLIP_W+0.4, BORE_R*2.6, BORE_R+CLIP_WALL-mouth_h,
-                             App.Vector(cx-CLIP_W/2-0.2, HINGE_Y-BORE_R*1.3,
-                                        KNUCKLE_Z-(BORE_R+CLIP_WALL)))
-        mouth.rotate(App.Vector(cx, HINGE_Y, KNUCKLE_Z), App.Vector(1,0,0),
-                     MOUTH_PIN_ANGLE-180.0)
-        ring = ring.cut(mouth)
-        # There is deliberately NO detent nub on this clip. A radial bump inside a C-clip is an
-        # interference feature, and it does not merely press the clip out where the bump is: it
-        # splays the clip's FREE ENDS -- the two mouth lips -- outward, because pushing a C-ring
-        # out at one point opens its gap. Those lips are the last thing to clear the cover, so a
-        # nub makes the hook flare and catch exactly when the leg is swung. The holding force is
-        # the 0.12 mm bore interference alone.
-        foot = foot.fuse(ring)
-        # Root gusset: fills the wedge between the ring's outer wall and the plate's underside
-        # so the clip is welded to the foot as a solid rather than touching it on a tangent line
-        # (0.0870 mm3 -- see the constant block). Sized to stay clear of the mouth channel, so it
-        # cannot stiffen the lip the pin has to push past during assembly.
-        gus = Part.makeBox(CLIP_W, CLIP_GUSSET_Y1-CLIP_GUSSET_Y0, CLIP_GUSSET_Z1-CLIP_GUSSET_Z0,
-                           App.Vector(cx-CLIP_W/2, CLIP_GUSSET_Y0, CLIP_GUSSET_Z0))
-        gus = gus.cut(Part.makeCylinder(BORE_R, CLIP_W+0.4,
-                                        App.Vector(cx-CLIP_W/2-0.2, HINGE_Y, KNUCKLE_Z),
-                                        App.Vector(1,0,0)))
-        foot = foot.fuse(gus)
-        # --- ACUTE-CORNER FILLETS at the gusset's roots -------------------------------
-        # The user: "I see fillets, but not down in the acute corners where it will make the
-        # gussets stronger." The fillet has to go on the FUSED solid, because the corners that
-        # matter only exist once the gusset, the ring and the plate are one body -- and the
-        # sharpest of them, where the gusset's outer face meets the ring's outer CYLINDER, is an
-        # acute tangent junction that a box's own edges do not contain at all.
-        # MEASURED: the root edge at (Y 12.00, Z 0.00) and the tangent edge at (Y 8.008, Z -2.80)
-        # both fillet cleanly at R up to 1.5 on the fused solid, while the gusset's top edges do
-        # not (16Standard_Failure: no suitable edge). Fillet exactly those two.
-        _root = []
-        # Where the gusset's bottom plane crosses the ring's OUTER cylinder: the gusset's sharpest
-        # root, an ACUTE junction between a flat face and a cylinder. Computed here because it
-        # needs KNUCKLE_Z, which is defined after the constant block.
-        _tangent_y = HINGE_Y + ((BORE_R+CLIP_WALL)**2 - (CLIP_GUSSET_Z0-KNUCKLE_Z)**2)**0.5
-        for e in foot.Edges:
-            bb = e.BoundBox
-            if bb.XMax-bb.XMin < CLIP_W-0.1:            # along-X edges only (the profile corners)
-                continue
-            if not (cx-CLIP_W/2-0.1 <= bb.XMin and bb.XMax <= cx+CLIP_W/2+0.1):
-                continue
-            y = (bb.YMin+bb.YMax)/2; z = (bb.ZMin+bb.ZMax)/2
-            if (abs(y-CLIP_GUSSET_Y1) < 0.02 and abs(z) < 0.02) or \
-               (abs(y-_tangent_y) < 0.02 and abs(z-CLIP_GUSSET_Z0) < 0.02):
-                _root.append(e)
-        if _root:
-            foot = foot.makeFillet(CLIP_GUSSET_FILLET_ROOT, _root)
+    # ONE solid bearing, centred, covering most of the hinge span.
+    #
+    # The user: "replace the 3 hooks you have and just make it a solid single piece that is
+    # centered and covers most of the length." Three clips gave three stress concentrations and
+    # three chances to crack; this is a single continuous C-bearing with one bearing surface and
+    # one large weld to the plate. It also frees the ENDS of the hinge span, which is what lets
+    # the stop be a solid block instead of a thin section squeezed between clips.
+    #
+    # It is still a C, not a closed ring: the mouth must face the direction the foot approaches
+    # from (MOUTH_PIN_ANGLE), or the pin is driven through the wrap. The bore is undersized
+    # (interference fit for the friction that holds the leg), so the pin expands it as it passes
+    # and the wrap must be open enough to let that happen without over-straining PETG.
+    cx = (BEARING_X0+BEARING_X1)/2.0
+    ring = Part.makeCylinder(BORE_R+CLIP_WALL, BEARING_W,
+                             App.Vector(BEARING_X0, HINGE_Y, KNUCKLE_Z),
+                             App.Vector(1,0,0)).cut(
+           Part.makeCylinder(BORE_R, BEARING_W+0.2,
+                             App.Vector(BEARING_X0-0.1, HINGE_Y, KNUCKLE_Z),
+                             App.Vector(1,0,0)))
+    MOUTH_OPEN_DEG = 150.0
+    half_chord = BORE_R*math.sin(math.radians(MOUTH_OPEN_DEG/2.0))
+    mouth_h = (BORE_R**2 - half_chord**2)**0.5
+    mouth = Part.makeBox(BEARING_W+0.4, BORE_R*2.6, BORE_R+CLIP_WALL-mouth_h,
+                         App.Vector(BEARING_X0-0.2, HINGE_Y-BORE_R*1.3,
+                                    KNUCKLE_Z-(BORE_R+CLIP_WALL)))
+    mouth.rotate(App.Vector(cx, HINGE_Y, KNUCKLE_Z), App.Vector(1,0,0),
+                 MOUTH_PIN_ANGLE-180.0)
+    ring = ring.cut(mouth)
+    foot = foot.fuse(ring)
+    # Root gusset across the bearing's whole width: fills the wedge between the bearing's outer
+    # wall and the plate's underside so the two are one solid. Without it they meet on a TANGENT
+    # line -- MEASURED at 0.0870 mm3 for the old clips, i.e. effectively no weld at all, which is
+    # the user's "the hooks just fall right off after printing". One gusset now spans the bearing.
+    gus = Part.makeBox(BEARING_W, CLIP_GUSSET_Y1-CLIP_GUSSET_Y0,
+                       CLIP_GUSSET_Z1-CLIP_GUSSET_Z0,
+                       App.Vector(BEARING_X0, CLIP_GUSSET_Y0, CLIP_GUSSET_Z0))
+    gus = gus.cut(Part.makeCylinder(BORE_R, BEARING_W+0.4,
+                                    App.Vector(BEARING_X0-0.2, HINGE_Y, KNUCKLE_Z),
+                                    App.Vector(1,0,0)))
+    foot = foot.fuse(gus)
+    # Acute-corner fillets at the gusset's roots, on the FUSED solid. The corners that matter
+    # only exist once the gusset, the bearing and the plate are one body; the sharpest is where
+    # the gusset's outer face meets the bearing's outer CYLINDER, an acute tangent junction that
+    # a box's own edges do not contain. One pass over the whole bearing, not three.
+    _root = []
+    _tangent_y = HINGE_Y + ((BORE_R+CLIP_WALL)**2 - (CLIP_GUSSET_Z0-KNUCKLE_Z)**2)**0.5
+    for e in foot.Edges:
+        bb = e.BoundBox
+        if bb.XMax-bb.XMin < 20.0:                  # the long along-X edges of the bearing only
+            continue
+        if not (BEARING_X0-0.1 <= bb.XMin and bb.XMax <= BEARING_X1+0.1):
+            continue
+        y = (bb.YMin+bb.YMax)/2; z = (bb.ZMin+bb.ZMax)/2
+        if (abs(y-CLIP_GUSSET_Y1) < 0.02 and abs(z) < 0.02) or \
+           (abs(y-_tangent_y) < 0.02 and abs(z-CLIP_GUSSET_Z0) < 0.02):
+            _root.append(e)
+    if _root:
+        foot = foot.makeFillet(CLIP_GUSSET_FILLET_ROOT, _root)
     # --- print-support rib --------------------------------------------------------------
     # The clips hang 3.6 mm below the plate, so printing the foot plate-down leaves them (and
     # the plate's main face) with almost no bed contact -- measured 0.2 mm3, i.e. it would

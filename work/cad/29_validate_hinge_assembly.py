@@ -24,7 +24,7 @@ _src = open(os.path.join(HERE, "06_rear_cover_foot.py")).read()
 _ENV = {"MIN_LOAD_WALL": 1.6, "MIN_PRINTED_WALL": 1.2, "FOOT_T": 1.8, "COVER_T": 3.0,
         "CASE_W": 134.4, "REAR_COVER_T": 3.0}
 # Resolve constants in source order so expressions like KNUCKLE_Z = FOOT_T-KNUCKLE_R work.
-for _m in re.finditer(r"^(PIN_R|PIN_PRELOAD|PIN_CLEAR|BORE_R|CLIP_WALL|CLIP_W|HINGE_Y|KNUCKLE_Z|PIN_ROOT|WEB_Y0|WEB_Z1|ARM_W|ARM_T|COVER_T)\s*=\s*([^#\n]+)", _src, re.M):
+for _m in re.finditer(r"^(PIN_R|PIN_PRELOAD|PIN_CLEAR|BORE_R|CLIP_WALL|CLIP_W|HINGE_Y|KNUCKLE_Z|PIN_ROOT|WEB_Y0|WEB_Z1|ARM_W|ARM_T|COVER_T|BEARING_X0|BEARING_X1|BEARING_W)\s*=\s*([^#\n]+)", _src, re.M):
     try:
         _ENV[_m.group(1)] = float(eval(_m.group(2).strip(), {"__builtins__": {}}, _ENV))
     except Exception:
@@ -34,6 +34,12 @@ def _c(n):
     if not m: raise RuntimeError("missing constant " + n)
     return float(eval(m.group(1), {"__builtins__": {}}, _ENV))
 
+# BEARING_* first: CLIP_W derives from BEARING_W.
+_B = re.search(r"^BEARING_X0,\s*BEARING_X1\s*=\s*([^,]+),\s*([^#\n]+)", _src, re.M)
+if _B:
+    _ENV["BEARING_X0"] = float(eval(_B.group(1).strip(), {"__builtins__": {}}, _ENV))
+    _ENV["BEARING_X1"] = float(eval(_B.group(2).strip(), {"__builtins__": {}}, _ENV))
+    _ENV["BEARING_W"] = _ENV["BEARING_X1"] - _ENV["BEARING_X0"]
 PIN_R = _c("PIN_R"); BORE_R = _c("BORE_R"); CLIP_WALL = _c("CLIP_WALL")
 CLIP_W = _c("CLIP_W"); HINGE_Y = _c("HINGE_Y"); KNUCKLE_Z = _c("KNUCKLE_Z")
 fails = []

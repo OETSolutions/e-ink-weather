@@ -37,6 +37,7 @@ KR, CR = _gen.PIN_R, _gen.BORE_R
 FOOT_X, FOOT_W = _gen.FOOT_X, _gen.FOOT_W
 ARM_CENTERS = list(_gen.ARM_CENTERS)
 CLIP_W = _gen.CLIP_W
+BEARING_X0, BEARING_X1 = _gen.BEARING_X0, _gen.BEARING_X1
 fails = []
 
 print("=== BOTTOM-EDGE PRINTED HINGE VALIDATION ===")
@@ -59,11 +60,17 @@ def band_interference(shape, cover):
     inter = shape.common(cover)
     clips, elsewhere = [], []
     for s in inter.Solids:
-        cx = (s.BoundBox.XMin + s.BoundBox.XMax) / 2.0
-        if any(abs(cx - a) <= CLIP_W / 2.0 + 0.2 for a in ARM_CENTERS):
+        b = s.BoundBox
+        # The bearing is ONE span now (it was three clips on ARM_CENTERS). Classify by OVERLAP
+        # with the bearing's own X range rather than by proximity to a centre: an overlap
+        # solid may straddle the bearing edge, and a centre test against a 50 mm-wide bearing
+        # would call anything near the middle "elsewhere" (which is what made this read 0).
+        lo, hi = max(b.XMin, BEARING_X0), min(b.XMax, BEARING_X1)
+        ov = max(0.0, hi - lo)
+        if ov >= (b.XMax - b.XMin) * 0.98:      # essentially all of it inside the bearing
             clips.append(s.Volume)
         else:
-            elsewhere.append((s.Volume, s.BoundBox))
+            elsewhere.append((s.Volume, b))
     return sum(clips), elsewhere
 
 print("\n=== SWING CLEARANCE AND 65-DEGREE HARD STOP ===")
