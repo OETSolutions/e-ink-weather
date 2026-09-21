@@ -2,6 +2,7 @@
 #include "api_internal.h"
 #include "api_ota.h"
 #include "api_status.h"
+#include "api_values.h"
 #include "owm_counter.h"
 #include "net_wifi.h"
 #include "cfg_store.h"
@@ -104,6 +105,42 @@ void api_record_page(int page)
     lock();
     s_last_page = page;
     s_have_last_page = 1;
+    unlock();
+}
+
+/* The last resolved values, for GET /api/values (FR-27). Static rather than allocated: it is a
+ * fixed 24 entries and the endpoint must be answerable without a malloc that could fail and
+ * turn a preview into an error. */
+static struct {
+    int  count;
+    int  page;
+    int  page_count;
+    char ids[API_VALUES_MAX][API_VALUES_ID_LEN];
+    char texts[API_VALUES_MAX][API_VALUES_TEXT_LEN];
+    int  has_value[API_VALUES_MAX];
+    long resolved_at;
+    int  valid;
+} s_values;
+
+void api_record_values(const char (*ids)[24], const char (*texts)[40],
+                       const int *has_value, int count, int page, int page_count)
+{
+    if (!ids || !texts || !has_value || count < 0) return;
+
+    lock();
+    const int n = count > API_VALUES_MAX ? API_VALUES_MAX : count;
+    for (int i = 0; i < n; i++) {
+        strncpy(s_values.ids[i], ids[i], API_VALUES_ID_LEN - 1);
+        s_values.ids[i][API_VALUES_ID_LEN - 1] = '\0';
+        strncpy(s_values.texts[i], texts[i], API_VALUES_TEXT_LEN - 1);
+        s_values.texts[i][API_VALUES_TEXT_LEN - 1] = '\0';
+        s_values.has_value[i] = has_value[i] ? 1 : 0;
+    }
+    s_values.count = n;
+    s_values.page = page;
+    s_values.page_count = page_count;
+    s_values.resolved_at = (long)(esp_timer_get_time() / 1000000LL);
+    s_values.valid = 1;
     unlock();
 }
 
@@ -482,6 +519,50 @@ static esp_err_t h_status(httpd_req_t *req)
     const esp_err_t e = api_send_json(req, out, "200 OK");
     free(out);
     return e;
+}
+
+/* ---------------------------------------------------------------- GET /api/values ---- */
+
+/* The values the last refresh resolved, per widget id (FR-27).
+ *
+ * WHY THE DEVICE SERVES THIS AND THE APP DOES NOT COMPUTE IT: FR-27 wants the preview rendered
+ * with real fetched data. The device is the only party that HAS it — it holds the OWM key and
+ * the HA token, it already fetched the documents, and value_format_widget() is the exact code
+ * that decides the string on the glass. A TypeScript reimplementation would drift on the subtle
+ * parts (fallback, decimals default, alert replacement, HA slot indexing), and in the embedded
+ * case the browser has neither the credentials nor, on the setup network, any internet.
+ *
+ * BEFORE THE FIRST REFRESH there is nothing to report, and that is a 200 with an empty list
+ * rather than a 404: the editor's question is "what will the panel show", and "the device has
+ * not drawn yet" is a real answer to it. A 404 would read as a missing endpoint. */
+static esp_err_t h_values(httpd_req_t *req)
+{
+    static char out[2048];
+
+    api_value_t items[API_VALUES_MAX];
+    api_values_t v;
+    memset(&v, 0, sizeof(v));
+    memset(items, 0, sizeof(items));
+
+    lock();
+    const int n = s_values.count;
+    for (int i = 0; i < n; i++) {
+        items[i].id = s_values.ids[i];
+        items[i].text = s_values.texts[i];
+        items[i].has_value = s_values.has_value[i];
+    }
+    v.items = items;
+    v.count = n;
+    v.page = s_values.page;
+    v.page_count = s_values.page_count;
+    v.resolved_at = s_values.resolved_at;
+    unlock();
+
+    const int len = api_values_json(&v, out, sizeof(out));
+    if (len < 0) {
+        return api_send_err(req, "500 Internal Server Error", "values buffer too small");
+    }
+    return api_send_json(req, out, "200 OK");
 }
 
 /* ------------------------------------------------------------------ GET/PUT /config -- */
@@ -1164,6 +1245,7 @@ esp_err_t api_start(void)
 
     static const httpd_uri_t uris[] = {
         { .uri = "/api/status",   .method = HTTP_GET,  .handler = h_status },
+        { .uri = "/api/values",   .method = HTTP_GET,  .handler = h_values },
         { .uri = "/api/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/config",   .method = HTTP_PUT,  .handler = h_config_put },
         { .uri = "/api/auth",     .method = HTTP_GET,  .handler = h_auth_get },

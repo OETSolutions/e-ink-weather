@@ -187,6 +187,11 @@ typedef struct {
     value_field_t   fields[LAYOUT_MAX_FIELDS];
     char            values[LAYOUT_MAX_FIELDS][40];
     const char     *value_ptrs[LAYOUT_MAX_FIELDS];
+    /* The widget id and "was this a real reading" flag, parallel to values/fields, so
+     * GET /api/values (FR-27) can report which box each resolved string belongs to. The id is
+     * copied rather than pointed at: the widget array is overwritten by the next refresh. */
+    char            ids[LAYOUT_MAX_FIELDS][24];
+    int             has_value[LAYOUT_MAX_FIELDS];
     int             n;              /* how many the page asked for */
     int             n_fields;       /* how many are actually stamped (dynamic only) */
 } page_render_t;
@@ -212,8 +217,14 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
 
         /* The buffer is per-field and the pointer array is parallel to `fields`, because
          * render_compose_stream() takes `const char *const *` and does not own the strings. */
-        value_format_widget(w, src, ids, n_ids, now, NULL, p->values[nf], sizeof(p->values[nf]));
+        p->has_value[nf] = value_format_widget(w, src, ids, n_ids, now, NULL,
+                                               p->values[nf], sizeof(p->values[nf]));
         p->value_ptrs[nf] = p->values[nf];
+        /* The widget's own id travels with the value, for GET /api/values (FR-27): the editor
+         * previews the REAL fetched data by asking the device what it resolved, and without the
+         * id the app could not tell which box a string belongs to. */
+        strncpy(p->ids[nf], w->id, sizeof(p->ids[nf]) - 1);
+        p->ids[nf][sizeof(p->ids[nf]) - 1] = '\0';
         nf++;
     }
     p->n_fields = nf;
@@ -826,6 +837,14 @@ void app_refresh_tick(power_source_t source)
         .ha_line     = (needs.need_ha && ha_resp[0]) ? ha_resp : NULL,
     };
     build_fields(&page, &src, ha_ids, n_ha, now_unix);
+
+    /* Hand the resolved strings to the API for GET /api/values (FR-27), which is what lets the
+     * editor preview REAL fetched data instead of re-deriving it (and, in the embedded case,
+     * without any credentials or internet of its own). Recorded even for a failed fetch: the
+     * widget then resolved to its fallback, and "the panel will show --" is exactly what the
+     * preview should say rather than keeping a stale value from a previous refresh. */
+    api_record_values(page.ids, page.values, page.has_value, page.n_fields,
+                      page_index, cfg_ok ? cfg.page_count : 1);
 
     /* The forecast buffer has served its purpose; releasing it here gives the render window the
      * ~16.5 KB back, which matters on USB where the second framebuffer is already tight. */

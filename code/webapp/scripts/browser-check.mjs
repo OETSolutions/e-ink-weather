@@ -89,10 +89,29 @@ try {
 console.log('artwork /api/artwork posts:', artPosts);
 console.log('device artwork_pages:', artworkPages);
 
+/* ---- the preview must show the device's REAL fetched values (FR-27) ----
+ *
+ * The canvas is a bitmap, so the values are not readable from the DOM. Instead the check asks the
+ * device what it resolved and asserts the app actually requested it — a 200 on /api/values is what
+ * distinguishes "the preview shows real data" from "the app only ever showed placeholders", which
+ * is the state FR-27 was written against and which looks identical on screen. */
+const gotValues = requests.some((r) => r.startsWith('200') && r.includes('/api/values'));
+let liveSample = '';
+try {
+  const v = await page.evaluate(async (b) => (await fetch(`${b}/api/values`)).json(), base);
+  const real = (v.values ?? []).find((x) => x.has_value);
+  liveSample = real ? `${real.id}="${real.text}"` : '';
+} catch { /* reported below */ }
+console.log('fetched /api/values:', gotValues ? 'YES' : 'NO');
+console.log('a real resolved value:', liveSample || '(none reported)');
+
 console.log('console errors:   ', errors.length ? errors : 'none');
 console.log('requests:', requests.filter((r) => r.includes('/api/')).join('\n          '));
 
 await browser.close();
-const ok = canvas && gotConfig && saveOk && artworkPages > 0 && errors.length === 0;
+/* `gotValues` is required: without it the preview silently degrades to placeholders, which is a
+ * functional regression even though every other check still passes. `liveSample` is reported but
+ * NOT required — a device that has never had a successful fetch legitimately has no values. */
+const ok = canvas && gotConfig && gotValues && saveOk && artworkPages > 0 && errors.length === 0;
 console.log(ok ? '\nPASS' : '\nFAIL');
 process.exit(ok ? 0 : 1);

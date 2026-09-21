@@ -18,13 +18,13 @@ import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
 import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-panel';
 import { listEntities } from './data/ha';
-import { previewText } from './data/format';
+import { previewTextWithLive } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, putAuth, type AuthState } from './transfer/device';
+import { getAuth, getValues, putAuth, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -70,15 +70,16 @@ function starterPage(): Page {
 /**
  * The preview text for each widget.
  *
- * Delegates to previewText() in data/format.ts so the exact string the panel will show is
- * testable — see that function for why the alert case matters (NFR-4: the preview must match the
- * panel bit-for-bit, and it did not).
+ * Delegates to previewTextWithLive() in data/format.ts so the exact string the panel will show is
+ * testable — see that function for why the alert case and the live-value precedence matter
+ * (NFR-4: the preview must match the panel bit-for-bit, and it did not). `live` holds the values
+ * the DEVICE last resolved, keyed by widget id (FR-27).
  */
-function previewValues(page: Page, probe: number): Record<string, string> {
+function previewValues(page: Page, probe: number, live: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = {};
   for (const w of page.widgets) {
     if (w.role !== 'dynamic') continue;
-    out[w.id] = previewText(w, probe);
+    out[w.id] = previewTextWithLive(w, probe, live);
   }
   return out;
 }
@@ -193,7 +194,11 @@ async function mount(root: HTMLElement): Promise<void> {
   if (page.widgets.length === 0) page.widgets = starterPage().widgets;
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
-  const editorState: EditorState = { page, values: previewValues(page, alertProbe) };
+  /* The device's last resolved values, keyed by widget id (FR-27). Empty until asked for, and
+   * the preview falls back to placeholders until then — which is what the panel shows before its
+   * own first fetch, so the two agree either way. */
+  let liveValues: Record<string, string> = {};
+  const editorState: EditorState = { page, values: previewValues(page, alertProbe, liveValues) };
 
   /* ---- DOM, built first ---- */
   const status = el('p', { className: 'status' });
@@ -260,7 +265,7 @@ async function mount(root: HTMLElement): Promise<void> {
         if (!Array.isArray(page.widgets)) page.widgets = [];
         editorState.page = page;
         editorState.selectedId = undefined;
-        editorState.values = previewValues(page, alertProbe);
+        editorState.values = previewValues(page, alertProbe, liveValues);
         picker.setPosition({ lat: doc.location.latitude, lon: doc.location.longitude });
         zipInput.value = doc.location.zipCode ?? '';
         panel.show(undefined);
@@ -347,7 +352,7 @@ async function mount(root: HTMLElement): Promise<void> {
     onChange: () => {
       /* A format or alert change alters the preview text, so refresh it — otherwise the panel
        * would edit a widget while the canvas kept painting the old value. */
-      editorState.values = previewValues(page, alertProbe);
+      editorState.values = previewValues(page, alertProbe, liveValues);
       editor.redraw();
     },
   });
@@ -390,10 +395,21 @@ async function mount(root: HTMLElement): Promise<void> {
     /* 999 fires a normal-range rule; NaN previews nothing, exercising the real "unavailable
      * never alarms" guard. */
     alertProbe = alertBox.checked ? 999 : NaN;
-    editorState.values = previewValues(page, alertProbe);
+    editorState.values = previewValues(page, alertProbe, liveValues);
     panel.show(editorState.selectedId
       ? page.widgets.find((w) => w.id === editorState.selectedId)
       : undefined);
+    editor.redraw();
+  });
+
+  /* Ask the device what it last resolved, and repaint when it answers (FR-27: the preview must
+   * show real fetched data). Deliberately not awaited: the editor has to be usable immediately on
+   * a device that is slow or unreachable, so it paints placeholders first and fills in the real
+   * readings when they arrive. */
+  void getValues({ baseUrl: API }).then((vals) => {
+    if (Object.keys(vals).length === 0) return;   /* unreachable, or nothing drawn yet */
+    liveValues = vals;
+    editorState.values = previewValues(editorState.page, alertProbe, liveValues);
     editor.redraw();
   });
 

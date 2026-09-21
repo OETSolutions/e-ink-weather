@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { previewText, formatPlaceholder } from '../src/data/format';
-import type { AlertRule, Format } from '../src/model/config';
+import { previewText, previewTextWithLive, formatPlaceholder } from '../src/data/format';
+import type { AlertRule, Format, Widget } from '../src/model/config';
 
 /* The exact string a widget will put on the glass (FR-14, FR-27, NFR-4).
  *
@@ -73,5 +73,60 @@ describe('preview text (mirrors the firmware, FR-14/NFR-4)', () => {
     const w = dyn(undefined, [rule('gte', 90, 'advisory'), rule('gte', 100, 'severe')]);
     expect(previewText(w, 105)).toBe('severe');
     expect(previewText(w, 95)).toBe('advisory');
+  });
+});
+
+/* ---- live values from the device (FR-27) ---- */
+
+describe('preview with device-resolved values (FR-27)', () => {
+  const dyn = (over: Partial<Widget> = {}): Widget => ({
+    id: 'w1', x: 0, y: 0, w: 10, h: 10, role: 'dynamic', ...over,
+  });
+
+  /* The whole point of the endpoint: when the device has a real reading, the preview shows THAT
+   * string rather than the placeholder, because the device produced it with the same formatter
+   * that draws the glass. */
+  it('shows the device value when one is available', () => {
+    const w = dyn({ format: { fallback: '--' } });
+    expect(previewTextWithLive(w, NaN, { w1: '58.0°F' })).toBe('58.0°F');
+  });
+
+  /* With nothing from the device the placeholder is shown — which is what the panel itself shows
+   * before its first successful fetch, so the two agree either way. */
+  it('falls back to the placeholder with no device value', () => {
+    const w = dyn({ format: { fallback: '--', suffix: '°F' } });
+    expect(previewTextWithLive(w, NaN, {})).toBe('--°F');
+    expect(previewTextWithLive(w, NaN, { other: '58.0°F' })).toBe('--°F');
+  });
+
+  /* A widget with no id cannot be matched to a device value at all. */
+  it('falls back for a widget with no id', () => {
+    const w: Widget = { id: '', x: 0, y: 0, w: 10, h: 10, role: 'dynamic', format: { fallback: '--' } };
+    expect(previewTextWithLive(w, NaN, { w1: '58.0°F' })).toBe('--');
+  });
+
+  /* The alert probe MUST win over a live value: it is the user asking "what would a firing rule
+   * look like", and if the device value took precedence the toggle would do nothing on any device
+   * that has data — the exact case where a user would test it. */
+  it('lets a firing alert override the device value', () => {
+    const w = dyn({
+      format: { fallback: '--' },
+      alerts: [{ op: 'gte', threshold: 100, level: 'severe' }],
+    });
+    expect(previewTextWithLive(w, 105, { w1: '105.0°F' })).toBe('severe');
+    /* ...and with no alert firing, the device value shows through. */
+    expect(previewTextWithLive(w, 50, { w1: '50.0°F' })).toBe('50.0°F');
+  });
+
+  /* An empty string from the device is a REAL value (the alert bar ships with "" so quiet
+   * weather leaves it blank), not a missing one — so it must not be replaced by the fallback. */
+  it('treats an empty device value as a real value, not a miss', () => {
+    const w = dyn({ format: { fallback: '--' } });
+    expect(previewTextWithLive(w, NaN, { w1: '' })).toBe('');
+  });
+
+  /* A static widget draws no value, as on the device. */
+  it('gives a static widget no text even with a device value', () => {
+    expect(previewTextWithLive({ id: 'w1', role: 'static' }, NaN, { w1: '58.0°F' })).toBe('');
   });
 });

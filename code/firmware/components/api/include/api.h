@@ -60,6 +60,18 @@ void api_record_refresh(int was_full);
  * independent of that, and /api/status reports them as separate facts. */
 void api_record_page(int page);
 
+/* Record the values the last refresh resolved, for GET /api/values (FR-27).
+ *
+ * The EDITOR's preview needs the real fetched data, and this device is the only thing that has
+ * it: it runs each widget through value_format_widget(), the same path that puts the string on
+ * the glass. The refresh path hands the result here; the HTTP handler only serialises it.
+ *
+ * `ids` and `texts` are parallel arrays of `count` entries. The call is a no-op for a count of 0
+ * or one beyond the fixed cap — a page larger than the cap previews the first page's worth
+ * rather than failing, since a partial preview is still useful and cannot affect the glass. */
+void api_record_values(const char (*ids)[24], const char (*texts)[40],
+                       const int *has_value, int count, int page, int page_count);
+
 /* The partial budget in force, from the stored config. 0 means every refresh is full. */
 int api_partial_limit(void);
 

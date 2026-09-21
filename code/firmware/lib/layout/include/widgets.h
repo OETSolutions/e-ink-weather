@@ -66,6 +66,14 @@ typedef struct {
     char            align_v;        /* 'T' | 'M' | 'B' */
     int             font_id;        /* FONT_BODY or FONT_VALUE */
     char            role;           /* 's' static, 'd' dynamic */
+    /* The widget's id from the document. Kept because it is the ONLY key that ties a
+     * resolved value back to the box the editor drew, which is what /api/values needs to
+     * satisfy FR-27's preview: without it the device could report "68.4" but not which
+     * widget it belongs to, and the app would have to re-derive the resolution to line
+     * them up — a second implementation of exactly the logic this endpoint exists to share.
+     * Sized to the app's own id bound; a longer id is truncated, which only risks two
+     * widgets colliding in the preview, never on the glass. */
+    char            id[24];
     binding_t       binding;
     widget_format_t format;
     alert_rule_t    rules[LAYOUT_MAX_RULES];

@@ -75,3 +75,36 @@ export function previewText(
   return level !== 'none' ? level : formatPlaceholder(w.format);
 }
 
+/**
+ * The text for one widget, preferring the value the DEVICE actually resolved (FR-27).
+ *
+ * FR-27 asks for a preview "rendered with real fetched data", and the device is the only party
+ * that has it — it holds the OWM key and the HA token and runs each widget through the same C
+ * formatter that draws the string on the glass. So when the device has reported a value for this
+ * widget, that string is used verbatim: there is nothing for the app to recompute, and no way for
+ * the two to disagree. This is also the only option in the embedded case, where the browser has
+ * neither credentials nor, on the setup network, any internet.
+ *
+ * The ORDER matches the firmware's value_format_widget(), and the alert probe is checked FIRST
+ * because it is the user explicitly asking "what would a firing rule look like": if `live` won
+ * over a firing level, ticking the editor's toggle on a device that has data would appear to do
+ * nothing. `live[NaN]` cannot occur — the probe is a number, and a firing result is not looked up
+ * in `live` at all.
+ */
+export function previewTextWithLive(
+  w: { id?: string; role?: string; format?: Format; alerts?: AlertRule[] },
+  probe: number,
+  live: Record<string, string> = {},
+  evaluate: (rules: AlertRule[] | undefined, value: number) => AlertLevel = evaluateAlerts,
+): string {
+  if (w.role !== 'dynamic') return '';
+  const level = evaluate(w.alerts, probe);
+  if (level !== 'none') return level;
+  /* A widget with no id cannot be matched to a device value, and an uncached id means the device
+   * has not drawn it — both show the placeholder, which is what the panel shows before its first
+   * successful fetch, so the two agree either way. */
+  const id = w.id;
+  if (id && Object.prototype.hasOwnProperty.call(live, id)) return live[id] as string;
+  return formatPlaceholder(w.format);
+}
+

@@ -177,6 +177,11 @@ static int parse_one(cJSON *o, layout_widget_t *w)
         w->role = 's';                  /* baked into the static layer; the device skips it */
     }
 
+    /* The id, for /api/values (FR-27). Absent is legal — the device renders such a widget
+     * fine — so it stays empty and the endpoint simply cannot report a value for it. */
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
+    if (cJSON_IsString(id)) copy_str(w->id, sizeof(w->id), id->valuestring);
+
     /* Geometry. Absent numbers keep 0 and the widget is then a zero-size box, which the
      * renderer clips to nothing — a silent no-op rather than a scribble across the panel.
      * Coordinates are ints in the schema; a fractional value is truncated, not rounded, so two

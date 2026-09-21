@@ -103,6 +103,43 @@ export function requestRefresh(opts: DeviceOptions = {}): Promise<JsonResult<unk
   return jsonCall('/api/refresh', { method: 'POST' }, opts);
 }
 
+/** One widget's resolved value, as the device last drew it (FR-27). */
+export interface DeviceValue {
+  id: string;
+  text: string;
+  has_value: boolean;
+}
+
+export interface DeviceValues {
+  page: number;
+  page_count: number;
+  resolved_at: number;
+  values: DeviceValue[];
+}
+
+/**
+ * The values the device last resolved, keyed by widget id.
+ *
+ * THIS IS WHAT MAKES THE PREVIEW HONEST (FR-27: "rendered with real fetched data"). The device
+ * holds the OWM key and the HA token and has already run every widget through the same formatter
+ * that draws the string on the glass, so asking it is the only way the preview can agree with the
+ * panel without a second implementation of the resolution rules — and in the embedded case the
+ * browser has no credentials and, on the setup network, no internet at all.
+ *
+ * Returns an empty map when the device has not refreshed yet or is unreachable; the caller falls
+ * back to its own placeholder rendering, which is what the panel would show before its first
+ * fetch anyway.
+ */
+export async function getValues(opts: DeviceOptions = {}): Promise<Record<string, string>> {
+  const res = await jsonCall<DeviceValues>('/api/values', { method: 'GET', cache: 'no-store' }, opts);
+  if (!res.ok) return {};
+  const out: Record<string, string> = {};
+  for (const v of res.value.values ?? []) {
+    if (typeof v.id === 'string' && typeof v.text === 'string') out[v.id] = v.text;
+  }
+  return out;
+}
+
 export interface AuthState {
   enabled: boolean;
   wantEnabled: boolean;
