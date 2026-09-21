@@ -23,6 +23,7 @@
 #include "prov.h"
 #include "prov_softap_prov.h"
 #include "nvs_keys.h"
+#include "provjson.h"
 #include "wifi_provisioning/manager.h"
 
 #include <string.h>
@@ -167,26 +168,13 @@ static esp_err_t h_page(httpd_req_t *req)
     return httpd_resp_send(req, PAGE_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
-/* Escape `s` into `out` for a JSON string. Only the characters a network name can legally
- * contain that would break the JSON — quote, backslash, and raw control bytes. A non-ASCII
- * SSID byte passes through as-is, which is valid UTF-8 JSON only if the SSID was UTF-8; an
- * SSID is an arbitrary byte string, so bytes >= 0x80 are emitted as \u00XX to stay valid. */
-static void json_escape(const char *s, char *out, size_t out_max)
-{
-    size_t o = 0;
-    for (const unsigned char *p = (const unsigned char *)s; *p && o + 7 < out_max; p++) {
-        if (*p == '"' || *p == '\\') {
-            out[o++] = '\\'; out[o++] = (char)*p;
-        } else if (*p < 0x20) {
-            o += (size_t)snprintf(out + o, out_max - o, "\\u%04x", *p);
-        } else if (*p < 0x80) {
-            out[o++] = (char)*p;
-        } else {
-            o += (size_t)snprintf(out + o, out_max - o, "\\u%04x", *p);
-        }
-    }
-    out[o] = '\0';
-}
+/* The scan JSON is built by lib/provjson, not here. It used to be built here, with a 2 KB
+ * buffer written through `o += snprintf(out + o, 2048 - o, ...)`, and that was a heap overflow:
+ * snprintf returns the length it WOULD have written, so one entry too many pushed `o` past the
+ * end and turned the next `2048 - o` into a huge size_t — and json_escape expands every byte to
+ * `\u00xx`, so a list of long non-Latin names needed ~5 KB in a 2 KB buffer. The reason it lives
+ * in lib/ now is that an IDF component cannot be host-tested, which is exactly why the suite
+ * never caught it; the bounds property is checked there, overflow canaries included. */
 
 static void send_json(httpd_req_t *req, const char *status, const char *json);
 
@@ -219,8 +207,15 @@ static esp_err_t h_scan(httpd_req_t *req)
         send_json(req, "500 Internal Server Error", "{\"list\":[]}");
         return ESP_OK;
     }
+
+    /* Every step below is bounded by lib/provjson: it refuses an entry it cannot fit, so the
+     * buffer can never be written past its end no matter how the networks are named. */
     size_t o = 0;
-    o += (size_t)snprintf(out + o, 2048 - o, "{\"list\":[");
+    if (provjson_list_begin(out, 2048, &o) != 0) {
+        free(out);
+        send_json(req, "500 Internal Server Error", "{\"list\":[]}");
+        return ESP_OK;
+    }
 
     const uint16_t total = wifi_prov_mgr_wifi_scan_result_count();
     int emitted = 0;
@@ -238,13 +233,16 @@ static esp_err_t h_scan(httpd_req_t *req)
         }
         if (seen) continue;
 
-        char esc[8 * 33];
-        json_escape((const char *)a->ssid, esc, sizeof(esc));
-        o += (size_t)snprintf(out + o, 2048 - o, "%s{\"ssid\":\"%s\",\"rssi\":%d}",
-                              emitted ? "," : "", esc, (int)a->rssi);
+        /* A name too long to fit stops the list here rather than being truncated: the document
+         * stays valid and the networks already found are all still offered. */
+        if (provjson_list_add(out, 2048, &o, (const char *)a->ssid, (int)a->rssi,
+                              emitted == 0) != 0) {
+            break;
+        }
         emitted++;
     }
-    snprintf(out + o, 2048 - o, "]}");
+    (void)provjson_list_end(out, 2048, &o);
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t r = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
