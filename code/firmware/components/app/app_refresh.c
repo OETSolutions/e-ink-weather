@@ -124,18 +124,6 @@ static int hours_since_full(void)
     return h > 24 ? 24 : (int)h;    /* clamp: past the boundary the exact value is moot */
 }
 
-/* Load the stored config, falling back to the documented defaults. A corrupt store must not stop
- * the device from drawing — the refresh path is the one thing that has to keep working. */
-static int load_config(layout_config_t *out)
-{
-    char *json = NULL;
-    if (cfg_store_get(cfg_store_nvs(), &json) != 0) return -1;
-    if (!json) return -1;
-    const int rc = layout_config_parse(json, out);
-    free(json);
-    return rc;
-}
-
 /* Read the static layer from flash through the streaming renderer, so the 78,200-byte
  * image is never resident in RAM on top of the two framebuffers (which would be 235 KB). */
 static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
@@ -702,7 +690,17 @@ void app_refresh_tick(power_source_t source)
      * a page with no Home Assistant binding makes no HA request at all. */
     layout_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    if (load_config(&cfg) != 0) {
+    /* ONE read of the stored document, used for BOTH the config and the page's widgets.
+     *
+     * Reading it twice (once for the config, once for the widgets) is not merely wasteful: each
+     * read allocates the full CFG_JSON_MAX_LEN block, and on USB these reads happen in the window
+     * between releasing the resident framebuffer for the fetch and re-acquiring it for the render.
+     * A transient block that big lands inside the freshly-freed 78 KB hole and splits it, which is
+     * exactly the fragmentation that can make the re-acquire fail. One read, one free. */
+    char *cfg_json = NULL;
+    int cfg_ok = (cfg_store_get(cfg_store_nvs(), &cfg_json) == 0 && cfg_json != NULL);
+    if (cfg_ok && layout_config_parse(cfg_json, &cfg) != 0) cfg_ok = 0;
+    if (!cfg_ok) {
         ESP_LOGW(TAG, "stored config unparseable; using defaults");
         cfg.update_seconds = 900;
         cfg.partial_refresh_limit = 5;
@@ -716,14 +714,11 @@ void app_refresh_tick(power_source_t source)
 
     static page_render_t page;      /* static: ~4 KB of widgets, too big for the 3.5 KB stack */
     memset(&page, 0, sizeof(page));
-    {
-        char *json = NULL;
-        if (cfg_store_get(cfg_store_nvs(), &json) == 0 && json) {
-            page.n = layout_widgets_parse(json, page_index, page.widgets, LAYOUT_MAX_FIELDS);
-            free(json);
-        }
-        if (page.n < 0) page.n = 0;
+    if (cfg_ok) {
+        page.n = layout_widgets_parse(cfg_json, page_index, page.widgets, LAYOUT_MAX_FIELDS);
     }
+    free(cfg_json);
+    if (page.n < 0) page.n = 0;
 
     value_needs_t needs;
     value_scan_needs(page.widgets, page.n, &needs);
