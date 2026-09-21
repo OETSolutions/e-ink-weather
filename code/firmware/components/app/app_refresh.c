@@ -81,35 +81,34 @@ static int ensure_prev(void)
     s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
     if (s_fb_prev) return 0;
 
-    /* THE FRAMEBUFFER HAS TO WAIT FOR THE NETWORK STACK TO LET GO, AND THAT IS THE WHOLE BUG.
+    /* THE FRAMEBUFFER HAS TO WAIT FOR THE NETWORK STACK TO LET GO.
      *
      * Measured on the bench (HEAP_TRACE probe): this device has exactly ONE DRAM region large
-     * enough to hold a 78,200-byte framebuffer — region 0x3ffe4350, ~113 KB. On USB the radio
-     * stays up for the API (FR-31), and right after a fetch that region's free space is split by
-     * a few tiny allocations (tens of bytes — the block walk shows 24/84/112 B pieces) into
-     * pieces of 68,428 + 25,308 + 4,104, none of which fits a framebuffer. Within about 800 ms
-     * those pieces COALESCE back into one 98,304-byte block — while `free_heap` does not move by a
-     * single byte (129,492 before and after). So this is not a leak and not a shortage: it is a
-     * transient allocation that sits astride the region and is released by its owner on a timer.
+     * enough to hold a 78,200-byte framebuffer — region 0x3ffe4350, ~113 KB (every other region
+     * caps at ~66 KB). The frame is freed across the fetch on USB for TLS (see the note further
+     * down), and when it is freed the region reads as 99.8% free yet is split by a handful of TINY
+     * network-stack allocations (the block walk shows 84 B, 112 B, 128 B and several 28-36 B
+     * pieces) into pieces such as 14,256 + 34,788 + 63,596 — none of which fits a framebuffer.
+     * `free_heap` is ~128 KB in BOTH the failing and the succeeding case, which is why the old
+     * message sent readers hunting a leak: there is none. This is fragmentation, pure and simple.
      *
-     * That is why the failure looked random (~half of plugged-in ticks) and why it never happens
-     * on battery: on battery net_wifi_disconnect() tears the whole stack down BEFORE the render
-     * window, so the region is already clean. On USB there are no credentials to tear down, only
-     * the debris of a completed fetch, and it clears on its own.
+     * The pieces COALESCE back into one 98,304-byte block on their own — measured by polling on a
+     * failing tick: after ~800 ms the largest block jumped 69,632 -> 98,304 while `free` did not
+     * move (129,492 before and after). So the fix is to wait for the coalesce rather than fail.
      *
-     * SO THE FIX IS TO WAIT FOR IT, WITH A BOUND. A retry loop that polls until the region is
-     * actually usable converts a coin-flip into a guaranteed draw, and the cost is paid ONLY on
-     * the losing ticks — a healthy tick returns above, on the first malloc, having waited
-     * nothing. The 3 s budget is ~4x the 800 ms the probe measured, so a slower clear still
-     * succeeds; if it genuinely never clears the failure is reported exactly as before.
+     * HOW LONG TO WAIT: at the device's REAL refresh cadence this loop is never entered at all —
+     * measured over a 20-tick USB soak at a 30 s interval, the first malloc succeeded every time
+     * with the full 98,304-byte block free, and no tick waited. The wait only appears under
+     * SUSTAINED fast HTTP churn (the bench harness's 2 s interval plus an artwork upload), where
+     * the clear took 800 ms to several seconds. 5 s covers the realistic range; a pathological
+     * burst can still exceed it, and then one tick keeps the old image and the NEXT tick recovers
+     * (the tick-entry gate above is what stops that costing two ticks). The 5 s ceiling bounds the
+     * cost of a genuine failure: it is only reached when the region truly cannot be had.
      *
-     * The wait is affordable because this condition is a USB one: on battery the radio is torn
-     * down before the render window, so the region is already clean and this first malloc does
-     * not fail. A battery device reaches the loop only under genuine memory pressure, where it
-     * costs one bounded 3 s awake period before reporting the same failure — rare, and not
-     * worth gating on the power source to avoid. */
-    for (int attempt = 0; attempt < 60; attempt++) {
-        vTaskDelay(pdMS_TO_TICKS(50));      /* 60 x 50 ms = 3 s ceiling */
+     * On battery this loop is never reached under normal use: the radio is torn down before the
+     * render window, so the region is already clean. */
+    for (int attempt = 0; attempt < 100; attempt++) {
+        vTaskDelay(pdMS_TO_TICKS(50));      /* 100 x 50 ms = 5 s ceiling */
 #if HEAP_TRACE
         if (attempt % 5 == 0) {
             ESP_LOGW("heaptrace", "  framebuffer wait %2d: largest=%u free=%u", attempt,
@@ -661,31 +660,45 @@ void app_refresh_tick(power_source_t source)
      * can see WHERE the contiguous block goes without re-instrumenting and re-flashing. */
     HEAP_DIAG("tick entry");
 
-    /* Only the RESIDENT framebuffer is acquired here — s_fb_prev, the frame on the glass.
-     * The transient one is taken later, once the radio has been torn down on battery. See the
-     * block comment above for why holding both this early starves esp_wifi_init(). */
-    if (ensure_prev() != 0) {
-        api_note_error("render: out of memory for framebuffers");
-        return;
+    /* Acquire the RESIDENT framebuffer — s_fb_prev, the frame on the glass — but ONLY on battery.
+     *
+     * On USB the frame is released again a few lines below (the TLS note explains why it must be),
+     * so acquiring it here is pure waste — and actively harmful. When the re-acquire at the END of
+     * a tick fails on a fragmented region, s_fb_prev is left NULL; this call would then fail too
+     * and the tick would return BEFORE the fetch, so one failed render costs the NEXT tick's data
+     * as well as its image, and the device stays stale for several ticks while the region clears
+     * (measured: one failure cascaded into four). Skipping it on USB means a failed render costs
+     * only that tick's image; the next tick fetches and draws normally.
+     *
+     * Battery acquires here because the frame must survive the fetch there: the radio is torn down
+     * before the render window, so two frames and the TLS demand fit together, and s_fb_prev is
+     * the diff base for FR-11's partial refresh. The transient buffer is taken later in both cases,
+     * once the radio is down, because holding both this early starves esp_wifi_init(). */
+    if (source != POWER_SOURCE_USB) {
+        if (ensure_prev() != 0) {
+            api_note_error("render: out of memory for framebuffers");
+            return;
+        }
     }
     HEAP_DIAG("after ensure_prev");
 
-    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH ----
+    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH, ON USB ----
      *
-     * s_fb_prev is held only to be the diff base for a partial refresh. A partial needs BOTH
-     * frames, and two 76.4 KiB frames plus the radio do not fit (see the DRAM budget note), so the
-     * frame is released here and the render falls back to a full refresh — which needs only one.
+     * WHY IT MUST BE: the TLS handshake needs ~20 KB of CONTIGUOUS DRAM (the in-buffer, the
+     * out-buffer, the X.509 verification working set, and the worker's own stack), and the frame
+     * occupies the one region large enough for a framebuffer (measured: region 0x3ffe4350, ~113 KB
+     * — every other region caps at ~66 KB). Holding the frame starves the handshake: measured,
+     * EVERY fetch then fails with mbedtls_ssl_handshake -0x7F00 (ALLOC_FAILED) / -0x2880
+     * (X509_ALLOC_FAILED) and every reading falls back to "--". Tried turning on
+     * CONFIG_MBEDTLS_DYNAMIC_BUFFER to make the connection's buffers per-use instead of
+     * per-connection, and it did NOT change this — the demand is not only the content buffers.
      *
-     * This is LOAD-BEARING FOR TLS, and measurably so: the TLS handshake needs ~20 KB CONTIGUOUS
-     * (an 8 KB in-buffer, a 4 KB out-buffer, the X.509 certificate verification, and the task's
-     * own stack), and with the frame resident the largest free block in the big DRAM region is
-     * only ~30 KB and it is fragmented further by the config read — measured, the certificate
-     * verification then fails with -0x2880 (X509_ALLOC_FAILED) and EVERY reading falls back to
-     * "--". Verified on the bench both ways: holding the frame makes the fetch fail on every
-     * tick, not occasionally.
+     * On battery the frame is held, because the radio is torn down before the render window and
+     * both the frame and the handshake fit in the region once the radio's allocations are gone.
      *
-     * The panel is bistable and asleep between pushes, so releasing costs nothing visible: the
-     * image stays on the glass and is re-acquired below. */
+     * The cost of freeing it on USB is the re-acquire below, which can fail while the region is
+     * fragmented — see ensure_prev()'s bounded wait, which is what makes that re-acquire reliable.
+     * The panel is bistable and asleep between pushes, so releasing costs nothing visible. */
     if (source == POWER_SOURCE_USB) {
         free(s_fb_prev); s_fb_prev = NULL;
         /* No resident frame means no diff base, so the next push MUST be a full refresh. Resetting

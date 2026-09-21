@@ -44,10 +44,12 @@ PORT = "/dev/cu.usbserial-1121310"
 BAUD = 115200
 
 # Anything the firmware logs that means "the panel will NOT update". These are the only log lines
-# this script treats as failures: the USB/mains "no second framebuffer" fallback is expected and is
-# deliberately NOT one of them (see the note in soak_refresh.py).
+# this script treats as failures. NOTE the transient (second) framebuffer is NOT here, on purpose:
+# on USB the radio occupies the room it needs, so the render falls back to a full refresh and the
+# panel still gets its image — expected, not a defect. Only the RESIDENT framebuffer failing
+# leaves the old image on the glass, which is the failure this script exists to catch.
 HARD_FAIL = re.compile(
-    r"cannot allocate the framebuffer|cannot allocate the transient framebuffer"
+    r"cannot allocate the framebuffer"
     r"|compose failed|panel did not wake|panel update failed|Guru Meditation|abort\(\)"
 )
 
@@ -62,12 +64,18 @@ FETCH_FAIL = re.compile(
 
 
 class Bench:
-    def __init__(self, ip, port):
+    def __init__(self, ip, port, logpath=None):
         self.ip = ip
         self.lines = []
         self._stop = False
         self.ser = serial.Serial(port, BAUD, timeout=0.2)
         self._t = threading.Thread(target=self._read, daemon=True)
+        # The raw serial log is WRITTEN TO DISK as well as kept in memory. Without this a run
+        # that shows a failure has no evidence left once it exits: the interesting detail (the
+        # HEAP_TRACE block walk at the failing moment) exists only in the output, so the run
+        # cannot be re-read and the diagnosis has to be reproduced from scratch every time.
+        # That is the expensive iteration this tool exists to remove.
+        self._log = open(logpath, "w") if logpath else None
         self._t.start()
 
     def _read(self):
@@ -77,7 +85,11 @@ class Bench:
             except Exception:
                 return
             if raw:
-                self.lines.append(raw.decode("utf-8", "replace").rstrip())
+                text = raw.decode("utf-8", "replace").rstrip()
+                self.lines.append(text)
+                if self._log:
+                    self._log.write(text + "\n")
+                    self._log.flush()
 
     def reset(self, settle=17.0):
         """Pulse the auto-reset line and wait for the device to come back up."""
@@ -125,6 +137,11 @@ class Bench:
             self.ser.close()
         except Exception:
             pass
+        if self._log:
+            try:
+                self._log.close()
+            except Exception:
+                pass
 
 
 def main():
@@ -136,6 +153,8 @@ def main():
     ap.add_argument("--flash", action="store_true", help="build + flash before measuring")
     ap.add_argument("--no-flash", action="store_true", help="measure without flashing (default)")
     ap.add_argument("--no-push", action="store_true", help="skip the artwork push step")
+    ap.add_argument("--log", default="/tmp/bench_session.log",
+                    help="raw serial log goes here, so a FAILING run can be re-read")
     args = ap.parse_args()
 
     webapp = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "webapp"))
@@ -153,7 +172,7 @@ def main():
             sys.exit("flash FAILED — not measuring a stale image")
         print("    flashed")
 
-    b = Bench(args.ip, args.port)
+    b = Bench(args.ip, args.port, logpath=args.log)
     try:
         print("[2] resetting and booting…")
         if not b.reset():

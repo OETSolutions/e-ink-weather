@@ -28,6 +28,13 @@ CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 # 4096 already matches the largest request this device SENDS (a JSON body for the HA template,
 # well under 1 KB) — kept as is.
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# NOTE: CONFIG_MBEDTLS_DYNAMIC_BUFFER was tried here and REVERTED. The theory was that per-use
+# rather than per-connection TLS buffers would let the resident framebuffer and an in-flight
+# request coexist in the one region large enough for a framebuffer. Measured on the bench: it did
+# NOT change the outcome — with the framebuffer held, mbedtls_ssl_handshake failed EVERY fetch
+# (-0x7F00 ALLOC_FAILED / -0x2880 X509_ALLOC_FAILED). The handshake's demand is not only the
+# content buffers (the X.509 verification working set is in there too), so freeing the framebuffer
+# across the fetch remains required. Do not re-enable this expecting the frame to fit.
 # The device has no console and no operator; a crash must be observable in a log, not a
 # silent reboot. Keep panics loud.
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
