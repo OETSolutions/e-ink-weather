@@ -18,8 +18,7 @@ import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
 import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-panel';
 import { listEntities } from './data/ha';
-import { formatPlaceholder } from './data/format';
-import { evaluateAlerts } from './alerts/rules';
+import { previewText } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
@@ -71,19 +70,15 @@ function starterPage(): Page {
 /**
  * The preview text for each widget.
  *
- * `probe` is the value the alert rules are evaluated against. NaN means "preview no alert",
- * which is how the toggle turns off — and NaN rather than a low number on purpose: NaN is
- * exactly what an unavailable reading produces, and the rules must return 'none' for it. So
- * the toggle's "off" state exercises the real guard rather than a special case.
+ * Delegates to previewText() in data/format.ts so the exact string the panel will show is
+ * testable — see that function for why the alert case matters (NFR-4: the preview must match the
+ * panel bit-for-bit, and it did not).
  */
 function previewValues(page: Page, probe: number): Record<string, string> {
   const out: Record<string, string> = {};
   for (const w of page.widgets) {
     if (w.role !== 'dynamic') continue;
-    const level = evaluateAlerts(w.alerts, probe);
-    /* A firing alert changes what the user needs to see, so the preview shows the alert word —
-     * the same thing the firmware draws into the alert bar. */
-    out[w.id] = level !== 'none' ? level.toUpperCase() : formatPlaceholder(w.format);
+    out[w.id] = previewText(w, probe);
   }
   return out;
 }

@@ -6,7 +6,8 @@
  * stray "NaN" is not a cosmetic bug, it is what the user reads off the wall.
  */
 
-import type { Format } from '../model/config';
+import type { AlertLevel, AlertRule, Format } from '../model/config';
+import { evaluateAlerts } from '../alerts/rules';
 
 export interface Reading {
   value: number;
@@ -47,3 +48,30 @@ export function formatValue(v: Reading, f?: Format): string {
 export function formatPlaceholder(f?: Format): string {
   return `${f?.prefix ?? ''}${f?.fallback ?? DEFAULT_FALLBACK}${f?.suffix ?? ''}`;
 }
+
+/**
+ * The text for one widget, given the value the alert rules are probed with (FR-14, FR-27).
+ *
+ * LIVES HERE RATHER THAN IN main.ts because it must be TESTABLE: it decides the exact string
+ * the panel will show, and it was previously an unexported helper inside the editor, which is
+ * how a preview/panel mismatch survived — the app rendered "ADVISORY" while the firmware's
+ * alerts_level_name() put "advisory" on the glass. NFR-4 requires the preview to match the panel
+ * bit-for-bit, so the two must be comparable in a test, not merely similar by construction.
+ *
+ * `probe` of NaN means "no alert" (an unavailable reading produces NaN, and the rules return
+ * 'none' for it), so the editor's toggle exercises the real guard rather than a special case.
+ *
+ * The ORDER mirrors the firmware's value_format_widget(): a firing alert REPLACES the reading,
+ * checked before the no-reading fallback — and it is the bare level name, with no prefix or
+ * suffix, because that is what the firmware draws (`snprintf(buf, cap, "%s", name)`).
+ */
+export function previewText(
+  w: { role?: string; format?: Format; alerts?: AlertRule[] },
+  probe: number,
+  evaluate: (rules: AlertRule[] | undefined, value: number) => AlertLevel = evaluateAlerts,
+): string {
+  if (w.role !== 'dynamic') return '';
+  const level = evaluate(w.alerts, probe);
+  return level !== 'none' ? level : formatPlaceholder(w.format);
+}
+
