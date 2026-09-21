@@ -3,30 +3,58 @@
 # additionally 64 KB aligned (the bootloader requires that for OTA slots), and the whole
 # image is exactly 0x400000 (4 MB) with no tail — all verified by tools/check_partitions.py.
 #
-# The OTA slots are 0x1D0000 (1,900,544 bytes) rather than 0x180000. That is not arbitrary:
+# PER-PAGE STATIC ARTWORK (FR-15, "upload per-page layouts"). With page rotation the device
+# draws a page's readings onto that page's OWN artwork; using one shared layer would stamp
+# page 2's numbers over page 1's labels, which is what it did before this partition existed.
+#
+# The artwork is stored COMPRESSED, and that is what makes it fit. A 1 bpp 920x680 layer is
+# 78,200 bytes raw — three of those would fill this whole flash — but a layout is almost all
+# white and measures 978 B gzipped (measured, default layout). The two original bitmap slots
+# hold 262,144 B between them, which is ~260 compressed pages against a current limit of
+# LAYOUT_MAX_PAGES = 8. The slots and this layout keep that property, so neither needs to grow.
+#
+# The app slots are 0x1D0000 (1,900,544 bytes) rather than 0x180000. That is not arbitrary:
 # enabling BLE provisioning (FR-30, wifi_prov_mgr over NimBLE) adds ~270 KB to the app image,
 # which pushed it to 91.7% of a 0x180000 slot — leaving ~130 KB for the entire web app that
 # FR-18 requires be served from this same flash. The `storage` partition that used to sit at
 # the end was declared for web-app assets but never used: Task 21b embeds them in the app
-# image with EMBED_FILES instead of mounting a filesystem, so it was dead space. Its 736 KB
-# is now split between the two OTA slots, taking the app headroom to ~447 KB.
+# image as a generated C source instead of mounting a filesystem, so it was dead space.
 #
-# 0x20000 + 0x1D0000*2 + 0x20000*2 == 0x400000 exactly.
+# 0x20000 + 0x1D0000*2 + 0x20000*2 == 0x400000 exactly. The artwork shares the two raw
+# bitmap slots (see below) rather than adding a third region, so this arithmetic is unchanged.
 nvs,         data, nvs,     0x9000,   0x6000,
 otadata,     data, ota,     0xf000,   0x2000,
 phy_init,    data, phy,     0x11000,  0x1000,
 ota_0,       app,  ota_0,   0x20000,  0x1D0000,
 ota_1,       app,  ota_1,   0x1F0000, 0x1D0000,
-# The static-bitmap slots (IF-2a). The minimum is the 16-byte header plus the 78,200-byte
-# frame (78,216) rounded to a sector; these are 0x20000 because the leftover flash after the
-# OTA slots is better spent here than left as a gap, and a larger slot leaves room for a
-# future per-page bitmap without touching the table again.
-# Two of them, because an interrupted upload must leave the PREVIOUS image live — see
-# bitmap_slot.h. NVS is only 24 KB and cannot hold a 78,200-byte bitmap, which is why these
-# are raw partitions.
-# Subtype 0x40 is a raw data partition: there is NO filesystem here, the slots are addressed
-# directly with esp_partition_read/write through a bitmap_slot backend. Using `spiffs` (as
-# an earlier revision did) would advertise a mountable FS that does not exist.
+# The raw data partitions (IF-2a). The free region after the two OTA slots is exactly 0x40000
+# (256 KB), and these four slots fill it exactly:
+#     artwork_a 0xC000 * 2 + bitmap_a 0x14000 * 2 = 0x40000
+#
+# THE PER-PAGE ARTWORK AND THE LEGACY BITMAP GET SEPARATE PARTITIONS, and that is a correctness
+# requirement rather than tidiness. They were briefly made to share the two bitmap slots, on the
+# reasoning that both need a ping-pong spare — but an upload ERASES its spare slot first, so with a
+# shared pair the two erased EACH OTHER. Pushing artwork wiped the layout's static layer, and the
+# panel fell back to rendering its widgets over the factory boot mark. It presented as
+# "artwork_pages: 0" after a push that had reported success, on hardware.
+#
+# artwork_a/artwork_b hold the per-page artwork set: one entry per page in a header table, then a
+# blob of concatenated zlib streams (see lib/upload/include/artwork.h). 0xC000 each is far above
+# the format's own 8 x 4 KB stream cap, so the device can never accept an upload it cannot store,
+# and the headroom leaves room to raise that cap without touching this table again.
+#
+# bitmap_a/bitmap_b hold the single legacy full-frame layer. The per-page set supersedes it, but it
+# stays because a device provisioned before artwork existed must still show a meaningful picture
+# rather than a blank panel (FR-29). 0x14000 is the sector-rounded floor: 16-byte header + one
+# 78,200-byte frame.
+#
+# Two of each, because an interrupted upload must leave the PREVIOUS image live — see
+# bitmap_slot.h. NVS is only 24 KB and cannot hold a 78,200-byte bitmap, which is why these are raw
+# partitions. Subtype 0x40 is a raw data partition: there is NO filesystem here, the slots are
+# addressed directly with esp_partition_read/write. Using `spiffs` (as an earlier revision did)
+# would advertise a mountable FS that does not exist.
 # Resolves spec Q9.
-bitmap_a,    data, 0x40,    0x3C0000, 0x20000,
-bitmap_b,    data, 0x40,    0x3E0000, 0x20000,
+artwork_a,   data, 0x40,    0x3C0000, 0xC000,
+artwork_b,   data, 0x40,    0x3CC000, 0xC000,
+bitmap_a,    data, 0x40,    0x3D8000, 0x14000,
+bitmap_b,    data, 0x40,    0x3EC000, 0x14000,

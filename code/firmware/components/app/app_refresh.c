@@ -147,11 +147,27 @@ static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
 
 /* Pull the static layer into `dst`. Returns 0 on success.
  *
- * Preference order: the uploaded bitmap slot, then the built-in boot mark. A device that
- * has never had a bitmap pushed still renders something meaningful rather than a blank
- * panel (FR-29). */
-static int load_static_layer(uint8_t *dst, int *from_slot)
+ * Preference order: the page's OWN artwork, then the single legacy bitmap, then the built-in boot
+ * mark. A device that has never had anything pushed still renders something meaningful rather
+ * than a blank panel (FR-29).
+ *
+ * `page` IS WHAT MAKES ROTATION CORRECT. With one shared layer (the old behaviour), a rotating
+ * page stamped its readings onto ANOTHER page's artwork — page 2's "TOMORROW HIGH" label sitting
+ * over page 1's temperature — which was seen on hardware. The page's own picture is therefore
+ * tried FIRST, and only a page that genuinely has none falls back. */
+static int load_static_layer(uint8_t *dst, int page, int *from_slot)
 {
+    if (artwork_store_load_page(page, dst) == 0) {
+        /* THE IDENTITY MUST INCLUDE THE PAGE, not just "artwork". A partial refresh is diffed
+         * against the previous frame and is only valid when both are the SAME picture; during
+         * rotation the previous frame is the PREVIOUS PAGE's artwork. Returning one shared
+         * sentinel for every page would make a page change look like an unchanged source, and the
+         * partial would diff page 2's new frame against page 1's old one — scribbling ghosted
+         * fragments of the previous layout onto the glass. Encoding the page keeps the check
+         * honest: different page, different identity, therefore a full refresh. */
+        *from_slot = -(100 + page);
+        return 0;
+    }
     if (bitmap_store_load(dst) == 0) {
         *from_slot = api_live_bitmap_slot();
         return 0;
@@ -238,8 +254,11 @@ esp_err_t app_render_last_good(void)
     const int have_next = (acquire_next() == 0);
     uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
 
+    /* Page 0: the boot path shows the last-good image before the network, and it cannot know
+     * which page was on the glass when the device slept. Page 0 is the defined default (a
+     * single-page layout renders identically at any index). */
     int slot = -1;
-    if (load_static_layer(work, &slot) != 0) return ESP_ERR_INVALID_STATE;
+    if (load_static_layer(work, 0, &slot) != 0) return ESP_ERR_INVALID_STATE;
 
     /* No live values yet (this runs before the network), so compose with the static layer
      * alone. The frame is what the previous power cycle left, which is the point: FR-29
@@ -876,7 +895,7 @@ void app_refresh_tick(power_source_t source)
      * old layout on the glass. `slot` changes whenever the bitmap changes, and the partial path
      * below requires s_shown_slot == slot for exactly this reason. */
     int slot = -1;
-    if (load_static_layer(work, &slot) != 0) return;
+    if (load_static_layer(work, page_index, &slot) != 0) return;
 
     canvas_t c;
     canvas_init(&c, work);
@@ -927,6 +946,7 @@ void app_refresh_tick(power_source_t source)
      * that the TLS handshake needs, and the handshake happens before the next render window.
      * Releasing it here and re-acquiring there is what keeps both steps alive. */
     if (have_next) release_next();
+    api_record_page(page_index);
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              e == ESP_OK && have_next ? (kind == REFRESH_PARTIAL ? "partial" : "full") : "full",
              page_index, page.n_fields);

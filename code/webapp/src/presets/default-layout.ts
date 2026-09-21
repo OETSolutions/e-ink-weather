@@ -174,3 +174,43 @@ export const DEFAULT_RULES = [
   { y: 440, thickness: 2, inset: 40 },
 ] as const;
 
+/* PER-PAGE ARTWORK (FR-15).
+ *
+ * WHY THIS IS A TABLE OF PAGES RATHER THAN ONE SHARED SET: the device rotates pages by itself,
+ * and each page's readings are stamped onto that page's OWN background. With a single shared
+ * layer the rotation drew page 2's numbers under page 1's labels — confirmed on the glass, which
+ * is what this exists to fix.
+ *
+ * The schema's `Page` has no labels field, deliberately: a label is ART, not data, and the device
+ * never draws text it was not handed a value for. So the art for the shipped layout lives here,
+ * indexed by page, and the app renders one static layer per entry. A page beyond this table gets
+ * a layer with no labels — a blank background — which is honest: it tells the user their page has
+ * no artwork yet rather than showing another page's. */
+export interface PageArtwork {
+  labels: { x: number; y: number; text: string; font: number }[];
+  rules: { y: number; thickness: number; inset: number }[];
+}
+
+/** Page 0's art. Kept under the DEFAULT_LABELS/RULES names so the golden fixture and the
+ *  existing preview keep working unchanged — page 0 is the layout those were built for. */
+export const PAGE_ARTWORK: PageArtwork[] = [
+  { labels: [...DEFAULT_LABELS], rules: [...DEFAULT_RULES] },
+  {
+    /* Page 1 ("Forecast"): the same three columns, relabelled for the boxes page 1 actually
+     * has. Its widgets are at y=100/280/188, so the labels sit above each one. */
+    labels: [
+      { x: 40, y: 60, text: 'TODAY HIGH', font: 0 },
+      { x: 40, y: 240, text: 'TODAY LOW', font: 0 },
+      { x: 500, y: 148, text: 'HALLWAY', font: 0 },
+    ],
+    rules: [{ y: 228, thickness: 2, inset: 40 }],
+  },
+];
+
+/** The art for one page, or an empty layer for a page with none. Never falls back to another
+ *  page's art — that is the bug this table exists to prevent. */
+export function artworkForPage(pageIndex: number): PageArtwork {
+  const a = Number.isFinite(pageIndex) ? PAGE_ARTWORK[Math.trunc(pageIndex)] : undefined;
+  return a ?? { labels: [], rules: [] };
+}
+

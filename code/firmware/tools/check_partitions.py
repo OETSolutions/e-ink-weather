@@ -13,7 +13,11 @@ Checks:
     runtime one, but it is far cheaper to catch here than after a 40 s rebuild;
   - no partition overlaps another;
   - the table exactly fills the 4 MB flash (no wasted tail, no overflow past the end);
-  - the two bitmap slots are large enough for the header plus a full 1bpp frame.
+  - both ping-pong pairs have enough room for the largest set they can ever hold: a bitmap slot
+    for the header plus a full 1bpp frame, an artwork slot for the header table plus
+    ARTWORK_MAX_PAGES streams of at most ARTWORK_MAX_COMP (see lib/upload/include/artwork.h).
+    Two stores over one partition pair is a defect this catches: sharing the pair means each
+    upload erases the other's live image, which is silent until it reaches the panel.
 """
 import csv
 import sys
@@ -26,6 +30,10 @@ SECTOR = 0x1000
 OTA_ALIGN = 0x10000
 # Must match bitmap_upload.h BITMAP_UPLOAD_TOTAL and the on-flash header.
 BITMAP_SLOT_MIN = 16 + 78200
+# Must match artwork.h: sizeof(artwork_hdr_t) + sizeof(artwork_entry_t) * ARTWORK_MAX_PAGES, and
+# ARTWORK_MAX_PAGES streams at the ARTWORK_MAX_COMP per-stream cap. Derived rather than measured
+# because the device must never accept an upload it cannot store.
+ARTWORK_SLOT_MIN = 16 + 12 * 8 + 4096 * 8
 
 TABLE = Path(__file__).resolve().parent.parent / "partitions.csv"
 
@@ -98,6 +106,16 @@ def main():
             errors.append(
                 f"{want}: {p['size']} bytes is too small for a "
                 f"{BITMAP_SLOT_MIN}-byte header+frame")
+
+    aw = {p["name"]: p for p in rows if p["name"].startswith("artwork_")}
+    for want in ("artwork_a", "artwork_b"):
+        p = aw.get(want)
+        if p is None:
+            errors.append(f"{want}: missing — the per-page artwork promote pair is required")
+        elif p["size"] < ARTWORK_SLOT_MIN:
+            errors.append(
+                f"{want}: {p['size']} bytes is too small for the "
+                f"{ARTWORK_SLOT_MIN}-byte header table plus {4096 * 8} bytes of streams")
 
     for e in errors:
         print(f"FAIL: {e}", file=sys.stderr)

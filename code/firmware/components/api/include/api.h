@@ -55,6 +55,11 @@ void api_note_error(const char *msg);
  * refresh path (Task 12) calls this; the API only reads it. */
 void api_record_refresh(int was_full);
 
+/* Record which page the last refresh rendered (FR-15). Kept separate from
+ * api_record_refresh() because a refresh can be full or partial while the page is
+ * independent of that, and /api/status reports them as separate facts. */
+void api_record_page(int page);
+
 /* The partial budget in force, from the stored config. 0 means every refresh is full. */
 int api_partial_limit(void);
 

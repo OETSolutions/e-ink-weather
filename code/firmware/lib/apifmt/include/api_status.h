@@ -29,6 +29,15 @@ typedef struct {
      * while /api/status showed 58,504 bytes free. This is the number that says whether the next
      * handshake or render can succeed, so it belongs in the field diagnostic (FR-33). */
     uint32_t    largest_free_block;
+    /* How many pages the live per-page artwork set covers, or 0 when none is stored (FR-15).
+     * Surfaced because "my labels are wrong after rotation" has two very different causes — no
+     * artwork pushed at all, versus artwork that failed to inflate — and without this the panel
+     * looks the same either way. */
+    int         artwork_pages;
+    /* The page the last refresh rendered. With rotation, "which page is on the glass" is not
+     * derivable from anything else the API reports. */
+    int         last_page;
+    int         has_last_page;
     int         rssi;             /* dBm; 0 means "not connected" */
     int         has_rssi;         /* separates a real 0 dBm from "no reading" */
     double      vbat;             /* volts */

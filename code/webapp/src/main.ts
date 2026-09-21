@@ -20,11 +20,11 @@ import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-pan
 import { listEntities } from './data/ha';
 import { formatPlaceholder } from './data/format';
 import { evaluateAlerts } from './alerts/rules';
-import { defaultLayout, DEFAULT_LABELS, DEFAULT_RULES } from './presets/default-layout';
+import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
-import { uploadBitmap } from './transfer/bitmap';
+import { uploadArtwork } from './transfer/artwork';
 import { getAuth, putAuth, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
@@ -141,22 +141,44 @@ async function saveConfig(doc: Config): Promise<SaveResult> {
 }
 
 /**
- * Push the static layer — the labels and chrome — to the device (FR-1, IF-2a).
+ * Push every page's static layer to the device (FR-15, FR-1).
  *
  * WHY THIS IS SEPARATE FROM THE CONFIG PUT: the config says WHERE the value boxes are; this is
- * the picture they are stamped onto. The device only stamps readings into boxes the web app
- * defines, so without this upload its "static layer" is the factory boot mark and none of the
- * labels exist on the glass. The two must be pushed together, and the device ties them with the
- * bitmap slot number: a partial refresh diffs against the previous frame, so a new picture with
- * old boxes (or vice versa) would leave ghosted fragments of the old layout.
+ * the picture each page's values are stamped onto. The device only stamps readings into boxes the
+ * web app defines, so without this its "static layer" is the factory boot mark and none of the
+ * labels exist on the glass. The device ties the two together by page, so a config with 2 pages
+ * and artwork for 2 pages renders page 2 on page 2's picture.
  *
- * ORDER MATTERS: the bitmap FIRST, then the config. The device renders on a config PUT, so
- * pushing the config first would render one frame with the new boxes over the OLD picture, and
- * the user would see a momentarily wrong panel before the bitmap landed.
+ * ONE SET, NOT ONE PER PAGE, and that is the fix for rotation drawing the wrong labels: a layer
+ * is uploaded for EVERY page in the document, in page order, so a page added or removed changes
+ * what is stored rather than shifting which picture each page gets.
+ *
+ * ORDER MATTERS: artwork FIRST, then the config. The device renders on a config PUT, so the other
+ * order would draw one frame with the new boxes over the old picture, and the user would see a
+ * momentarily wrong panel before the artwork landed.
  */
-async function pushStaticLayer(layer: Uint8Array): Promise<SaveResult> {
-  const up = await uploadBitmap(layer);
-  if (!up.ok) return { ok: false, error: up.error ?? 'The static layer upload failed' };
+/**
+ * Render ONE page's static layer: its labels and rules, baked to a 1 bpp bitmap.
+ *
+ * MODULE SCOPE, not inside mount(), because both the editor (which draws page 0) and the upload
+ * path need it, and the upload runs for every page in the document. A page with no art entry
+ * yields a blank layer rather than another page's — see artworkForPage().
+ */
+function buildPageLayer(pageIndex: number): Uint8Array {
+  const art = artworkForPage(pageIndex);
+  return buildStaticLayer(
+    art.labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
+    art.rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
+  ).data;
+}
+
+async function pushArtwork(doc: Config): Promise<SaveResult> {
+  /* One layer per page, built from the page's own art. A page with no art table entry gets a
+   * blank layer rather than a copy of another page's — a missing picture is honest, the wrong
+   * picture is a lie about which page you are looking at. */
+  const layers: (Uint8Array | null)[] = doc.pages.map((_, i) => buildPageLayer(i));
+  const up = await uploadArtwork(layers);
+  if (!up.ok) return { ok: false, error: up.error ?? 'The artwork upload failed' };
   return { ok: true, restarting: false };
 }
 
@@ -344,12 +366,11 @@ async function mount(root: HTMLElement): Promise<void> {
   /* The labels and rules are the LAYOUT's, not the device's — the device is layout-independent
    * and only stamps values into boxes, so the static art is the web app's job (FR-1).
    *
-   * Held in a mutable binding because Save uploads it: the device's "static layer" is otherwise
-   * the factory boot mark, and every label in the layout would be missing from the glass. */
-  let staticLayer = buildStaticLayer(
-    DEFAULT_LABELS.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
-    DEFAULT_RULES.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
-  ).data;
+   * ONE LAYER PER PAGE, because the device rotates pages on its own and each page's readings are
+   * stamped onto that page's own background. A single shared layer meant page 2's numbers were
+   * drawn under page 1's labels — seen on the glass. `staticLayer` (page 0) is what the EDITOR
+   * draws, since the editor edits one page at a time; `allLayers` is what gets uploaded. */
+  let staticLayer = buildPageLayer(0);
 
   editor = attachEditor({
     canvasEl,
@@ -405,7 +426,7 @@ async function mount(root: HTMLElement): Promise<void> {
     setBtn('saving');
     /* The static layer FIRST, then the config: the device renders on a config PUT, so the other
      * order would draw one frame with the new boxes over the old picture. */
-    const up = await pushStaticLayer(staticLayer);
+    const up = await pushArtwork(doc);
     const r = up.ok ? await saveConfig(doc) : up;
     if (r.ok) {
       setBtn('saved');

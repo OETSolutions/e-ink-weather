@@ -42,6 +42,10 @@ static httpd_handle_t s_server;
 static int      s_partials_since_full;
 static int      s_fulls_total;
 static int64_t  s_last_refresh_us;      /* 0 = never */
+/* The page the last refresh rendered (FR-15). With rotation, "which page is on the
+ * glass" is not derivable from anything else the API reports. */
+static int      s_last_page;
+static int      s_have_last_page;
 static int      s_pending_full_refresh;
 static uint32_t s_free_heap_min;
 
@@ -76,6 +80,14 @@ void api_reset_cycle_counters(void)
     s_last_refresh_us = 0;
     s_error_count = 0;
     s_free_heap_min = (uint32_t)esp_get_free_heap_size();
+    unlock();
+}
+
+void api_record_page(int page)
+{
+    lock();
+    s_last_page = page;
+    s_have_last_page = 1;
     unlock();
 }
 
@@ -351,6 +363,9 @@ static esp_err_t h_status(httpd_req_t *req)
      * framebuffer (78,200 B) need ONE contiguous allocation, so a device with plenty of total
      * free heap can still be unable to fetch or draw — and the total alone reports it healthy. */
     s.largest_free_block = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    s.artwork_pages = artwork_store_page_count();
+    s.last_page = s_last_page;
+    s.has_last_page = s_have_last_page;
     const uint32_t now_heap = s.free_heap;
     if (now_heap < s_free_heap_min) s_free_heap_min = now_heap;
     s.free_heap_min = s_free_heap_min;
@@ -875,6 +890,133 @@ static esp_err_t h_bitmap(httpd_req_t *req)
     return api_send_json(req, "{\"status\":\"promoted\"}", "200 OK");
 }
 
+
+/* ------------------------------------------------------------ POST /api/artwork ---- */
+
+/* ONE upload session at a time, owned by the server task — same rule as the bitmap. */
+static struct {
+    int      active;
+    uint32_t total;
+    uint32_t written;
+} s_awup;
+
+/* Per-page static artwork (FR-15). The client sends the whole set as one stream — header, entry
+ * table, then the concatenated zlib streams — because the header carries the checksum and the
+ * table is what that checksum covers.
+ *
+ * WHY ITS OWN ENDPOINT RATHER THAN REUSING /api/bitmap: the bitmap's total is a FIXED 78,200
+ * bytes and upload_begin() rejects anything else, which is the right check for a single full
+ * frame. An artwork set is variable-length (fewer pages, smaller pictures), so it needs a
+ * different contract, and overloading one endpoint with two meanings would put the "which total
+ * is legal?" decision in a client-supplied parameter. */
+#define ARTWORK_UPLOAD_MAX_CHUNK 4096u
+
+static esp_err_t h_artwork(httpd_req_t *req)
+{
+    /* Optional bearer auth (FR-31). Gated because this writes a flash partition. */
+    if (api_auth_gate(req)) return ESP_OK;
+
+    char query[256];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return api_send_err(req, "400 Bad Request", "missing query");
+    }
+    uint32_t offset = 0, total = 0;
+    if (api_query_u32(query, "offset", &offset) != 0) {
+        return api_send_err(req, "400 Bad Request", "bad or missing offset");
+    }
+    if (api_query_u32(query, "total", &total) != 0) {
+        return api_send_err(req, "400 Bad Request", "bad or missing total");
+    }
+
+    if (offset == 0) {
+        /* Bounded so a hostile or buggy client cannot ask the device to erase and fill a
+         * partition with an arbitrarily long stream (NFR-2 has no PSRAM to spare). */
+        const uint32_t max_total = (uint32_t)artwork_blob_offset()
+                                 + ARTWORK_MAX_COMP * ARTWORK_MAX_PAGES;
+        if (total == 0 || total > max_total) {
+            return api_send_err(req, "400 Bad Request", "artwork total out of range");
+        }
+        /* A new session starting while one is open is a restart, not an error — the same
+         * recovery the bitmap handler uses, so a client that gave up mid-upload can begin again
+         * without the device waiting forever for the rest of the abandoned one. */
+        if (s_awup.active) artwork_store_abort_upload();
+        if (artwork_store_begin_upload() != 0) {
+            api_note_error("api: cannot open artwork slot");
+            return api_send_err(req, "500 Internal Server Error", "cannot open artwork slot");
+        }
+        s_awup.active = 1;
+        s_awup.total = total;
+        s_awup.written = 0;
+    }
+
+    if (!s_awup.active) {
+        return api_send_err(req, "409 Conflict", "no artwork upload in progress");
+    }
+    if (req->content_len == 0) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        return api_send_err(req, "400 Bad Request", "empty chunk");
+    }
+    if ((size_t)req->content_len > ARTWORK_UPLOAD_MAX_CHUNK) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        return api_send_err(req, "413 Payload Too Large", "chunk over 4096 bytes");
+    }
+    if (offset != s_awup.written) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        return api_send_err(req, "409 Conflict", "chunk out of order; upload aborted");
+    }
+    if (offset + (uint32_t)req->content_len > s_awup.total) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        return api_send_err(req, "400 Bad Request", "chunk past the declared total");
+    }
+
+    /* A stack buffer for the chunk, then straight to flash: a 4 KB body is safe on this task's
+     * stack, and it keeps the whole set out of RAM, which matters because the uncompressed
+     * layers are 78,200 bytes each (NFR-2). */
+    uint8_t chunk[ARTWORK_UPLOAD_MAX_CHUNK];
+    size_t got = 0;
+    while (got < (size_t)req->content_len) {
+        const int r = httpd_req_recv(req, (char *)chunk + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) {
+            artwork_store_abort_upload(); s_awup.active = 0;
+            return api_send_err(req, "400 Bad Request", "short chunk read");
+        }
+        got += (size_t)r;
+    }
+
+    if (artwork_store_write_chunk(offset, chunk, (uint32_t)got) != 0) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        api_note_error("api: artwork flash write failed");
+        return api_send_err(req, "500 Internal Server Error", "artwork write failed");
+    }
+    s_awup.written = offset + (uint32_t)got;
+
+    if (s_awup.written < s_awup.total) {
+        char body[64];
+        snprintf(body, sizeof(body), "{\"received\":%u}", (unsigned)s_awup.written);
+        return api_send_json(req, body, "200 OK");
+    }
+
+    /* Final chunk: the checksum rides in this request's query string, exactly as the bitmap's
+     * does. Only now can the set become live — until this succeeds the spare slot's header stays
+     * invalid and the PREVIOUS artwork remains selected. */
+    uint32_t crc = 0;
+    if (api_query_u32(query, "crc", &crc) != 0) {
+        artwork_store_abort_upload(); s_awup.active = 0;
+        return api_send_err(req, "400 Bad Request", "final chunk needs crc");
+    }
+    s_awup.active = 0;
+    if (artwork_store_finish_upload(crc) != 0) {
+        api_note_error("api: artwork promote failed");
+        return api_send_err(req, "409 Conflict", "artwork checksum mismatch; upload aborted");
+    }
+
+    /* A full refresh, because the picture on the glass just changed. A partial would diff the
+     * new artwork against the old and leave fragments of the previous layout behind. */
+    api_request_full_refresh();
+    return api_send_json(req, "{\"status\":\"promoted\"}", "200 OK");
+}
+
 /* ----------------------------------------------------------------- POST /refresh --- */
 
 static esp_err_t h_refresh(httpd_req_t *req)
@@ -939,6 +1081,7 @@ esp_err_t api_start(void)
         { .uri = "/api/auth",     .method = HTTP_GET,  .handler = h_auth_get },
         { .uri = "/api/auth",     .method = HTTP_PUT,  .handler = h_auth_put },
         { .uri = "/api/bitmap",   .method = HTTP_POST, .handler = h_bitmap },
+        { .uri = "/api/artwork",  .method = HTTP_POST, .handler = h_artwork },
         { .uri = "/api/refresh",  .method = HTTP_POST, .handler = h_refresh },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },
     };

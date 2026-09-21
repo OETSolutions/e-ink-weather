@@ -54,6 +54,14 @@ static void test_full_status_is_valid_json_with_all_fields(void)
     TEST_ASSERT_GREATER_THAN_INT(0, n);
     TEST_ASSERT_EQUAL_INT((int)strlen(buf), n);
 
+    /* THE DEVICE ALLOCATES 1024 BYTES FOR THIS (api_server.c h_status). A response that outgrows
+     * it does not truncate — api_status_json() refuses and the endpoint returns a 500 — so the
+     * whole diagnostic surface would go dark exactly when a device is misbehaving and the status
+     * page is what you have. Asserting the size here makes an added field fail in tests, with a
+     * message about the buffer, instead of in the field. The margin is deliberately generous:
+     * a full ring of 5 errors is the longest case, and versions/error strings vary in length. */
+    TEST_ASSERT_LESS_THAN_INT(900, n);
+
     cJSON *j = parse(buf);
     TEST_ASSERT_EQUAL_STRING("1.2.3", cJSON_GetObjectItem(j, "version")->valuestring);
     TEST_ASSERT_EQUAL_INT(12345, cJSON_GetObjectItem(j, "uptime_s")->valueint);
@@ -229,7 +237,12 @@ static void test_small_buffer_fails_rather_than_truncating(void)
 
 static void test_null_and_empty_inputs(void)
 {
-    char buf[256];
+    /* Sized to the response, not picked: a zeroed status emits every field with its placeholder
+     * (version "unknown", nulls for the absent readings), which is the LONGEST case. At 256 this
+     * overflowed as soon as artwork_pages/last_page/largest_free_block were added, and that
+     * failure was about the test's buffer rather than about the emitter — worth stating so the
+     * next added field does not send a reader looking for a JSON bug. */
+    char buf[512];
     TEST_ASSERT_EQUAL_INT(-1, api_status_json(NULL, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_INT(-1, api_status_json(&(api_status_t){0}, NULL, sizeof(buf)));
     TEST_ASSERT_EQUAL_INT(-1, api_status_json(&(api_status_t){0}, buf, 0));
