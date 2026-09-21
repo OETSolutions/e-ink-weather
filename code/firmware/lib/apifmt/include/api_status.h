@@ -46,6 +46,13 @@ typedef struct {
      * Li-ion pack or USB — and FR-33 exists to diagnose a field failure, where "why did this
      * device stop waking" hinges on which of those it was. */
     int         vbat_source;
+    /* Battery voltage TREND, volts per minute, across the retained history (FR-33). Surfaced
+     * alongside the single reading because a slow discharge is invisible in one sample and is
+     * the whole reason the history exists. 0.0 means "not enough history to say", which is the
+     * honest answer on a cold boot. */
+    double      vbat_trend;
+    /* How many retained samples back the trend, so a 0.0 trend can be told from "no data". */
+    int         vbat_samples;
     int         partials_since_full;
     int         fulls_total;
     int         last_refresh_age_s;   /* -1 if never refreshed */

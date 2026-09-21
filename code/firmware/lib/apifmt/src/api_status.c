@@ -93,8 +93,13 @@ int api_status_json(const api_status_t *s, char *out, size_t outlen)
         const char *src = s->vbat_source == 2 ? "usb"
                         : s->vbat_source == 1 ? "battery" : "unknown";
         APPEND(",\"power_source\":\"%s\"", src);
+        /* The trend and the sample count go WITH the reading, because a trend without its
+         * basis is unfalsifiable: "0.00 V/min" reads as "stable" whether it came from ten
+         * samples or from none at all. An operator needs to know which (FR-33). */
+        APPEND(",\"vbat_trend\":%.4f,\"vbat_samples\":%d", s->vbat_trend, s->vbat_samples);
     } else {
         APPEND(",\"vbat\":null,\"power_source\":null");
+        APPEND(",\"vbat_trend\":null,\"vbat_samples\":%d", s->vbat_samples);
     }
 
     APPEND(",\"partials_since_full\":%d", s->partials_since_full);

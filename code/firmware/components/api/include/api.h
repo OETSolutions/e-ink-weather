@@ -85,6 +85,22 @@ int api_live_bitmap_slot(void);
  * right one: a device on mains would be reported as a half-flat battery. */
 void api_note_vbat(double volts, int source);
 
+/* Battery voltage history (FR-33).
+ *
+ * Must be called ONCE per boot, before api_note_vbat(). On a cold boot the retained RTC bytes
+ * fail validation and the history starts empty; on a deep-sleep wake it is kept, which is what
+ * makes a trend observable at all on a device that samples once per wake. */
+void api_vbat_history_boot(void);
+
+/* How many samples the retained history holds. 0 means "none yet" — the device has not woken
+ * with a valid reading since it was last powered up or reflashed. */
+int api_vbat_history_count(void);
+
+/* Trend across the retained history in volts per minute, given the wall-clock span those samples
+ * cover. Returns 0.0 when there is too little history: zero is the safe "not falling" answer for
+ * power_classify(), so an unknown must not come back as a large negative. */
+double api_vbat_trend(double span_minutes);
+
 /* ---- OWM daily call count and cap (spec §3.4) -------------------------------------------
  *
  * The spec requires the firmware to count and cap daily OpenWeatherMap calls and surface the

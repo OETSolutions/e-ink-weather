@@ -19,6 +19,7 @@
 #include "api_store.h"
 #include "api_internal.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -28,8 +29,12 @@
 #include "esp_https_ota.h"
 #include "esp_http_server.h"
 #include "cJSON.h"
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
+
+/* Needed for the RTC_DATA_ATTR voltage history (FR-33) — see its definition below. */
+#include "vbat_history.h"
 
 static const char *TAG = "api";
 
@@ -57,6 +62,17 @@ static int  s_error_count;
 
 /* Boot-time battery reading, cached because ADC2 cannot be read with WiFi up (HW-3). */
 static double s_vbat;
+
+/* The battery voltage history (FR-33), retained across deep sleep.
+ *
+ * RTC_DATA_ATTR because it is the ONLY memory that survives esp_deep_sleep_start(), and the
+ * battery case — where a failing pack can only be seen as a trend across wakes — is exactly the
+ * case FR-33 is for. It is deliberately not in NVS: a flash write per wake would cost the very
+ * energy budget this history exists to help diagnose, and a value that is diagnostic only does
+ * not warrant wearing the flash for.
+ *
+ * The struct's own validity rule is what makes retained-but-arbitrary RTC RAM safe to read. */
+RTC_DATA_ATTR static vbat_history_t s_vbat_hist;
 
 /* OWM daily call count (spec §3.4). The struct's own have_day flag is what makes "unknown"
  * distinguishable from "zero calls so far". */
@@ -151,7 +167,46 @@ void api_note_vbat(double volts, int source)
     s_vbat = volts;
     s_vbat_source = source;
     s_has_vbat = 1;
+    /* Record the sample into the retained history. Millivolts, because the whole range of
+     * interest for a Li-ion pack fits in a small integer and a float in RTC memory would be
+     * both bigger and subject to whatever the previous wake left there. */
+    if (isfinite(volts) && volts > 0.0) {
+        vbat_history_push(&s_vbat_hist, (int32_t)(volts * 1000.0 + 0.5));
+    }
     unlock();
+}
+
+int api_vbat_history_count(void)
+{
+    return vbat_history_count(&s_vbat_hist);
+}
+
+/* The trend in volts per minute across the recorded history, or 0.0 when there is too little of
+ * it. `span_minutes` is supplied by the caller from the configured wake interval times the
+ * sample count: the device has no clock that survives deep sleep, so the ring stores volts only
+ * and the elapsed span is reconstructed rather than timestamped. */
+double api_vbat_trend(double span_minutes)
+{
+    return vbat_history_trend(&s_vbat_hist, span_minutes);
+}
+
+/* Whether RTC memory says this is a wake rather than a cold boot is not reported: the retained
+ * history's sample count already conveys it (0 samples means no wake has recorded a reading),
+ * and a second field saying the same thing is one more thing to keep consistent. */
+
+/* Called once per boot, before anything else touches the history. On a cold boot (or after a
+ * firmware update, which resets RTC memory) the retained bytes fail validation and the history
+ * is re-initialised; on a wake it is kept, which is the whole point. */
+void api_vbat_history_boot(void)
+{
+    const int was_valid = vbat_history_valid(&s_vbat_hist);
+    const int had = vbat_history_count(&s_vbat_hist);
+    if (!was_valid) vbat_history_init(&s_vbat_hist);
+    /* Logged unconditionally: whether the retained history SURVIVED this boot is the one fact
+     * this function exists to establish, and it is not observable from anywhere else. A cold
+     * boot and a deep-sleep wake look identical in every other log line. */
+    ESP_LOGI(TAG, "vbat history: %s (%d samples retained)",
+             was_valid ? "kept from RTC" : "cold; starting empty", had);
 }
 
 int api_partials_since_full(void)
@@ -384,6 +439,26 @@ static esp_err_t h_status(httpd_req_t *req)
     s.vbat = s_vbat;
     s.vbat_source = s_vbat_source;
     s.has_vbat = s_has_vbat;
+
+    /* The voltage trend, and the sample count it is based on. The span is reconstructed from the
+     * configured wake interval times the sample count, because nothing on this device keeps time
+     * across deep sleep — see api_vbat_trend(). */
+    s.vbat_samples = api_vbat_history_count();
+    {
+        layout_config_t c;
+        memset(&c, 0, sizeof(c));
+        int wake_s = 900;
+        {
+            char *json = NULL;
+            if (cfg_store_get(cfg_store_nvs(), &json) == 0 && json) {
+                if (layout_config_parse(json, &c) == 0 && c.update_seconds > 0) {
+                    wake_s = c.update_seconds;
+                }
+                free(json);
+            }
+        }
+        s.vbat_trend = api_vbat_trend((double)s.vbat_samples * (double)wake_s / 60.0);
+    }
 
     s.partials_since_full = s_partials_since_full;
     s.fulls_total = s_fulls_total;

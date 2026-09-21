@@ -36,6 +36,10 @@ static api_status_t full_status(void)
     s.vbat = 3.87;
     s.has_vbat = 1;
     s.vbat_source = 1;   /* battery — matches power_source_t, NOT the field's order */
+    /* A real falling trend, and a NON-zero sample count: a test with both at 0 could not tell an
+     * emitted trend from an omitted one. */
+    s.vbat_trend = -0.0125;
+    s.vbat_samples = 9;
     s.partials_since_full = 7;
     s.fulls_total = 3;
     s.last_refresh_age_s = 120;
@@ -76,6 +80,10 @@ static void test_full_status_is_valid_json_with_all_fields(void)
     TEST_ASSERT_TRUE(cJSON_IsNumber(cJSON_GetObjectItem(j, "vbat")));
     TEST_ASSERT_EQUAL_STRING("battery",
                              cJSON_GetObjectItem(j, "power_source")->valuestring);
+    /* The trend and its basis (FR-33). Both must be present: a trend without the sample count is
+     * unfalsifiable, because "0.0000" reads as "stable" whether it came from ten samples or none. */
+    TEST_ASSERT_TRUE(cJSON_IsNumber(cJSON_GetObjectItem(j, "vbat_trend")));
+    TEST_ASSERT_EQUAL_INT(9, cJSON_GetObjectItem(j, "vbat_samples")->valueint);
 
     cJSON *errs = cJSON_GetObjectItem(j, "errors");
     TEST_ASSERT_TRUE(cJSON_IsArray(errs));

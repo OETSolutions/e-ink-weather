@@ -218,6 +218,7 @@ void app_boot_run(void)
     const power_source_t detected = source;
     source = power_apply_mode(source, cfg.power_mode);
     /* Cache it for /api/status: this is the only moment the battery can be read (HW-3). */
+    api_vbat_history_boot();
     api_note_vbat(vbat, (int)source);
     ESP_LOGI(TAG, "vbat=%.2fV source=%s%s", vbat,
              source == POWER_SOURCE_USB ? "usb"
