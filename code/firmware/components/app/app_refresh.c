@@ -886,54 +886,54 @@ void app_refresh_tick(power_source_t source, int force_full)
      * can see WHERE the contiguous block goes without re-instrumenting and re-flashing. */
     HEAP_DIAG("tick entry");
 
-    /* Acquire the RESIDENT framebuffer — s_fb_prev, the frame on the glass — but ONLY on battery.
+    /* The resident framebuffer is NOT acquired here, on either power source.
      *
-     * On USB the frame is released again a few lines below (the TLS note explains why it must be),
-     * so acquiring it here is pure waste — and actively harmful. When the re-acquire at the END of
-     * a tick fails on a fragmented region, s_fb_prev is left NULL; this call would then fail too
+     * It used to be acquired at tick entry on battery, so that the frame would survive the fetch
+     * as the diff base for a partial refresh. That is no longer possible or useful: the fetch needs
+     * the region far more than the frame does (see the release below), and on battery a partial
+     * was never reachable anyway — one refresh per wake, then deep sleep, with s_fb_prev living in
+     * RAM that does not survive it.
+     *
+     * Acquiring it here would also be actively HARMFUL. When the re-acquire at the END of a tick
+     * fails on a fragmented region, s_fb_prev is left NULL; an entry acquire would then fail too
      * and the tick would return BEFORE the fetch, so one failed render costs the NEXT tick's data
      * as well as its image, and the device stays stale for several ticks while the region clears
-     * (measured: one failure cascaded into four). Skipping it on USB means a failed render costs
-     * only that tick's image; the next tick fetches and draws normally.
+     * (measured: one failure cascaded into four). Not acquiring means a failed render costs only
+     * that tick's image; the next tick fetches and draws normally.
      *
-     * Battery acquires here because the frame must survive the fetch there: the radio is torn down
-     * before the render window, so two frames and the TLS demand fit together, and s_fb_prev is
-     * the diff base for FR-11's partial refresh. The transient buffer is taken later in both cases,
-     * once the radio is down, because holding both this early starves esp_wifi_init(). */
-    if (source != POWER_SOURCE_USB) {
-        if (ensure_prev() != 0) {
-            api_note_error("render: out of memory for framebuffers");
-            return;
-        }
-    }
-    HEAP_DIAG("after ensure_prev");
+     * The frame is taken once, at the re-acquire below, after the radio is down and the fetch
+     * buffers are freed — which is the point at which it is actually needed and most likely to fit. */
+    if (s_fb_prev) { free(s_fb_prev); s_fb_prev = NULL; }
+    HEAP_DIAG("tick entry (no resident frame held)");
 
-    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH, ON USB ----
+    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH, ON BOTH POWER SOURCES ----
      *
-     * WHY IT MUST BE: the TLS handshake needs ~20 KB of CONTIGUOUS DRAM (the in-buffer, the
-     * out-buffer, the X.509 verification working set, and the worker's own stack), and the frame
-     * occupies the one region large enough for a framebuffer (measured: region 0x3ffe4350, ~113 KB
-     * — every other region caps at ~66 KB). Holding the frame starves the handshake: measured,
-     * EVERY fetch then fails with mbedtls_ssl_handshake -0x7F00 (ALLOC_FAILED) / -0x2880
-     * (X509_ALLOC_FAILED) and every reading falls back to "--". Tried turning on
-     * CONFIG_MBEDTLS_DYNAMIC_BUFFER to make the connection's buffers per-use instead of
-     * per-connection, and it did NOT change this — the demand is not only the content buffers.
+     * WHY IT MUST BE: the TLS handshake needs CONTIGUOUS DRAM for the in-buffer, the out-buffer,
+     * the X.509 verification working set and the worker's own stack, and it can only come from the
+     * ONE region large enough for a framebuffer (measured: region 0x3ffe4350, 113,840 bytes — every
+     * other region caps at 64,936). Holding the 78,200-byte frame there leaves 35,640 bytes for
+     * everything else, which is not enough. Measured, holding it makes EVERY fetch fail:
+     * `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) and `PK verify failed` (X509 alloc),
+     * with every reading falling back to "--".
      *
-     * On battery the frame is held, because the radio is torn down before the render window and
-     * both the frame and the handshake fit in the region once the radio's allocations are gone.
+     * THIS APPLIES ON BATTERY TOO, and the earlier "on battery the frame is held and both fit"
+     * reasoning was WRONG — it was true only while the TLS in-buffer was 8192. At the 16384 the
+     * server's TLS records actually require (see sdkconfig.defaults), the arithmetic is
+     * 78,200 (frame) + 16,384 (TLS in) + ~4 K (out) + ~19 K (forecast) > 113,840. Measured on the
+     * bench in battery mode: the handshake failed for BOTH fetches and the panel drew placeholders.
+     * The fetch buffers and the frame cannot coexist in that region at any tolerable buffer size.
      *
-     * The cost of freeing it on USB is the re-acquire below, which can fail while the region is
+     * RELEASING COSTS NOTHING ON BATTERY EITHER, because a partial refresh there was never
+     * possible in the first place: the device performs ONE refresh per wake and then deep-sleeps,
+     * and s_fb_prev / s_shown_slot live in ordinary RAM that does not survive esp_deep_sleep_start().
+     * So there is no diff base to preserve across a fetch — every battery render is necessarily a
+     * full refresh, and the 78,200 bytes are better spent on the fetch. FR-11's partial strategy
+     * belongs to the always-on path, where it is what keeps flicker and refresh time down.
+     *
+     * The cost of releasing is the re-acquire below, which can fail while the region is
      * fragmented — see ensure_prev()'s bounded wait, which is what makes that re-acquire reliable.
      * The panel is bistable and asleep between pushes, so releasing costs nothing visible. */
-    if (source == POWER_SOURCE_USB) {
-        free(s_fb_prev); s_fb_prev = NULL;
-        /* No resident frame means no diff base, so the next push MUST be a full refresh. Resetting
-         * this is what guarantees it: s_shown_slot is what refresh_decide() consults for
-         * "nothing on the glass", and a partial against the re-acquired (uninitialised) buffer
-         * would diff the new layout against garbage and scribble noise onto the panel. */
-        s_shown_slot = -1;
-    }
-    HEAP_DIAG("after USB release of prev");
+    s_shown_slot = -1;
 
     /* WiFi credentials live in NVS, written by provisioning (FR-30) — never compiled in.
      * net_wifi_connect() needs them explicitly, so they are read here rather than assumed. */
