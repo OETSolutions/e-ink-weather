@@ -78,7 +78,26 @@ int cfg_store_get(const cfg_store_t *store, char **out_json)
      * user whose layout exceeded the limit would see their config saved, then watch the device
      * revert to a minimal default with no error anywhere. The two ends of the same document must
      * be the same size. */
+    /* SIZE THE ALLOCATION FROM THE STORED DOCUMENT, NOT FROM THE MAXIMUM.
+     *
+     * This allocated CFG_JSON_MAX_LEN (16,384) for every load, and the shipped default layout is
+     * ~4,424 bytes — so every read asked for ~3.5x what it needed. On this part that is not
+     * merely wasteful: the largest free block under HTTP load sits at 13-17 KB, so a 16 KB
+     * request FAILS there, and cfg_store_get() is on the path of GET /api/config, PUT
+     * /api/config and every refresh. The observed symptom was the web app's primary save
+     * failing with HTTP 500 {"error":"oom"} on a device with 80 KB free.
+     *
+     * The backend's `size` hook gives the exact length when it can; without one (a stub) the
+     * maximum is still correct, just larger than necessary. */
     size_t max = CFG_JSON_MAX_LEN;
+    if (store->size) {
+        const size_t have = store->size(store->ctx, CFG_KEY);
+        /* +1, AND IT IS NOT COSMETIC: the read terminates the string in the buffer it is given,
+         * so a document that EXACTLY fills the buffer is refused rather than handed back
+         * unterminated. Allocating the bare stored length therefore fails every read — the
+         * config silently reverts to the built-in default on a device that has one stored. */
+        if (have > 0 && have + 1 <= CFG_JSON_MAX_LEN) max = have + 1;
+    }
     char *buf = malloc(max);
     if (!buf) return -1;
     size_t len = 0;

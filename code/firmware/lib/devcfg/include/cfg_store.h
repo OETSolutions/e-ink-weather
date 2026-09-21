@@ -19,6 +19,16 @@ typedef struct {
     int (*read)(void *ctx, const char *key, void *out, size_t max, size_t *len);
     /* Write a blob, replacing any previous value. Returns 0 on success. */
     int (*write)(void *ctx, const char *key, const void *data, size_t len);
+    /* How many bytes the stored blob occupies, or 0 if nothing is stored. Optional: a NULL
+     * here means "unknown" and the read falls back to the maximum, which is correct but
+     * allocates CFG_JSON_MAX_LEN for every load.
+     *
+     * WHY THIS EXISTS: the read used to always allocate the 16,384-byte maximum, and on this
+     * part that is a large enough request to FAIL on a heap whose largest free block is
+     * momentarily 13-17 KB — which is the normal state under HTTP load. The shipped config is
+     * ~4.6 KB, so the maximum was ~3.5x more than any document needs, and the over-request was
+     * the difference between "the web app saved your layout" and a 500. */
+    size_t (*size)(void *ctx, const char *key);
     void *ctx;
 } cfg_store_t;
 

@@ -36,6 +36,21 @@ static int nvs_read(void *ctx, const char *key, void *out, size_t max, size_t *l
     return 0;
 }
 
+/* How many bytes the stored blob is, without reading it. 0 means "not stored" or "unknown",
+ * and cfg_store_get() then falls back to the maximum. nvs_get_blob with a NULL out pointer and
+ * a zeroed size returns ESP_ERR_NVS_INVALID_LENGTH while filling `sz` with the real length —
+ * that is the documented way to ask, and it costs no allocation. */
+static size_t nvs_size(void *ctx, const char *key)
+{
+    (void)ctx;
+    nvs_handle_t h;
+    if (nvs_open(CFG_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 0;
+    size_t sz = 0;
+    const esp_err_t e = nvs_get_blob(h, key, NULL, &sz);
+    nvs_close(h);
+    return e == ESP_OK ? sz : 0;
+}
+
 static int nvs_write(void *ctx, const char *key, const void *data, size_t len)
 {
     (void)ctx;
@@ -57,7 +72,8 @@ static int nvs_write(void *ctx, const char *key, const void *data, size_t len)
     return 0;
 }
 
-static const cfg_store_t s_nvs = { .read = nvs_read, .write = nvs_write, .ctx = NULL };
+static const cfg_store_t s_nvs = { .read = nvs_read, .write = nvs_write, .size = nvs_size,
+                                   .ctx = NULL };
 
 const cfg_store_t *cfg_store_nvs(void)
 {

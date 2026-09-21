@@ -15,13 +15,21 @@ static size_t g_len;
 static int   g_writes;
 static int   g_read_fails;
 
+/* Mirrors the real NVS backend's terminator rule: the read writes a NUL after the blob, so a
+ * document that EXACTLY fills the buffer is refused rather than returned unterminated.
+ *
+ * WHY THE STUB MUST MODEL THIS: the real backend does it, and the stub did not — so a bug that
+ * allocated the bare stored length (no room for the NUL) passed every host test and then failed
+ * on the device, where the config silently reverted to the built-in default. A stub that is
+ * more permissive than the thing it stands in for cannot catch that class of defect. */
 static int stub_read(void *ctx, const char *key, void *out, size_t max, size_t *len)
 {
     (void)ctx; (void)key;
     if (g_read_fails) return -1;
     if (g_len == 0) return -1;              /* nothing stored */
-    if (g_len > max) return -1;
+    if (g_len + 1 > max) return -1;         /* no room for the terminator */
     memcpy(out, g_blob, g_len);
+    ((char *)out)[g_len] = '\0';
     *len = g_len;
     return 0;
 }
@@ -199,6 +207,121 @@ static void test_null_arguments_are_rejected(void)
     TEST_ASSERT_NOT_EQUAL(0, cfg_store_put(&no_write, "{\"schemaVersion\":1}"));
 }
 
+/* ---------------------------------------------------------------- allocation sizing ---- */
+
+/* The `size` hook reports the stored blob's length without reading it. */
+static size_t stub_size(void *ctx, const char *key)
+{
+    (void)ctx; (void)key;
+    return g_len;
+}
+
+/* A read must ask for the STORED length, not the 16,384-byte maximum.
+ *
+ * WHY THIS IS A TEST AND NOT A COMMENT: this over-request was the difference between the web
+ * app saving a layout and getting HTTP 500 {"error":"oom"}. The shipped config is ~4.6 KB, so
+ * the maximum is ~3.5x more than any read needs — and on this part a 16 KB request fails on a
+ * heap whose largest free block is momentarily 13-17 KB, which is the normal state under HTTP
+ * load. `max_seen` records what the backend was actually asked for, which is the only place
+ * this is observable: the caller sees a correct document either way. */
+static size_t g_max_seen;
+static int stub_read_record(void *ctx, const char *key, void *out, size_t max, size_t *len)
+{
+    g_max_seen = max;
+    return stub_read(ctx, key, out, max, len);
+}
+
+static void test_read_sizes_from_stored_length_not_the_maximum(void)
+{
+    reset();
+    g_max_seen = 0;
+    cfg_store_t s = { .read = stub_read_record, .write = stub_write,
+                      .size = stub_size, .ctx = NULL };
+
+    const char *doc = "{\"schemaVersion\":1,\"updateSeconds\":600,"
+                      "\"partialRefreshLimit\":10,"
+                      "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, doc));
+
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_NOT_NULL(json);
+    /* The whole point: comfortably under the 16 KB maximum, with room for the NUL. */
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(strlen(doc) + 1, g_max_seen);
+    TEST_ASSERT_LESS_THAN_UINT32(CFG_JSON_MAX_LEN, g_max_seen);
+    free(json);
+}
+
+/* Without a `size` hook the read still works — it just falls back to the maximum, which is
+ * correct and merely larger than necessary. A stub-only backend must not break. */
+static void test_read_without_size_hook_falls_back_to_the_maximum(void)
+{
+    reset();
+    g_max_seen = 0;
+    cfg_store_t s = { .read = stub_read_record, .write = stub_write, .ctx = NULL };
+
+    const char *doc = "{\"schemaVersion\":1,\"updateSeconds\":600,"
+                      "\"partialRefreshLimit\":10,"
+                      "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, doc));
+
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_NOT_NULL(json);
+    TEST_ASSERT_EQUAL_UINT32(CFG_JSON_MAX_LEN, g_max_seen);
+    free(json);
+}
+
+/* A stored length at or above the cap must not be trusted into a too-small buffer: the read
+ * keeps the cap and the backend reports the error, rather than the document being truncated. */
+static void test_over_long_stored_blob_is_not_read_into_a_short_buffer(void)
+{
+    reset();
+    g_max_seen = 0;
+    cfg_store_t s = { .read = stub_read_record, .write = stub_write,
+                      .size = stub_size, .ctx = NULL };
+
+    /* Forge a stored blob at the cap, bypassing the write path's own limits. */
+    g_len = CFG_JSON_MAX_LEN;
+    char *json = NULL;
+    const int rc = cfg_store_get(&s, &json);
+    /* Either the read is refused, or it used the full cap; what must NOT happen is a silent
+     * truncation into a buffer sized below the document. */
+    if (rc == 0) {
+        TEST_ASSERT_NOT_NULL(json);
+        free(json);
+    }
+    TEST_ASSERT_EQUAL_UINT32(CFG_JSON_MAX_LEN, g_max_seen);
+}
+
+/* THE REGRESSION: the read must leave room for the NUL terminator the backend writes.
+ *
+ * Sizing the buffer to the bare stored length fails every read against the real NVS backend,
+ * which refuses a blob that exactly fills the buffer. On the device that surfaced as the config
+ * silently reverting to the built-in default — a device with a saved layout rendering the empty
+ * one — while every host test passed, because the stub was more permissive than the backend.
+ * The stub now models the terminator rule, so this is caught here instead. */
+static void test_read_leaves_room_for_the_terminator(void)
+{
+    reset();
+    g_max_seen = 0;
+    cfg_store_t s = { .read = stub_read_record, .write = stub_write,
+                      .size = stub_size, .ctx = NULL };
+
+    const char *doc = "{\"schemaVersion\":1,\"updateSeconds\":600,"
+                      "\"partialRefreshLimit\":10,"
+                      "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, doc));
+    const size_t stored = strlen(doc) + 1;      /* the write stores the NUL too */
+
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_NOT_NULL(json);
+    TEST_ASSERT_EQUAL_STRING(doc, json);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(stored + 1, g_max_seen);
+    free(json);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -211,5 +334,9 @@ int main(void)
     RUN_TEST(test_stored_config_round_trips);
     RUN_TEST(test_out_of_range_values_are_not_silently_stored_as_written);
     RUN_TEST(test_null_arguments_are_rejected);
+    RUN_TEST(test_read_sizes_from_stored_length_not_the_maximum);
+    RUN_TEST(test_read_without_size_hook_falls_back_to_the_maximum);
+    RUN_TEST(test_over_long_stored_blob_is_not_read_into_a_short_buffer);
+    RUN_TEST(test_read_leaves_room_for_the_terminator);
     return UNITY_END();
 }

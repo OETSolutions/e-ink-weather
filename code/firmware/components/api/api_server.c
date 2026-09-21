@@ -741,10 +741,24 @@ static esp_err_t h_config_put(httpd_req_t *req)
     /* Optional bearer auth (FR-31). Gated because this WRITES the stored config. */
     if (api_auth_gate(req)) return ESP_OK;
 
-    char *body = malloc(API_CONFIG_MAX_LEN);
+    /* Size the buffer from the request's own Content-Length, NOT from the 16 KB maximum.
+     *
+     * WHY THIS MATTERS ON THIS PART: the shipped config document is ~4.6 KB, but this used to
+     * malloc API_CONFIG_MAX_LEN (16,384) for every PUT. The largest free DRAM block under HTTP
+     * load sits at 13-17 KB — the network stack's allocations split the big region — so a 16 KB
+     * request FAILS on a device reporting 80 KB free. That made the web app's primary save path
+     * return HTTP 500 {"error":"oom"}, intermittently and confusingly, with the device otherwise
+     * healthy. Allocating the actual body size removes the over-request entirely.
+     *
+     * The cap is still enforced, and enforced BEFORE allocating: a request at or above the cap is
+     * the same 413 api_read_body() would have produced. */
+    if (req->content_len <= 0 || (size_t)req->content_len >= API_CONFIG_MAX_LEN) {
+        return api_send_err(req, "413 Payload Too Large", "body too large");
+    }
+    char *body = malloc((size_t)req->content_len + 1);
     if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
 
-    const int n = api_read_body(req, body, API_CONFIG_MAX_LEN);
+    const int n = api_read_body(req, body, (size_t)req->content_len + 1);
     if (n < 0) {
         free(body);
         return ESP_OK;      /* read_body already answered */

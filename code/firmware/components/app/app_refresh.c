@@ -49,6 +49,26 @@ extern const int boot_badge_h;
 
 static const char *TAG = "refresh";
 
+/* How long ensure_prev() waits for the freed framebuffer region to coalesce before giving up
+ * on a tick.
+ *
+ * MEASURED, NOT GUESSED. When the region is fragmented by a network allocation sitting in the
+ * middle of it, the largest free block reads 77,824 — 376 bytes SHORT of the 78,200 a
+ * framebuffer needs — and the block walk shows the fragmenter is a handful of 28..132-byte
+ * network-stack allocations that free on their own. The pieces then coalesce into one
+ * 78,380-byte block, which DOES fit, but the coalesce is not instant: under sustained 2 s HTTP
+ * churn the wait was measured acquiring on attempts 16..29, i.e. 800..1,450 ms, with the FIRST
+ * acquisition needing longer than the old 5 s ceiling in the worst observed case. So 5 s was
+ * marginal and 15 s is a comfortable margin over a 1.45 s measurement.
+ *
+ * A tick that still cannot get its frame keeps the previous image on the glass, which is the
+ * correct FR-29 behaviour, and it RETRIES shortly (see the retry in app_refresh_tick) rather
+ * than waiting a whole interval — a stale panel for 15 minutes is the real cost being avoided.
+ * On battery this loop is never entered under normal use: the radio is torn down before the
+ * render window, so the region is already clean. */
+#define FB_ACQUIRE_WAIT_MS 15000
+#define FB_ACQUIRE_POLL_MS 50
+
 /* TWO framebuffers. A partial refresh takes the frame CURRENTLY ON THE GLASS and the new
  * frame, and the controller derives each pixel's transition from the pair — so the previous
  * frame has to be kept. Keeping one buffer and treating a partial as "just draw the region"
@@ -108,8 +128,9 @@ static int ensure_prev(void)
      *
      * On battery this loop is never reached under normal use: the radio is torn down before the
      * render window, so the region is already clean. */
-    for (int attempt = 0; attempt < 100; attempt++) {
-        vTaskDelay(pdMS_TO_TICKS(50));      /* 100 x 50 ms = 5 s ceiling */
+    const int attempts = FB_ACQUIRE_WAIT_MS / FB_ACQUIRE_POLL_MS;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        vTaskDelay(pdMS_TO_TICKS(FB_ACQUIRE_POLL_MS));
 #if HEAP_TRACE
         if (attempt % 5 == 0) {
             ESP_LOGW("heaptrace", "  framebuffer wait %2d: largest=%u free=%u", attempt,
@@ -118,7 +139,15 @@ static int ensure_prev(void)
         }
 #endif
         s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-        if (s_fb_prev) return 0;
+        if (s_fb_prev) {
+#if HEAP_TRACE
+            if (attempt > 0) {
+                ESP_LOGW("heaptrace", "  framebuffer acquired on attempt %d (~%d ms)",
+                         attempt, attempt * FB_ACQUIRE_POLL_MS);
+            }
+#endif
+            return 0;
+        }
     }
 
     {
@@ -141,6 +170,17 @@ static int ensure_prev(void)
 
 /* Which slot's bytes are currently in s_fb_prev. -1 = nothing drawn yet this power cycle. */
 static int s_shown_slot = -1;
+
+/* Set when a tick could not get its resident framebuffer and therefore drew nothing. The image
+ * on the glass is still the last good one (correct FR-29 behaviour), but the region may stay
+ * fragmented for far longer than the acquire wait — measured: a state that held the largest
+ * block at ~38 KB for 30 s+ with only ~230 bytes of small USED blocks in the way. So the serve
+ * loop retries promptly on this flag, via the pending-refresh request, rather than leaving the
+ * panel stale for a whole interval. A full refresh is requested because there is no resident
+ * diff base left. */
+static volatile int s_fb_lost;
+
+int app_refresh_frame_lost(void) { return s_fb_lost; }
 
 /* The last temperature this device successfully fetched, and when.
  *
@@ -1043,9 +1083,14 @@ void app_refresh_tick(power_source_t source, int force_full)
      * below forces a full refresh — the only kind possible without a diff base. */
     HEAP_DIAG("before re-acquire of prev");
     if (ensure_prev() != 0) {
+        /* Flag it so the serve loop retries shortly instead of holding the stale image for a
+         * full interval; the flag is the only signal, since the image on the glass is
+         * deliberately untouched. */
+        s_fb_lost = 1;
         api_note_error("render: out of memory for the framebuffer");
         return;
     }
+    s_fb_lost = 0;
     HEAP_DIAG("after re-acquire of prev");
 
     const int have_next = (acquire_next() == 0);

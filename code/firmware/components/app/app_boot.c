@@ -365,6 +365,12 @@ void app_serve_loop(void)
      * pick up an interval change and the periodic path never needs to call it. */
     int interval_ms = api_update_seconds() * 1000;
 
+    /* Set after a tick that could not get its framebuffer, to make the NEXT refresh happen in
+     * seconds rather than a whole interval — see app_refresh_frame_lost(). Kept SEPARATE from
+     * interval_ms so a retry does not overwrite the configured cadence; when the retry fires,
+     * interval_ms is untouched and the periodic schedule resumes from the normal interval. */
+    int retry_in_ms = 0;
+
     for (;;) {
         /* POLL EVERY SECOND, and count up to the configured interval. The wait must NOT be the
          * whole interval: factory_reset_poll() needs to run repeatedly to see a 5 s button hold
@@ -385,6 +391,13 @@ void app_serve_loop(void)
             ESP_LOGI(TAG, "refresh requested via API");
             want_full = 1;
             interval_ms = api_update_seconds() * 1000;
+            retry_in_ms = 0;
+        } else if (retry_in_ms && elapsed_ms >= retry_in_ms) {
+            /* The previous tick dropped its frame. Retry promptly with a full refresh (there is
+             * no resident diff base to do a partial against). */
+            ESP_LOGW(TAG, "retrying the refresh that could not get a framebuffer");
+            want_full = 1;
+            retry_in_ms = 0;
         } else if (elapsed_ms >= interval_ms) {
             /* THE TIMER ELAPSED, so this is the periodic refresh.
              *
@@ -404,5 +417,15 @@ void app_serve_loop(void)
 
         elapsed_ms = 0;
         app_refresh_tick(POWER_SOURCE_USB, want_full);
+
+        /* A tick that could not obtain its framebuffer drew nothing and left the last good
+         * image on the glass, which is correct — but the region can stay fragmented for far
+         * longer than the acquire wait (measured: tens of seconds). Retry in 5 s rather than
+         * showing a stale reading until the next interval, which on a 900 s config would be
+         * fifteen minutes of a wrong number on the wall. */
+        if (app_refresh_frame_lost()) {
+            ESP_LOGW(TAG, "no framebuffer for that refresh; retrying in 5 s");
+            retry_in_ms = 5000;
+        }
     }
 }

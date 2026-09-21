@@ -76,3 +76,10 @@ esp_err_t app_render_last_good(void);
  * Never returns an error that stops the boot: a failed fetch leaves the last good image up
  * and is recorded for /api/status (FR-33). */
 void app_refresh_tick(power_source_t source, int force_full);
+
+/* Non-zero if the last tick could not obtain its resident framebuffer and drew nothing, so the
+ * image on the glass is stale. The serve loop polls this to retry promptly rather than waiting a
+ * whole interval — the freed DRAM region can stay fragmented by small long-lived network
+ * allocations for far longer than the acquire wait, and a 15-minute-stale panel is the real cost
+ * being avoided. Cleared by the next tick that does draw. */
+int app_refresh_frame_lost(void);
