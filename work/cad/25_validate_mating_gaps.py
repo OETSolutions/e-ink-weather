@@ -1,8 +1,12 @@
 """Validate mating gaps and contacts between printable parts."""
-import FreeCAD as App,Part,os,sys
+import FreeCAD as App,Part,os,sys,importlib
 from functools import partial
 print=partial(print,flush=True)
 HERE=os.path.dirname(os.path.abspath(__file__))
+# Constants come from the generator, never restated here: a probe that carries its own copy of a
+# dimension keeps passing after the design moves (this file has been bitten by that before).
+sys.path.insert(0,HERE)
+m=importlib.import_module("06_rear_cover_foot")
 d=App.openDocument(os.path.join(HERE,'EInk_Weather_Display_Assembly.FCStd'))
 objs={n:d.getObject(n).Shape for n in ['PRINT_FRONT_BEZEL','PRINT_REAR_CHASSIS',
                                        'PRINT_REAR_COVER','PRINT_SERVICE_HATCH','PRINT_SWING_FOOT']}
@@ -38,12 +42,17 @@ for name,a,b,lo,hi in checks:
     print(' %-15s distance %.4f intersection %.6f %s%s'%(name,dist,inter,'OK' if ok else 'FAIL',note))
     if not ok:fails.append('%s gap/contact invalid'%name)
 # Hatch plug clearance from bay walls is measured geometrically in validator 19. Verify the
-# exterior flange actually contacts/overlaps the cover in projection but not volume.
+# support lip the plate rests on exists under the plate's projection.
+# NOTE the z: the plate is RECESSED now (z 0..FLANGE_T), so the cover immediately at z=0 under
+# the projection is the RECESS VOID, not a support land -- measuring there reported "no support"
+# for a seat that is correctly supported. The land is the cover below the SEAT FLOOR.
 h=objs['PRINT_SERVICE_HATCH'];c=objs['PRINT_REAR_COVER']
-proj=Part.makeBox(h.BoundBox.XLength,h.BoundBox.YLength,.02,App.Vector(h.BoundBox.XMin,h.BoundBox.YMin,-.01))
+_FT=m.HATCH_FLANGE_Tproj=Part.makeBox(h.BoundBox.XLength,h.BoundBox.YLength,.02,
+                  App.Vector(h.BoundBox.XMin,h.BoundBox.YMin,_FT+.01))
 cover_under=c.common(proj).Volume
-print(' hatch flange support under projection %.3f mm3 %s'%(cover_under,'OK' if cover_under>1 else 'FAIL'))
-if cover_under<=1:fails.append('hatch flange has no support land')
+print(' hatch plate support lip below the seat (z=%.2f) %.3f mm3 %s'
+      %(_FT,cover_under,'OK' if cover_under>1 else 'FAIL'))
+if cover_under<=1:fails.append('hatch plate has no support land')
 if fails:
  print('FAILURES:');[print(' -',f) for f in fails];sys.exit(1)
 print('MATING GAP / CONTACT VALIDATION PASS')

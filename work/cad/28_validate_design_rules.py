@@ -96,6 +96,14 @@ HATCH_CLEAR = _const("HATCH_CLEAR")
 SCREW_X = _const("HATCH_SCREW_X");  _env["HATCH_SCREW_X"] = SCREW_X
 SCREW_Y = _const("HATCH_SCREW_Y")
 SCREW_D = _const("HATCH_SCREW_D")
+# The hatch plate is RECESSED: it occupies z PLATE_Z0..PLATE_Z1 (0..HATCH_FLANGE_T) flush with
+# the cover's rear face, where it used to stand proud at -HATCH_FLANGE_T..0. Read the values so
+# these probes follow the plate instead of carrying a stale z band. HATCH_RECESS_T is defined as
+# HATCH_FLANGE_T in the generator, so the plate thickness must be in scope first.
+PLATE_Z0 = 0.0
+FLANGE_T = _const("HATCH_FLANGE_T"); _env["HATCH_FLANGE_T"] = FLANGE_T
+PLATE_Z1 = FLANGE_T
+RECESS_T = _const("HATCH_RECESS_T")
 BAY_X1 = _env_seed["SERVICE_BAY_X1"]   # declared as a tuple, not a scalar
 HZ = KNUCKLE_Z
 
@@ -201,17 +209,18 @@ for x0, x1 in ((FOOT_X - 4.0, FOOT_X - 0.2), (FOOT_X + FOOT_W + 0.2, FOOT_X + FO
     if wv <= 5.0: fails.append("pin end web x %.1f..%.1f has no material" % (x0, x1))
 
 print("\n-- hatch: single screw from OUTSIDE, anti-rotation keys, plug clearance --")
-shank = Part.makeCylinder(SCREW_D / 2, 12.0, App.Vector(SCREW_X, SCREW_Y, -6.0))
+shank = Part.makeCylinder(SCREW_D / 2, 12.0, App.Vector(SCREW_X, SCREW_Y, PLATE_Z0 - 4.0))
 hv = hatch.common(shank).Volume
 print("  screw hole clear through the hatch: %.4f mm3 %s" % (hv, "OK" if hv <= 0.001 else "FAIL"))
 if hv > 0.001: fails.append("hatch screw hole obstructed")
-ann = Part.makeCylinder(2.4, 1.2, App.Vector(SCREW_X, SCREW_Y, -1.2)).cut(
-      Part.makeCylinder(SCREW_D / 2, 1.3, App.Vector(SCREW_X, SCREW_Y, -1.3)))
+ann = Part.makeCylinder(2.4, PLATE_Z1 - PLATE_Z0, App.Vector(SCREW_X, SCREW_Y, PLATE_Z0)).cut(
+      Part.makeCylinder(SCREW_D / 2, PLATE_Z1 - PLATE_Z0 + 0.2,
+                        App.Vector(SCREW_X, SCREW_Y, PLATE_Z0 - 0.1)))
 print("  flange material the screw passes through: %.2f mm3 %s"
       % (hatch.common(ann).Volume, "OK" if hatch.common(ann).Volume > 3.0 else "FAIL"))
 if hatch.common(ann).Volume <= 3.0: fails.append("screw has no flange material")
-boss = Part.makeCylinder(2.4, 3.0, App.Vector(SCREW_X, SCREW_Y, -0.6)).cut(
-       Part.makeCylinder(SCREW_D / 2, 3.1, App.Vector(SCREW_X, SCREW_Y, -0.7)))
+boss = Part.makeCylinder(2.4, 3.0, App.Vector(SCREW_X, SCREW_Y, RECESS_T)).cut(
+       Part.makeCylinder(SCREW_D / 2, 3.2, App.Vector(SCREW_X, SCREW_Y, RECESS_T - 0.1)))
 bv = cover.common(boss).Volume
 print("  cover boss to thread into: %.2f mm3 %s" % (bv, "OK" if bv > 5.0 else "FAIL"))
 if bv <= 5.0: fails.append("no cover boss behind the hatch screw")

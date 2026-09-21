@@ -325,10 +325,27 @@ SCREWS = [(11.0,11.0),(CASE_W-11.0,11.0),(11.0,CASE_H-11.0),(CASE_W-11.0,CASE_H-
 SERVICE_BAY_X0,SERVICE_BAY_X1=22.5,79.2
 SERVICE_BAY_Y0,SERVICE_BAY_Y1=68.0,92.0
 HATCH_CLEAR=0.25                                      # ASSUME per-side FDM plug clearance
-# The plug runs the FULL cover thickness. It was 1.4 mm, which left the bay's outer 1.6 mm open
-# and gave the hatch only 1.4 mm of bearing on the bay walls to resist rotation.
-HATCH_PLUG_T=COVER_T                                  # fills the opening through its whole depth
-HATCH_FLANGE_T=1.2                                    # ASSUME exterior overlay
+HATCH_FLANGE_T=1.2                                    # the plate's own thickness
+# ---- RECESSED SEAT (2026-09-20) --------------------------------------------------------
+# The user: "Make the hatch cover recessed in the rear cover instead of sitting on top. Make
+# sure there's still a lip on the rear cover to support it."
+# The plate used to sit PROUD: it spanned z -1.2..0, standing 1.2 mm off the cover's rear face
+# at z=0. It now drops INTO a seat cut in that face, so its exterior face finishes flush.
+# WHAT SUPPORTS IT is the cover left UNDER the seat -- the LIP. The cover is COVER_T = 3.0 and
+# the seat is HATCH_RECESS_T = 1.2 deep, so a 1.8 mm lip remains all the way round the bay
+# (1.8 mm clears the 1.6 mm FDM floor by 0.2). Outside the plate's outline the cover keeps its
+# full 3.0 mm, so the step down into the seat is a 1.2 mm rim: rim above, lip below.
+# The seat is cut HATCH_RECESS_CLEAR wider than the plate on every side, so the plate drops in
+# without binding and prints no tighter than the bay already does.
+HATCH_RECESS_T=HATCH_FLANGE_T                         # seat depth; = plate thickness -> flush
+HATCH_RECESS_CLEAR=0.25                               # per-side, so the plate drops in freely
+# The plug fills the bay from the plate's INNER face (z = HATCH_FLANGE_T) up to the cover's
+# inner face (z = COVER_T), so it is 1.8 mm rather than the full 3.0 it was when the plate was
+# proud. That still beats the 1.4 mm plug once rejected here, and rotation is stopped by the two
+# KEYS, not by plug depth. Letting it run the full 3.0 from the plate's new inner face would push
+# it to z 4.2 -- through the cover's inner face and into the chassis at z 2.95.
+HATCH_PLUG_Z0=HATCH_FLANGE_T                          # 1.2, the plate's inner face
+HATCH_PLUG_T=COVER_T-HATCH_FLANGE_T                   # 1.8, reaches the cover's inner face
 # Snap-in capture replaces the previous 2x M2 screws: two in-plane PETG cantilever
 # tongues are cut out of the hatch plug. Only their small detent noses enter matching
 # pockets in the bay walls; the beam bodies stay wholly inside the bay clearance.
@@ -424,10 +441,11 @@ HATCH_FLANGE_Y1=SERVICE_BAY_Y1+6.35                 # 98.35, covers the Y notche
 # +X edge is set by the screw, not by the bay: the M2 head counterbore is dia 4.5 at 84.5, so
 # 88.7 leaves a full 1.95 mm of plate outside it (and covers the +X notch, which ends at 82.40).
 HATCH_FLANGE_X1=88.70
-# The plate is FLUSH at one thickness (HATCH_FLANGE_T). Making it thicker so the head could sit
-# flush put its face 2.8 mm below the flange -- and the hatch prints exterior-face down, so that
-# would have lifted the whole plate off the bed (validator 23 caught it). The head therefore
-# sits proud of the exterior face, which is normal for a service cover.
+# The head still sits PROUD of the plate's exterior face, which is normal for a service cover.
+# An earlier attempt to thicken the plate so the head sat flush put its face 2.8 mm below the
+# flange -- and the hatch prints exterior-face down, so that lifted the whole plate off the bed
+# (validator 23 caught it). Nothing changes now that the plate is recessed: the plate keeps ONE
+# thickness, and the head stands in the void above it inside the recess.
 HATCH_HEAD_CBORE=0.6                                 # shallow seat, not a flush recess
 # Finger scallop for prying the hatch off without tools: a half-round notch in the plate's +Y
 # edge. Placed at 45.00 rather than the bay centre -- with the plate now laps 6.35 mm past the
@@ -626,6 +644,21 @@ def build_cover(outer, foot):
                  SERVICE_BAY_X0, SERVICE_BAY_Y0, -0.2, COVER_T+0.4)
     cover = cover.cut(bay)
 
+    # --- RECESSED SEAT for the hatch plate --------------------------------------------
+    # Cut from the EXTERIOR face (z=0) down HATCH_RECESS_T, so the plate's outer face finishes
+    # flush with the cover's instead of standing 1.2 mm proud of it (the user: "recessed in the
+    # rear cover instead of sitting on top"). Only HATCH_RECESS_T of the 3.0 mm cover is removed:
+    # the 1.8 mm left beneath it is the LIP the hatch rests on, and it runs all the way round the
+    # bay because the seat cut is HATCH_RECESS_CLEAR larger than the plate on every side.
+    # Cut AFTER the bay so the two openings join into one profile, and cut at the plate's own
+    # outline rather than the bay's -- the plate laps past the bay to reach the screw, and the
+    # seat has to follow the plate or the screw end would sit on un-recessed cover.
+    seat = rprism((HATCH_FLANGE_X1-HATCH_FLANGE_X0)+2*HATCH_RECESS_CLEAR,
+                  (HATCH_FLANGE_Y1-HATCH_FLANGE_Y0)+2*HATCH_RECESS_CLEAR, 4.0,
+                  HATCH_FLANGE_X0-HATCH_RECESS_CLEAR, HATCH_FLANGE_Y0-HATCH_RECESS_CLEAR,
+                  -0.1, HATCH_RECESS_T+0.1)
+    cover = cover.cut(seat)
+
     # --- hatch retention: notch seats + ONE screw ---------------------------------------------
     # The hatch's two keys drop into these notches, which are cut through the cover's FULL
     # thickness. They bear on the notch walls to stop the hatch rotating about its single screw.
@@ -641,15 +674,20 @@ def build_cover(outer, foot):
     # there was a floating island; the bay's centre-line (50.9) had the same problem lower
     # down. The axis is now 79.05, where the bay rim is 6.4 mm wide, so a 3.2 mm boss keeps
     # 0.87 mm of overlap at its narrowest while standing 3.2+1.8 = 5.0 mm clear of the bay.
-    sb = Part.makeCylinder(HATCH_BOSS_R, COVER_T, App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y, 0.0))
+    # It starts at the SEAT FLOOR (z = HATCH_RECESS_T), not at z=0: the recess is cut over this
+    # whole area, and a boss running from z=0 would refill it and stand through the plate
+    # (MEASURED: 14.87 mm3 of that). The boss is simply the lip thickened locally.
+    sb = Part.makeCylinder(HATCH_BOSS_R, COVER_T-HATCH_RECESS_T,
+                           App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y, HATCH_RECESS_T))
     cover = cover.fuse(sb)
     # Screw passes from outside -- through the hatch's flange and plug -- and threads into
-    # this boss. The bore is cut only through the boss itself (z 0..COVER_T); cutting it
+    # this boss. The bore is cut only through the boss itself (z 1.2..COVER_T); cutting it
     # deeper would hole the chassis bridge behind, which is deliberately omitted: the
     # "bosses need through holes so long screws can go through" request applies to the four
     # chassis stand-offs, not here.
-    cover = cover.cut(Part.makeCylinder(HATCH_SCREW_D/2, COVER_T+0.4,
-                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y, -0.2)))
+    cover = cover.cut(Part.makeCylinder(HATCH_SCREW_D/2, COVER_T-HATCH_RECESS_T+0.4,
+                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y,
+                                                   HATCH_RECESS_T-0.2)))
 
     # USB cable exit slot at the hatch edge: cut through the cover across the bay's +X edge
     # region so a cable can leave while the hatch is fitted.
@@ -705,11 +743,14 @@ def build_hatch():
     """
     plug = rprism((SERVICE_BAY_X1-SERVICE_BAY_X0)-2*HATCH_CLEAR,
                   (SERVICE_BAY_Y1-SERVICE_BAY_Y0)-2*HATCH_CLEAR, 2.75,
-                  SERVICE_BAY_X0+HATCH_CLEAR, SERVICE_BAY_Y0+HATCH_CLEAR, 0.0, HATCH_PLUG_T)
+                  SERVICE_BAY_X0+HATCH_CLEAR, SERVICE_BAY_Y0+HATCH_CLEAR,
+                  HATCH_PLUG_Z0, HATCH_PLUG_T)
     # ONE plate. It covers the bay and runs out over the cover to carry the screw, so there is
     # no seam, no step and no separate tab.
+    # The plate now sits INSIDE the cover: z 0..HATCH_FLANGE_T, its exterior face flush with the
+    # cover's rear face at z=0 (it used to occupy z -1.2..0, standing proud by its own thickness).
     flange = rprism(HATCH_FLANGE_X1-HATCH_FLANGE_X0, HATCH_FLANGE_Y1-HATCH_FLANGE_Y0, 4.0,
-                    HATCH_FLANGE_X0, HATCH_FLANGE_Y0, -HATCH_FLANGE_T, HATCH_FLANGE_T)
+                    HATCH_FLANGE_X0, HATCH_FLANGE_Y0, 0.0, HATCH_FLANGE_T)
     hatch = plug.fuse(flange)
 
     # Two keys on the plug's inner face, inside the bay footprint so they pass straight through
@@ -738,15 +779,16 @@ def build_hatch():
                  HATCH_LIP_X0, HATCH_LIP_Y0, HATCH_LIP_Z0, HATCH_LIP_T)
     hatch = hatch.fuse(lip)
 
-    # Single screw: clearance through the tab, the plug and the lip, counterbored for the
-    # head in the tab. Both cuts use HATCH_SCREW_X (84.5) -- cutting the flange's head
+    # Single screw: clearance through the flange, the plug and the lip, counterbored for the
+    # head in the flange. Both cuts use HATCH_SCREW_X (84.5) -- cutting the flange's head
     # counterbore at CASE_W/2 left a solid flange column at the true axis.
+    # The z references all rose by HATCH_FLANGE_T when the plate went from z -1.2..0 to 0..1.2:
+    # the head now sits in the recess (z -0.1..0 is the void above the plate), so the counterbore
+    # is cut from z=-0.1 down and the shank bore from the plate's new outer face.
     hatch = hatch.cut(Part.makeCylinder(HATCH_SCREW_D/2, 8.0,
-                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y,
-                                                   -HATCH_FLANGE_T-0.2)))
+                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y, -0.2)))
     hatch = hatch.cut(Part.makeCylinder(HATCH_SCREW_HEAD_D/2, HATCH_HEAD_CBORE,
-                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y,
-                                                   -HATCH_FLANGE_T-0.1)))
+                                        App.Vector(HATCH_SCREW_X, HATCH_SCREW_Y, -0.1)))
 
     # Finger scallop so the hatch can be pried out without tools. A half-round notch in the
     # plate's +Y edge, instead of the previous 31.6 x 5.0 mm rectangular bite that removed most
@@ -758,7 +800,7 @@ def build_hatch():
     # The depth is 0.75 mm x 6.0 mm = 4.5 mm2 of fingernail access -- a dimple, not a bite.
     hatch = hatch.cut(Part.makeCylinder(HATCH_SCALLOP_R, HATCH_FLANGE_T+0.4,
                                         App.Vector(HATCH_SCALLOP_X, HATCH_FLANGE_Y1,
-                                                   -HATCH_FLANGE_T-0.3)))
+                                                   -0.3)))
     # USB cable exit -- cut through the flange AND OUT THROUGH ITS +Y EDGE, so it is an OPEN
     # cutout like the cover's, not a closed hole.
     # This used to stop at y=97.0, leaving 1.35 mm of plate across the slot's outer end. That
@@ -769,7 +811,7 @@ def build_hatch():
     hatch = hatch.cut(Part.makeBox(USB_SLOT_W, (HATCH_FLANGE_Y1+0.6)-(SERVICE_BAY_Y1-1.0),
                                    HATCH_FLANGE_T+HATCH_PLUG_T+0.6,
                                    App.Vector(USB_SLOT_X-USB_SLOT_W/2, SERVICE_BAY_Y1-1.0,
-                                              -HATCH_FLANGE_T-0.3)))
+                                              -0.3)))
     return hatch
 
 
