@@ -123,6 +123,24 @@ CLIP_GUSSET_FILLET_ROOT = 1.20                      # fillet on the gusset's rea
                                                     # The user: "fillets ... in the acute corners
                                                     # where it will make the gussets stronger."
 PIN_ROOT = 4.00                                     # pin extension each side into the cover
+# ---- END WEBS: the pin's only attachment ---------------------------------------
+# The user: "Why is the hinge pin attachment so narrow? There's extra room to make them wider"
+# They are right, and the numbers say so. The pin is 78.00 mm long (28.20..106.20) but was
+# anchored by two webs only 3.80 mm wide (28.20..32.00 / 102.40..106.20). MEASURED on the fused
+# cover by sampling the pin's own circumference: the weld wraps 81.9% of the pin only over those
+# two 3.80 mm bands, drops to 25.0% from x 33.0 to 42.0 (and 92.8 to 102.4), and is 0.0% over
+# the whole 42..92 span, which is the clip-sweep cavity. So 10.20 mm of pin at EACH end hangs
+# unsupported between the web and the bearing.
+#
+# The room was there: sweeping the foot through its entire working range (0..90 deg) against the
+# candidate web box (y 1.00..7.20, z -3.25..3.00) shows ZERO overlap out to x=42.20, i.e. the
+# web can run right up to the cavity wall. It only collides at x=43.0 (14.39 mm3 at 90 deg),
+# past the cavity, and only in +Y past y=8.0 (0.0138 mm3) and in -Z past z=-4.0.
+# MEASURED gain: the fused web goes from 147.3 mm3 to 326.7 mm3 per end -- 2.2x the material --
+# and the unsupported pin span falls from 10.20 mm to 0.60 mm per side.
+# The webs stop at the cavity wall (BEARING_X0 - CAVITY_PAD) so they meet the sweep cavity
+# exactly rather than intruding into it; a web reaching past that would sit in the band the
+# bearing sweeps through. PIN_WEB_X itself is derived where CAVITY_PAD is defined, below.
 # ---- OPEN-POSITION DETENT (re-added 2026-09-20, a GROOVE in the pin) ---------------------
 # See the long note at the pin build and [[project-kickstand-statics]]. Summary: nothing but a
 # bore detent can hold the leg shut, and the feature must be on the RIGID PIN because the clip's
@@ -206,6 +224,10 @@ CAVITY_CLEAR = 0.60
 # The cavity is cut as bands this much wider than each clip, at the clip stations only. Cutting
 # it across the FULL width at this radius cost the cover's hinge rail 20 mm3 (validator 23).
 CAVITY_PAD = 0.60
+# The pin's end webs run from the pin's own end right up to the cavity wall, so the pin is
+# anchored almost over its whole length (see the END WEBS note at PIN_ROOT for the measurements).
+PIN_WEB_X = ((HINGE_X0-PIN_ROOT, BEARING_X0-CAVITY_PAD),
+             (BEARING_X1+CAVITY_PAD, HINGE_X1+PIN_ROOT))
 # Target lip interference when the pin passes the mouth: small but definite.
 LIP_INTERFERENCE = 0.07
 CHEEK_T = 3.00                                       # ASSUME side cheek thickness
@@ -583,8 +605,7 @@ def build_cover(outer, foot):
     # The web must OVERLAP the cover solidly. Setting both to y=2.0 gave a bare face contact,
     # which does not fuse in a Boolean and left the webs (and the pin with them) as separate
     # solids. WEB_Y0 is 1.0 mm INSIDE the cover's material so the join is real.
-    for wx0, wx1 in ((HINGE_X0-PIN_ROOT, HINGE_X0-0.2),
-                     (HINGE_X1+0.2, HINGE_X1+PIN_ROOT)):
+    for wx0, wx1 in PIN_WEB_X:
         web = Part.makeBox(wx1-wx0, (HINGE_Y+pin_r)-WEB_Y0, WEB_Z1-(KNUCKLE_Z-pin_r),
                            App.Vector(wx0, WEB_Y0, KNUCKLE_Z-pin_r))
         cover = cover.fuse(web)
