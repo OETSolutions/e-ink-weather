@@ -528,6 +528,12 @@ void prov_ap_stop(void)
 
     prov_dns_stop();
 
+    /* Tear down the protocomm transport BEFORE the server it lives on. Its URI handlers are
+     * registered on s_server and dereference a protocomm global; leaving them registered once
+     * that instance is gone is a use-after-free, and the instance is freed at reboot — but the
+     * reboot path is not the only one, and the ordering is cheap to get right. */
+    prov_softap_prov_stop();
+
     if (s_server) {
         httpd_stop(s_server);
         s_server = NULL;

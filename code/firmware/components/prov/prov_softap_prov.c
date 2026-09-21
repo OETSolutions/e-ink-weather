@@ -38,6 +38,7 @@
 #include "prov.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_http_server.h"
 
 #include "protocomm.h"
 #include "protocomm_httpd.h"
@@ -71,6 +72,27 @@ static wifi_prov_scan_handlers_t   s_scan_handlers;
 /* The version/capability document, built once. Kept alive because protocomm keeps the pointer
  * rather than copying it. */
 static char *s_ver_json;
+
+/* Every endpoint this transport registers, as the URIs protocomm derives from the endpoint
+ * names (it prepends '/'). Kept as one list because these MUST be unregistered explicitly:
+ * protocomm_delete() frees the instance but does NOT remove the httpd URI handlers it added,
+ * and a handler left registered after its protocomm instance is freed is a use-after-free —
+ * `common_post_handler` dereferences the global `pc_httpd` that protocomm_delete just cleared.
+ * On the open setup AP any client could trigger it with one POST to a /prov-* path. */
+static const char *const ENDPOINT_URIS[] = {
+    "/prov-session", "/proto-ver", "/prov-config", "/prov-scan",
+};
+
+/* Remove the endpoints above from the portal's server. Safe to call for a partially-started
+ * transport: an endpoint that was never registered simply reports NOT_FOUND, which is ignored —
+ * this runs on the error path, where the goal is to leave nothing behind, not to report. */
+static void unregister_endpoints(void)
+{
+    if (!s_httpd_handle) return;
+    for (size_t i = 0; i < sizeof(ENDPOINT_URIS) / sizeof(ENDPOINT_URIS[0]); i++) {
+        httpd_unregister_uri_handler((httpd_handle_t)s_httpd_handle, ENDPOINT_URIS[i], HTTP_POST);
+    }
+}
 
 static esp_err_t add_version_endpoint(void)
 {
@@ -154,6 +176,12 @@ esp_err_t prov_softap_prov_start(void *httpd_handle)
     return ESP_OK;
 
 fail:
+    /* Unregister BEFORE deleting the instance. protocomm_delete() does not remove the httpd
+     * handlers the endpoints registered, and those handlers dereference the instance's global
+     * `pc_httpd` — so deleting first would leave a live server routing POSTs to freed memory.
+     * The portal server is still running here (the caller keeps it up), so this path is
+     * reachable, not theoretical. */
+    unregister_endpoints();
     protocomm_delete(s_pc);
     s_pc = NULL;
     return e;
@@ -162,6 +190,11 @@ fail:
 void prov_softap_prov_stop(void)
 {
     if (!s_pc) return;
+    /* Order matters: detach the endpoints and the transport while the instance is still valid,
+     * then free it. protocomm_httpd_stop() only clears the ext-handle flag when the server is
+     * caller-owned, so the endpoints must be removed explicitly rather than relying on the
+     * server going away. */
+    unregister_endpoints();
     protocomm_httpd_stop(s_pc);
     protocomm_delete(s_pc);
     s_pc = NULL;
