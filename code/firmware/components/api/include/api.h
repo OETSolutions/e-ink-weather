@@ -75,6 +75,15 @@ void api_record_values(const char (*ids)[24], const char (*texts)[40],
 /* The partial budget in force, from the stored config. 0 means every refresh is full. */
 int api_partial_limit(void);
 
+/* The configured update interval in seconds, from the stored config (FR-9's "configurable
+ * interval"), defaulting to 900 when it is missing or below the 30 s floor.
+ *
+ * The battery path gets this from the boot path's own parse and hands it to the deep-sleep
+ * timer. The always-on mains path does NOT sleep, so the serve loop calls this itself to
+ * refresh on the same interval — without it a plugged-in device only ever refreshed when the
+ * API asked, and a weather display on mains never showed a new reading. */
+int api_update_seconds(void);
+
 /* How many partial refreshes have happened since the last full one. The refresh path feeds
  * this to refresh_decide() — passing a constant instead would silently disable the partial
  * budget, so the count has to come from the same place api_record_refresh() writes it. */

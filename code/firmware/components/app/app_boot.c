@@ -166,7 +166,9 @@ void app_seed_owm_key(const char *key)
  * what the user sees while they are provisioning. */
 static void app_boot_network_cycle(power_source_t source)
 {
-    app_refresh_tick(source);
+    /* force_full = 0: the boot path has no reason to pre-empt the policy — the pending-request
+     * flag is read inside the tick itself. */
+    app_refresh_tick(source, 0);
 }
 
 void app_boot_run(void)
@@ -337,17 +339,41 @@ void app_serve_loop(void)
      * and the notification is only what makes the wait end promptly. Waking on the flag
      * alone is therefore correct even if a notification is missed — which matters because a
      * missed notification would otherwise leave a refresh request silently unserved. */
+    /* Which refresh the serve loop should be doing, so the periodic and the on-demand paths
+     * agree. api_take_full_refresh() already consumes a pending full request; the periodic
+     * path only fires when that returned 0, so a user-requested full is never downgraded. */
+    int want_full = 0;
+
     for (;;) {
-        /* Long enough that an idle device is not burning CPU, short enough that a refresh
-         * request never feels stuck. Every wake re-reads the flag, so a request that lands
-         * just after a timeout is served on the next pass regardless of the notification. */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        /* The wait is the CONFIGURED interval, floored at 1 s so a zero cannot spin. A
+         * refresh request short-circuits it via the notification, so the interval governs only
+         * the IDLE case — the "has this device gone stale?" timer. */
+        const int wait_s = api_update_seconds();
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((wait_s > 0 ? wait_s : 1) * 1000));
         /* The serve loop is where a plugged-in device spends its life, so this is the most
          * likely place a user actually holds the button. */
         if (factory_reset_poll()) return;
         if (api_take_full_refresh()) {
+            /* A pending request, whether from POST /api/refresh or a config/bitmap change,
+             * forces a FULL refresh: the layout changed and a partial cannot clear the old
+             * glyphs. */
             ESP_LOGI(TAG, "refresh requested via API");
-            app_refresh_tick(POWER_SOURCE_USB);
+            want_full = 1;
+        } else {
+            /* THE TIMER FIRED, so this is the periodic refresh.
+             *
+             * Without this branch a device on mains — the main deployment — refreshed exactly
+             * ONCE, at boot, and never again: update_seconds was consumed only by the
+             * deep-sleep timer on the battery path, and the serve loop's sole trigger was an
+             * API request. Polling every second but re-rendering only on demand means a
+             * plugged-in weather display shows the temperature it woke up with, forever.
+             *
+             * It carries NO full-refresh request, so refresh_decide() runs normally and the
+             * panel gets the partial-refresh behaviour FR-11 asks for. Forcing a full here
+             * would make a mains device flicker a full refresh every interval. */
+            ESP_LOGI(TAG, "periodic refresh (%d s)", wait_s);
+            want_full = 0;
         }
+        app_refresh_tick(POWER_SOURCE_USB, want_full);
     }
 }

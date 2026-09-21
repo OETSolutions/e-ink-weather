@@ -66,6 +66,13 @@ esp_err_t app_render_last_good(void);
  * the frame currently on the glass, so the previous frame is kept in the second framebuffer
  * (partial takes TWO framebuffers; see epd.h).
  *
+ * `force_full` is set by the caller only when it knows the previous frame on the glass is no
+ * longer a valid diff base — a user-requested refresh after a layout or bitmap change. It is
+ * ORed with the request flag this function reads itself, so passing 0 is the normal case. The
+ * periodic mains refresh passes 0 deliberately, because it has no such knowledge and forcing a
+ * full there would make a plugged-in device flicker a full refresh every interval instead of
+ * using FR-11's partials.
+ *
  * Never returns an error that stops the boot: a failed fetch leaves the last good image up
  * and is recorded for /api/status (FR-33). */
-void app_refresh_tick(power_source_t source);
+void app_refresh_tick(power_source_t source, int force_full);

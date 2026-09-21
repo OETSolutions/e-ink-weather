@@ -653,7 +653,7 @@ static void release_next(void)
     s_fb_next = NULL;
 }
 
-void app_refresh_tick(power_source_t source)
+void app_refresh_tick(power_source_t source, int force_full)
 {
     /* The render window's heap profile, printed at the four points that bracket it. With
      * HEAP_TRACE unset these expand to nothing (see heap_trace.h) — they exist so a bench round
@@ -940,7 +940,11 @@ void app_refresh_tick(power_source_t source)
      * `cfg` is already parsed above and layout_config_parse() seeds the same default (5) and the
      * same clamp, so this is the identical number with no allocation. */
     const int limit = cfg.partial_refresh_limit;
-    const int forced_full = api_take_full_refresh();
+    /* A caller-supplied `force_full` is for the case where the caller KNOWS the frame on the
+     * glass is no longer a valid diff base (a layout/bitmap change). The pending request flag
+     * is read here as before, so the periodic mains refresh — which passes 0 — still gets the
+     * ordinary partial/full decision instead of flickering a full refresh every interval. */
+    const int forced_full = force_full || api_take_full_refresh();
     /* "Nothing on the glass" is tracked separately from the partial counter: the counter is
      * reset to 0 BY a full refresh, so treating 0 as "nothing drawn" would make every
      * refresh a full one and kill the partial path entirely. */
@@ -1037,8 +1041,16 @@ void app_refresh_tick(power_source_t source)
     /* A partial needs BOTH frames, so it is only possible when the second buffer was
      * obtained. Otherwise this is a full refresh, which is also what the policy asks for when
      * the static layer changed — a partial against a previous frame from a DIFFERENT image
-     * would diff two unrelated pictures and leave ghosted fragments of the old layout. */
-    if (have_next && kind == REFRESH_PARTIAL && s_shown_slot == slot) {
+     * would diff two unrelated pictures and leave ghosted fragments of the old layout.
+     *
+     * `actual_partial` is recorded rather than re-derived at the log below. The old log
+     * recomputed "partial" from `kind` alone, which is the DECISION and not the ACTION: when
+     * the transient framebuffer was unavailable the decision was still PARTIAL while the else
+     * branch ran a full refresh, so the log said "partial refresh done" and every FR-11 check
+     * read that as a partial. In USB mode that is the common case, so the log was wrong exactly
+     * when it was being relied on. */
+    const int actual_partial = (have_next && kind == REFRESH_PARTIAL && s_shown_slot == slot);
+    if (actual_partial) {
         e = epd_write_frame_partial(s_fb_prev, s_fb_next);
         if (e == ESP_OK) api_record_refresh(0);
     } else {
@@ -1069,7 +1081,7 @@ void app_refresh_tick(power_source_t source)
     HEAP_DIAG("after transient released");
     api_record_page(page_index);
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
-             e == ESP_OK && have_next ? (kind == REFRESH_PARTIAL ? "partial" : "full") : "full",
+             actual_partial ? "partial" : "full",
              page_index, page.n_fields);
 
     /* Back to deep sleep (FR-12). The image is bistable and survives it, and leaving the

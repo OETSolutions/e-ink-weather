@@ -298,6 +298,27 @@ int api_partial_limit(void)
     return ok ? cfg.partial_refresh_limit : 5;
 }
 
+/* The configured update interval, in seconds, for the always-on serve loop.
+ *
+ * On battery this number is consumed by the deep-sleep timer in the boot path and nothing else
+ * needs it. On mains the device never sleeps, and without this the ONLY thing that ever moved
+ * the panel was POST /api/refresh — so a plugged-in weather display sat on whatever it fetched
+ * at boot and never showed a new reading. That is the main deployment (the user runs it plugged
+ * in), so the serve loop needs the same interval the sleep path uses. */
+int api_update_seconds(void)
+{
+    char *json = NULL;
+    if (cfg_store_get(cfg_store_nvs(), &json) != 0) return 900;
+
+    layout_config_t cfg;
+    const int ok = layout_config_parse(json, &cfg) == 0;
+    free(json);
+    /* Refuse a value the parser rejected or one below the documented 30 s floor: a bad read
+     * must not turn the serve loop into a busy refresh loop. */
+    if (!ok || cfg.update_seconds < 30) return 900;
+    return cfg.update_seconds;
+}
+
 /* -------------------------------------------------------------------- small helpers -- */
 
 esp_err_t api_send_json(httpd_req_t *req, const char *body, const char *status)
