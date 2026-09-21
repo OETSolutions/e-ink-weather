@@ -89,8 +89,8 @@ for kx0,kx1,ky0,ky1 in HATCH_KEYS:
 baybox=rprism(BAY[1]-BAY[0],BAY[3]-BAY[2],3.0,BAY[0],BAY[2],-0.5,m.COVER_T+1.0)
 inner=hatch.common(Part.makeBox(400,400,m.COVER_T+0.1,App.Vector(-200,-200,0.0)))
 _lip=m.HATCH_LIP_X0-0.05
-lipbox=Part.makeBox((m.HATCH_LIP_X1-_lip)+0.1,(m.HATCH_KEY1_Y1-m.HATCH_KEY1_Y0)+0.1,
-                    m.HATCH_LIP_T+0.1,App.Vector(_lip,m.HATCH_KEY1_Y0-0.05,m.HATCH_LIP_Z0-0.05))
+lipbox=Part.makeBox((m.HATCH_LIP_X1-_lip)+0.1,(m.HATCH_LIP_Y1-m.HATCH_LIP_Y0)+0.1,
+                    m.HATCH_LIP_T+0.1,App.Vector(_lip,m.HATCH_LIP_Y0-0.05,m.HATCH_LIP_Z0-0.05))
 esc=inner.cut(baybox.fuse(notch).fuse(lipbox)).Volume
 print("  hatch inner portion outside bay+notches+lip: %.4f mm3 %s"%(esc,"OK" if esc<=0.001 else "FAIL"))
 if esc>0.001:fails.append("hatch projects past the bay without a notch")
@@ -160,7 +160,14 @@ if lip.Volume<=20: fails.append("no retention lip on the screw-opposite edge")
 # over SOLID cover material, so lifting the hatch drives the lip into the cover. Measure that:
 # sample the lip's own XY footprint and count how much of it is over solid (un-notched) cover.
 _bx0,_bx1 = m.HATCH_LIP_X0,m.HATCH_LIP_X1
-_by0,_by1 = m.HATCH_KEY1_Y0,m.HATCH_KEY1_Y1
+_by0,_by1 = m.HATCH_LIP_Y0,m.HATCH_LIP_Y1
+# The lip must be NARROWER than the hatch edge it hooks under (user's requirement). Compare it
+# against the hatch's own inner-portion Y span, which is the edge that meets the cover.
+_edge_y = m.HATCH_FLANGE_Y1-m.HATCH_FLANGE_Y0
+_narrow = (_by1-_by0) < _edge_y
+print("  lip Y width %.2f mm vs hatch edge %.2f mm -> narrower: %s"%(
+      _by1-_by0, _edge_y, "OK" if _narrow else "FAIL"))
+if not _narrow: fails.append("retention lip is not narrower than the hatch edge")
 _n=solid_pts=0
 _x=_bx0+0.1
 while _x<_bx1:

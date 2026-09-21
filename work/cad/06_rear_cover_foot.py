@@ -375,7 +375,14 @@ HATCH_LIP_X0 = 17.90                                # outer tip, under the solid
 HATCH_LIP_X1 = 22.50                                # bay wall; the root laps onto the plug
 HATCH_LIP_T = 1.50                                  # thick: installed by tilt, never flexed
 HATCH_LIP_Z0 = 3.00                                 # sits on the cover's inside face
-HATCH_LIP_CHAMFER = 0.50                            # lead-in so the tilt is self-guiding
+# NARROWER THAN THE HATCH EDGE. User: "The inner hookin lip needs to be narrower than the edge
+# on the hatch." The hatch's inner portion spans Y 68.25..91.75 (23.50 mm). The lip is inset
+# HATCH_LIP_INSET per side, so it is clearly a narrower tongue on the edge rather than a
+# continuation of the full edge -- and it stays well inside the bay's r3 corners. Kept simple:
+# a plain rectangle, no tip shaping.
+HATCH_LIP_INSET = 3.00                              # per side -> 17.50 mm wide vs the 23.50 mm edge
+HATCH_LIP_Y0 = 68.25 + HATCH_LIP_INSET              # 71.25
+HATCH_LIP_Y1 = 91.75 - HATCH_LIP_INSET              # 88.75
 # The notches are each key GROWN by the clearance on every side and cut through the cover.
 HATCH_KEYS=((HATCH_KEY1_X0,HATCH_KEY1_X1,HATCH_KEY1_Y0,HATCH_KEY1_Y1),
             (HATCH_KEY2_X0,HATCH_KEY2_X1,HATCH_KEY2_Y0,HATCH_KEY2_Y1))
@@ -704,15 +711,10 @@ def build_hatch():
     #       couple of degrees, then swing the +X end down and drive the screw. NO bending at all.
     # (b) is how a lipped cover normally goes on, and it lets the lip be a solid block with a
     # chamfered lead-in: thick, and nothing that can snap.
-    lip = rprism(HATCH_LIP_X1-HATCH_LIP_X0, (HATCH_KEY1_Y1-HATCH_KEY1_Y0), 1.2,
-                 HATCH_LIP_X0, HATCH_KEY1_Y0, HATCH_LIP_Z0, HATCH_LIP_T)
-    # Chamfer the lip's own tip so the tilt is self-guiding rather than a butt joint.
-    ch = Part.makeBox(HATCH_LIP_CHAMFER+0.4, (HATCH_KEY1_Y1-HATCH_KEY1_Y0)+0.4,
-                      HATCH_LIP_CHAMFER+0.4,
-                      App.Vector(HATCH_LIP_X0-0.2, HATCH_KEY1_Y0-0.2, HATCH_LIP_Z0-0.2))
-    ch.rotate(App.Vector(HATCH_LIP_X0, HATCH_KEY1_Y0, HATCH_LIP_Z0),
-              App.Vector(0,1,0), -45.0)
-    lip = lip.cut(ch)
+    # A plain rectangle: no tip chamfer, no shaping (user: "get rid of the weird shapes on the
+    # tip, no need"). The corner radius just matches the rounded-rect convention used elsewhere.
+    lip = rprism(HATCH_LIP_X1-HATCH_LIP_X0, HATCH_LIP_Y1-HATCH_LIP_Y0, 1.2,
+                 HATCH_LIP_X0, HATCH_LIP_Y0, HATCH_LIP_Z0, HATCH_LIP_T)
     hatch = hatch.fuse(lip)
 
     # Single screw: clearance through the tab, the plug and the lip, counterbored for the
