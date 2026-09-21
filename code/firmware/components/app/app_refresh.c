@@ -246,7 +246,10 @@ esp_err_t app_render_last_good(void)
      * which page was on the glass when the device slept. Page 0 is the defined default (a
      * single-page layout renders identically at any index). */
     int slot = -1;
-    if (load_static_layer(work, 0, &slot) != 0) return ESP_ERR_INVALID_STATE;
+    if (load_static_layer(work, 0, &slot) != 0) {
+        if (have_next) release_next();      /* see the leak note in app_refresh_tick() */
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* No live values yet (this runs before the network), so compose with the static layer
      * alone. The frame is what the previous power cycle left, which is the point: FR-29
@@ -254,6 +257,7 @@ esp_err_t app_render_last_good(void)
     canvas_t c;
     canvas_init(&c, work);
     if (render_compose_stream(&c, flash_reader, work, NULL, NULL, 0) != 0) {
+        if (have_next) release_next();
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -261,6 +265,7 @@ esp_err_t app_render_last_good(void)
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "panel write failed: %s", esp_err_to_name(e));
         api_note_error("render: panel write failed");
+        if (have_next) release_next();
         return e;
     }
 
@@ -890,13 +895,22 @@ void app_refresh_tick(power_source_t source)
      * old layout on the glass. `slot` changes whenever the bitmap changes, and the partial path
      * below requires s_shown_slot == slot for exactly this reason. */
     int slot = -1;
-    if (load_static_layer(work, page_index, &slot) != 0) return;
+    if (load_static_layer(work, page_index, &slot) != 0) {
+        /* EVERY exit after acquire_next() MUST give the transient buffer back. It is 76.4 KiB
+         * of a 234 KiB part, so leaking even one costs a whole framebuffer's worth of the
+         * largest contiguous block — enough that the NEXT refresh cannot allocate its resident
+         * frame and silently keeps the old image on the glass. That is the "reports success,
+         * panel does nothing" failure this path must never produce. */
+        if (have_next) release_next();
+        return;
+    }
 
     canvas_t c;
     canvas_init(&c, work);
     if (render_compose_stream(&c, flash_reader, work,
                               page.fields, page.value_ptrs, page.n_fields) != 0) {
         ESP_LOGE(TAG, "compose failed");
+        if (have_next) release_next();
         return;
     }
 
@@ -907,6 +921,7 @@ void app_refresh_tick(power_source_t source)
     if (epd_wake() != ESP_OK) {
         ESP_LOGE(TAG, "panel did not wake");
         api_note_error("render: panel did not wake");
+        if (have_next) release_next();
         return;
     }
 
@@ -930,6 +945,7 @@ void app_refresh_tick(power_source_t source)
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "panel update failed: %s", esp_err_to_name(e));
         api_note_error("render: panel update failed");
+        if (have_next) release_next();
         return;
     }
 

@@ -59,7 +59,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-const OWM_FIELDS = ['temp', 'min', 'max', 'wind', 'humidity', 'condition'] as const;
+const OWM_FIELDS = ['temp', 'min', 'max', 'wind', 'humidity', 'condition', 'city'] as const;
 const KINDS: { value: DataSourceKind; label: string }[] = [
   { value: 'owm-current', label: 'Current weather' },
   { value: 'owm-daily', label: 'Forecast' },

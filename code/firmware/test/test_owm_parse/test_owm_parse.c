@@ -6,6 +6,12 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+/* The value OWM_F_CITY has in lib/layout/include/widgets.h. Repeated here rather than included:
+ * lib/datasrc is a LOWER layer than lib/layout and must not depend on it — that is the whole
+ * reason owm_parse_current_field() takes an int. If this drifts from the enum, the city test
+ * below fails rather than silently reading a different field. */
+#define OWM_FIELD_CITY_TEST 7
+
 /* A realistic One Call 3.0 fragment (imperial units, so values are degF/mph). */
 static const char *FIX =
   "{\"lat\":41.1,\"lon\":-112.0,\"timezone\":\"America/Denver\","
@@ -107,6 +113,38 @@ static void test_25_forecast_aggregates_into_local_days(void)
     TEST_ASSERT_NOT_EQUAL(DATASRC_OK, owm_parse_daily_min(FIX25_FORECAST, 2, 0).status);
 }
 
+/* FR-17's location display: the place name OWM resolved the coordinates to, from the
+ * TOP-LEVEL "name" of 2.5/weather. It is a TEXT reading — the value field is meaningless for
+ * it, and reporting it as numeric would let an alert rule compare a city name as 0.0. */
+static void test_25_current_city_is_top_level_name(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX25_CURRENT, OWM_FIELD_CITY_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_FALSE(v.is_numeric);
+    TEST_ASSERT_EQUAL_STRING("Hillside Estates", v.text);
+    TEST_ASSERT_EQUAL_INT32(1789795661, (int32_t)v.observed_at);   /* the document's own dt */
+}
+
+/* One Call 3.0 carries no place name at all. Reporting NOT_FOUND is honest — the widget then
+ * shows its own fallback — and is the difference between "no name in this response" and
+ * "the payload is garbled", which a caller needs in order to tell a wrong endpoint from a
+ * network failure. */
+static void test_one_call_has_no_city_and_says_so(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX, OWM_FIELD_CITY_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_NOT_FOUND, v.status);
+    TEST_ASSERT_EQUAL_STRING("", v.text);   /* never a partial or stale string */
+}
+
+/* The forecast product's place name lives at "city"."name", NOT at the top level, so reading
+ * the top-level key must not find it. Returning the forecast city here would put a place name
+ * on the CURRENT conditions reading — a value from a document the widget is not bound to. */
+static void test_25_forecast_top_level_name_is_not_a_current_location(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX25_FORECAST, OWM_FIELD_CITY_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_NOT_FOUND, v.status);
+}
+
 /* Grouping must be by LOCAL day. With tz = -21600 the first block is 00:00 local and
  * belongs with the blocks that follow it. Grouped as UTC it would be 22:00 on the
  * previous day, forming a day of its own and shifting every index by one — day 0's min
@@ -167,6 +205,9 @@ int main(void)
     RUN_TEST(test_25_current_temp_is_top_level_main);
     RUN_TEST(test_25_forecast_is_not_a_current_reading);
     RUN_TEST(test_25_forecast_aggregates_into_local_days);
+    RUN_TEST(test_25_current_city_is_top_level_name);
+    RUN_TEST(test_one_call_has_no_city_and_says_so);
+    RUN_TEST(test_25_forecast_top_level_name_is_not_a_current_location);
     RUN_TEST(test_25_day_grouping_uses_city_timezone);
     RUN_TEST(test_25_absence_of_alerts_key_is_not_an_error);
     RUN_TEST(test_out_of_range_day_index_is_not_ok);

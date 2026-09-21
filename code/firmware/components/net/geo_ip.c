@@ -27,6 +27,12 @@
 #include "geoloc.h"
 #include "net_http.h"
 #include "nvs_keys.h"
+/* For api_location_is_set(), the ONE definition of "is this a real location or the app's
+ * unchosen sentinel". This file must not re-derive that rule: it decides whether a stored
+ * 0,0 is a place, and the API decides whether to store one, so the two disagreeing is exactly
+ * how the sentinel got persisted in the first place. `shared` is already a REQUIRES of this
+ * component (for nvs_keys.h), so this is the same dependency, not a new one. */
+#include "api_wire.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -76,11 +82,24 @@ int geo_ip_fill_if_unset(void)
     nvs_handle_t h;
     if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return 0;
 
-    /* Only fill a MISSING location. A stored 0,0 is a real (if unlikely) coordinate and is
-     * left alone, because it can only have been written deliberately by the user. */
-    double existing = 0;
-    size_t llen = sizeof(existing);
-    if (nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &existing, &llen) == ESP_OK) {
+    /* Only fill a MISSING location — but (0,0) COUNTS AS MISSING.
+     *
+     * That is the app's "no pin placed yet" sentinel (`emptyConfig()` and the default layout
+     * both ship latitude 0, longitude 0), not somewhere anyone chose. Treating it as a real
+     * position was a live defect: a Save before placing a pin stored 0,0, this function then
+     * saw a stored coordinate and never filled it, and the panel sat on "Globe" — OWM's name
+     * for those coordinates — for good. The write is now refused at the source too
+     * (api_location_is_set() in lib/apifmt), and this check is what REPAIRS a device that was
+     * pinned before that fix: the next refresh fills it in as if it had never been set.
+     *
+     * A genuine position is never exactly 0,0 in both components, so nothing the user really
+     * chose is overwritten. Any other stored coordinate still wins outright. */
+    double elat = 0, elon = 0;
+    size_t llen = sizeof(elat);
+    const int have_lat = (nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &elat, &llen) == ESP_OK);
+    llen = sizeof(elon);
+    const int have_lon = (nvs_get_blob(h, DEVENV_KEY_LOC_LON, &elon, &llen) == ESP_OK);
+    if (have_lat && have_lon && api_location_is_set(elat, elon)) {
         nvs_close(h);
         return 0;   /* the user has already set a location; nothing to do */
     }
@@ -88,6 +107,16 @@ int geo_ip_fill_if_unset(void)
     double lat = 0, lon = 0;
     char city[48] = {0};
     if (geo_ip_lookup(&lat, &lon, city, sizeof(city)) != ESP_OK) {
+        nvs_close(h);
+        return 0;
+    }
+
+    /* Refuse to store the lookup's own 0,0. ip-api.com answers 200 with {"status":"fail"} for a
+     * rejected query (see lib/geoloc), and while geoloc_parse() rejects that case, a parse that
+     * succeeded with both components exactly zero would otherwise re-pin the device to the same
+     * sentinel this function exists to clear — writing it back and looping forever. */
+    if (!api_location_is_set(lat, lon)) {
+        ESP_LOGW(TAG, "location lookup returned no usable position; leaving it unset");
         nvs_close(h);
         return 0;
     }

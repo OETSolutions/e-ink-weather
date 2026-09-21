@@ -509,11 +509,24 @@ static void note_config_location(const char *json)
     const cJSON *la = cJSON_IsObject(loc) ? cJSON_GetObjectItemCaseSensitive(loc, "latitude") : NULL;
     const cJSON *lo = cJSON_IsObject(loc) ? cJSON_GetObjectItemCaseSensitive(loc, "longitude") : NULL;
 
-    /* Type- and range-checked, for the same reason the portal checks: this value is about to
-     * be interpolated into an OWM URL, so a bogus coordinate must not get that far. */
+    /* (0,0) MEANS "NO LOCATION CHOSEN" IN THE APP, and it must not be stored as a real one.
+     *
+     * The app's default document ships exactly this (`emptyConfig()` and the default layout both
+     * start at latitude 0, longitude 0) — that is the Gulf of Guinea, and no one puts a pin
+     * there on purpose. But the config PUT runs on every Save, so a user who saves before
+     * placing a pin would persist 0,0 as a DELIBERATE location — and geo_ip_fill_if_unset()
+     * treats any stored coordinate as the user's own and never overwrites it. The device would
+     * then be pinned to 0,0 for good, the autofill that exists to learn the real city would be
+     * disabled, and the panel would read "Globe" (OWM's name for those coordinates) with no
+     * indication anything was wrong. Verified on the bench: exactly that, after a Save.
+     *
+     * Treating it as absent leaves the stored location alone, so the next refresh fills it from
+     * the public IP — the same "only fill a blank" rule geo_ip.c already documents.
+     *
+     * The rule itself is api_location_is_set() in lib/apifmt, where it is host-tested: it has to
+     * agree exactly with the app's sentinel, and this handler is not testable off-device. */
     if (cJSON_IsNumber(la) && cJSON_IsNumber(lo) &&
-        la->valuedouble >= -90.0 && la->valuedouble <= 90.0 &&
-        lo->valuedouble >= -180.0 && lo->valuedouble <= 180.0) {
+        api_location_is_set(la->valuedouble, lo->valuedouble)) {
         /* Reuse the one extra-config writer rather than opening NVS again here — it already
          * owns the "write only what was supplied" rule for every field it stores. */
         if (prov_store_extra_config(NULL, NULL, NULL,

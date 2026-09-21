@@ -16,6 +16,7 @@ const OWM_FIELD_NAMES: Record<string, string> = {
   humidity: 'humidity',
   condition: 'conditions',
   icon: 'icon',
+  city: 'location',
 };
 
 /** Ordinal-ish day label, 1-based for humans: dayIndex 0 reads as "day 1". */

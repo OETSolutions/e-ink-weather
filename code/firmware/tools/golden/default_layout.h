@@ -15,7 +15,7 @@ typedef struct {
     int font_id;
 } static_label_t;
 
-#define GOLDEN_LABEL_COUNT 6
+#define GOLDEN_LABEL_COUNT 7
 static const static_label_t GOLDEN_LABELS[GOLDEN_LABEL_COUNT] = {
     {   40,   32, "NOW", FONT_BODY },
     {  440,   32, "HALLWAY", FONT_BODY },
@@ -23,6 +23,7 @@ static const static_label_t GOLDEN_LABELS[GOLDEN_LABEL_COUNT] = {
     {  440,  164, "OUTDOOR", FONT_BODY },
     {  680,  164, "TODAY LOW", FONT_BODY },
     {  680,  296, "TOMORROW HIGH", FONT_BODY },
+    {   40,  308, "LOCATION", FONT_BODY },
 };
 
 /* Dividers: y, thickness, inset from each edge. */
@@ -35,11 +36,12 @@ static const static_rule_t GOLDEN_RULES[GOLDEN_RULE_COUNT] = {
 };
 
 /* The dynamic value boxes the firmware stamps. */
-#define GOLDEN_FIELD_COUNT 9
+#define GOLDEN_FIELD_COUNT 10
 static const value_field_t GOLDEN_FIELDS[GOLDEN_FIELD_COUNT] = {
     { .x = 40, .y = 64, .w = 360, .h = 120, .align_h = 'L', .align_v = 'T', .font_id = FONT_VALUE },
     { .x = 40, .y = 196, .w = 360, .h = 50, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
     { .x = 40, .y = 258, .w = 200, .h = 50, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
+    { .x = 40, .y = 340, .w = 360, .h = 44, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
     { .x = 440, .y = 64, .w = 200, .h = 90, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
     { .x = 440, .y = 196, .w = 200, .h = 90, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
     { .x = 680, .y = 64, .w = 200, .h = 90, .align_h = 'L', .align_v = 'T', .font_id = FONT_BODY },
@@ -49,7 +51,7 @@ static const value_field_t GOLDEN_FIELDS[GOLDEN_FIELD_COUNT] = {
 };
 
 static const char *const GOLDEN_VALUES[GOLDEN_FIELD_COUNT] = {
-    "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4",
+    "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4", "68.4",
 };
 
 /* Build the static layer the web app is expected to push: white, with labels and

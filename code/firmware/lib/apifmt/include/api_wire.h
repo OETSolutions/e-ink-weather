@@ -40,3 +40,18 @@
  * a correct client, and rejecting an encoded value fails closed rather than guessing at
  * the intended number. */
 int api_query_u32(const char *query, const char *key, uint32_t *out);
+
+/* Is (lat, lon) a location the user actually chose?
+ *
+ * Returns 0 (false) for the app's "not chosen yet" sentinel — both components exactly 0 —
+ * and for anything out of range. Returns 1 for a usable coordinate.
+ *
+ * WHY THIS IS A FUNCTION AND NOT AN INLINE COMPARISON IN THE HANDLER: the app ships its
+ * default document at (0, 0) and the device persists whatever the document carries on every
+ * Save, while geo_ip_fill_if_unset() treats ANY stored coordinate as the user's own and will
+ * never overwrite it. So the sentinel and the "real location" test have to agree exactly, or a
+ * Save before placing a pin pins the device to the Gulf of Guinea for good and silently
+ * disables the very autofill that exists to learn the real city — verified on the bench,
+ * where the panel read "Globe" (OWM's name for 0,0) with nothing to indicate a problem. That
+ * agreement is worth a test, and the HTTP handler it lives behind is not host-testable. */
+int api_location_is_set(double lat, double lon);

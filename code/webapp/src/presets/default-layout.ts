@@ -83,6 +83,17 @@ export function defaultLayout(): Config {
         { op: 'gte', threshold: 40, level: 'severe' },
       ],
     }),
+    /* Location, in the gap under the wind reading (FR-17's "location/zip display"). It is the
+     * place name OWM resolves the configured coordinates to — the same coordinates the lat/lon
+     * map picker sets — so it is a statement about WHERE the readings come from, which is worth
+     * having on the glass when the user has moved the map pin. Not bound to the config's zip
+     * code: the device never receives the zip (it lives only in the app), and a zip the device
+     * cannot see would be a field that is silently always empty. */
+    value('owm_city', 40, 340, 360, 44, {
+      binding: { kind: 'owm-current', owmField: 'city' },
+      format: { fallback: 'LOCATION UNKNOWN' },
+      font: { size: BODY_PX, align: 'left', valign: 'top' },
+    }),
 
     /* Indoor readings, right column: the two entities the user named. Labelled by the static
      * layer, so no text field is needed here — the firmware draws values only. */
@@ -166,6 +177,7 @@ export const DEFAULT_LABELS = [
   { x: 440, y: 164, text: 'OUTDOOR', font: 0 },
   { x: 680, y: 164, text: 'TODAY LOW', font: 0 },
   { x: 680, y: 296, text: 'TOMORROW HIGH', font: 0 },
+  { x: 40, y: 308, text: 'LOCATION', font: 0 },
 ] as const;
 
 /** Dividers, inset from the panel edge so they read as section rules. */

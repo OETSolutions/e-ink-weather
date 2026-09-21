@@ -53,6 +53,7 @@ static owm_field_t owm_field_of(const char *s)
     if (strcmp(s, "humidity") == 0) return OWM_F_HUMIDITY;
     if (strcmp(s, "condition") == 0) return OWM_F_CONDITION;
     if (strcmp(s, "icon") == 0) return OWM_F_ICON;
+    if (strcmp(s, "city") == 0) return OWM_F_CITY;
     return OWM_F_TEMP;
 }
 

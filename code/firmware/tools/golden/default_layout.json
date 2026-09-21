@@ -11,7 +11,8 @@
     { "x": 680, "y": 32, "text": "TODAY HIGH", "font": 0 },
     { "x": 440, "y": 164, "text": "OUTDOOR", "font": 0 },
     { "x": 680, "y": 164, "text": "TODAY LOW", "font": 0 },
-    { "x": 680, "y": 296, "text": "TOMORROW HIGH", "font": 0 }
+    { "x": 680, "y": 296, "text": "TOMORROW HIGH", "font": 0 },
+    { "x": 40, "y": 308, "text": "LOCATION", "font": 0 }
   ],
   "rules": [
     { "y": 140, "thickness": 2, "inset": 40 },
@@ -21,6 +22,7 @@
     { "x": 40, "y": 64, "w": 360, "h": 120, "alignH": "L", "alignV": "T", "font": 1, "sample": "68.4" },
     { "x": 40, "y": 196, "w": 360, "h": 50, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },
     { "x": 40, "y": 258, "w": 200, "h": 50, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },
+    { "x": 40, "y": 340, "w": 360, "h": 44, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },
     { "x": 440, "y": 64, "w": 200, "h": 90, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },
     { "x": 440, "y": 196, "w": 200, "h": 90, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },
     { "x": 680, "y": 64, "w": 200, "h": 90, "alignH": "L", "alignV": "T", "font": 0, "sample": "68.4" },

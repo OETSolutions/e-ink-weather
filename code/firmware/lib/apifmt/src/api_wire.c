@@ -55,3 +55,15 @@ int api_query_u32(const char *query, const char *key, uint32_t *out)
         }
     }
 }
+
+int api_location_is_set(double lat, double lon)
+{
+    /* NaN fails every comparison, so a malformed coordinate is rejected by the range checks
+     * rather than slipping through as "not the sentinel". */
+    if (!(lat >= -90.0 && lat <= 90.0)) return 0;
+    if (!(lon >= -180.0 && lon <= 180.0)) return 0;
+    /* Both parts zero is the app's "not chosen yet" default, not a place. Compare exactly:
+     * this is a sentinel, not a threshold, and the app writes literal 0s. */
+    if (lat == 0.0 && lon == 0.0) return 0;
+    return 1;
+}

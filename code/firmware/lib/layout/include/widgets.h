@@ -38,7 +38,10 @@ typedef enum {
     OWM_F_WIND,
     OWM_F_HUMIDITY,
     OWM_F_CONDITION,
-    OWM_F_ICON
+    OWM_F_ICON,
+    /* The place name OWM resolved the coordinates to (FR-17's "location/zip display"). Text,
+     * like CONDITION — a widget bound to it draws words, not a number. */
+    OWM_F_CITY
 } owm_field_t;
 
 typedef struct {

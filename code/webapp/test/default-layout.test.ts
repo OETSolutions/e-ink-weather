@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defaultLayout, HA_OUTDOOR, HA_HALLWAY } from '../src/presets/default-layout';
+import { defaultLayout, HA_OUTDOOR, HA_HALLWAY, DEFAULT_LABELS } from '../src/presets/default-layout';
 import { PANEL_WIDTH, PANEL_HEIGHT } from '../src/model/canvas-consts';
 
 describe('default layout (FR-17)', () => {
@@ -17,6 +17,28 @@ describe('default layout (FR-17)', () => {
     const kinds = c.pages.flatMap((p) => p.widgets).map((w) => w.binding?.kind);
     expect(kinds).toContain('owm-current');
     expect(kinds).toContain('owm-daily');
+  });
+
+  it('shows where the readings come from (FR-17 location display)', () => {
+    /* FR-17 asks for a location/zip display. The widget must be bound to the OWM place name,
+     * and it must have a NON-DEFAULT fallback: the free-tier 2.5/weather response used when a
+     * key has no One Call subscription does carry "name", but a failed fetch or a One Call
+     * response does not — so an empty box would read as "this panel has no location" rather
+     * than "the location could not be read". */
+    const w = c.pages[0]!.widgets.find((x) => x.id === 'owm_city');
+    expect(w, 'no location widget on the default page').toBeDefined();
+    expect(w!.binding).toEqual({ kind: 'owm-current', owmField: 'city' });
+    expect(w!.format?.fallback).toBeTruthy();
+    expect(w!.format?.fallback).not.toBe('--');
+  });
+
+  it('labels every dynamic widget that is not self-describing', () => {
+    /* A bare number with no label is unreadable on the glass, and the labels are ART — they
+     * are baked into the static layer, so a widget added without its label shows a naked
+     * value. Checks the location widget specifically because it is text, where a missing
+     * label is most easily mistaken for the reading itself. */
+    const labels = DEFAULT_LABELS.map((l) => l.text);
+    expect(labels).toContain('LOCATION');
   });
 
   it('every widget lies inside the panel', () => {

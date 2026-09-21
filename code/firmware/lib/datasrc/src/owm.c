@@ -166,6 +166,7 @@ int owm_has_alerts(const char *json)
 #define OWM_F_HUMIDITY_  4
 #define OWM_F_CONDITION_ 5
 #define OWM_F_ICON_      6
+#define OWM_F_CITY_      7
 
 /* Copy `src` into out.text as a TEXT result. A string too long for the 64-byte field is
  * TRUNCATED rather than rejected: a long place name or condition is still worth showing, and
@@ -219,6 +220,17 @@ datasrc_value_t owm_parse_current_field(const char *json, int field, long now_un
     if (field == OWM_F_ICON_) {
         cJSON *i = obj_item(weather, "icon");
         out = text_result(out, cJSON_IsString(i) ? i->valuestring : NULL, obs);
+        cJSON_Delete(root);
+        return out;
+    }
+    if (field == OWM_F_CITY_) {
+        /* The place name OWM resolved the request's coordinates to (FR-17's "location/zip
+         * display"). It is a TOP-LEVEL "name" on 2.5/weather — not under "main" or "sys" — and
+         * One Call 3.0 does not carry it at all, so a One Call response reports NOT_FOUND and
+         * the widget shows its fallback. That is correct rather than a bug: there is no name to
+         * show, and inventing one (from the zip, say) would be a different, stale value. */
+        cJSON *n = obj_item(root, "name");
+        out = text_result(out, cJSON_IsString(n) ? n->valuestring : NULL, obs);
         cJSON_Delete(root);
         return out;
     }

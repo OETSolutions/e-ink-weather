@@ -24,7 +24,7 @@ export interface DataBinding {
   entityId?: string;
   /** For 'owm-daily', the 0-based forecast day and which value. */
   dayIndex?: number;
-  owmField?: 'temp' | 'min' | 'max' | 'wind' | 'humidity' | 'condition' | 'icon';
+  owmField?: 'temp' | 'min' | 'max' | 'wind' | 'humidity' | 'condition' | 'icon' | 'city';
 }
 
 export interface AlertRule {

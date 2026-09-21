@@ -158,6 +158,52 @@ static void test_the_real_upload_query_parses(void)
     TEST_ASSERT_EQUAL_UINT32(3126173357u, crc);
 }
 
+/* ---- api_location_is_set(): the app's "not chosen yet" sentinel ---- */
+
+/* The case that was a live defect: the app ships its default document at (0,0), and storing
+ * that would pin the device to the Gulf of Guinea permanently, because the geo-IP autofill
+ * only ever fills a BLANK location. */
+static void test_sentinel_origin_is_not_a_location(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(0.0, 0.0));
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(-0.0, 0.0));
+}
+
+/* A real position is accepted, including ones that share a single zero component — only BOTH
+ * being zero is the sentinel, so the equator and the prime meridian stay usable. */
+static void test_a_real_position_is_accepted(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(45.6789012, -123.456789));
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(0.0, -111.8));
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(41.8, 0.0));
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(0.000001, 0.0));
+}
+
+/* Out of range is rejected, so a bogus coordinate never reaches the OWM URL. */
+static void test_out_of_range_is_rejected(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(90.5, 10.0));
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(-90.5, 10.0));
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(10.0, 180.5));
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(10.0, -180.5));
+}
+
+/* The exact bounds are legal positions. */
+static void test_the_bounds_are_legal(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(90.0, 180.0));
+    TEST_ASSERT_EQUAL_INT(1, api_location_is_set(-90.0, -180.0));
+}
+
+/* NaN must be rejected rather than slipping through as "not the sentinel" — NaN fails every
+ * comparison, so an unguarded `lat == 0 && lon == 0` check would let it pass as a location. */
+static void test_nan_is_not_a_location(void)
+{
+    const double nan_v = 0.0 / 0.0;
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(nan_v, 10.0));
+    TEST_ASSERT_EQUAL_INT(0, api_location_is_set(10.0, nan_v));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -177,5 +223,10 @@ int main(void)
     RUN_TEST(test_tolerates_a_trailing_ampersand);
     RUN_TEST(test_bad_arguments_are_rejected);
     RUN_TEST(test_the_real_upload_query_parses);
+    RUN_TEST(test_sentinel_origin_is_not_a_location);
+    RUN_TEST(test_a_real_position_is_accepted);
+    RUN_TEST(test_out_of_range_is_rejected);
+    RUN_TEST(test_the_bounds_are_legal);
+    RUN_TEST(test_nan_is_not_a_location);
     return UNITY_END();
 }
