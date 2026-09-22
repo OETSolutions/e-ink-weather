@@ -14,7 +14,7 @@
 import { it } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { defaultLayout, DEFAULT_LABELS, DEFAULT_RULES } from '../src/presets/default-layout';
-import { fontIdFor } from '../src/canvas/face';
+import { sizeFor } from '../src/canvas/face';
 import { isIconWidget } from '../src/canvas/widget-kind';
 
 /** The value used for every sample. A number with a tenth, so a decimals/rounding mistake is
@@ -41,9 +41,13 @@ it.skipIf(!process.env.GOLDEN_OUT)('emits the golden fixture for the firmware', 
       x: w.x, y: w.y, w: w.w, h: w.h,
       alignH: w.font?.align === 'center' ? 'C' : w.font?.align === 'right' ? 'R' : 'L',
       alignV: w.font?.valign === 'middle' ? 'M' : w.font?.valign === 'bottom' ? 'B' : 'T',
-      /* The SAME face rule the renderer and the editor use. Keying off size here while the
-       * editor keyed off role is how the two drifted before. */
-      font: fontIdFor(w),
+      /* The PIXEL SIZE, not a face index. A face index is stable only while the ladder has a
+       * fixed length: index 0 meant "the body face" with two faces, and the moment the ladder
+       * grew it meant 16 px instead of 20 — every golden field silently changed face, and the
+       * failure surfaced hundreds of pixels away from the cause. A size means the same thing
+       * however the ladder changes, and each side resolves it with its own copy of the one
+       * shared nearest-face rule (faceIdForPx / font_face_for_px). */
+      font: sizeFor(w),
       /* 'i' for an icon box so the firmware's golden renders a picture, not the code as text. */
       kind: isIconWidget(w) ? 'i' : 't',
       sample: isIconWidget(w) ? ICON_SAMPLE : SAMPLE,

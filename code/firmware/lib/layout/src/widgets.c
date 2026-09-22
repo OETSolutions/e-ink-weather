@@ -9,11 +9,11 @@
 #define WGT_PANEL_W 920
 #define WGT_PANEL_H 680
 
-/* Mirrors webapp/src/canvas/face.ts:VALUE_THRESHOLD_PX — the size at or above which the big
- * face is chosen, halfway between the two faces the panel actually has. ONE rule for the whole
- * project: the editor keyed off `role` while the golden fixture keyed off `size > 48`, so a
- * widget could preview in one face and be stamped in another. */
-#define WGT_VALUE_THRESHOLD_PX 48
+/* Mirrors webapp/src/canvas/face.ts:fontIdFor — ONE rule for the whole project, so a widget
+ * cannot preview in one face and be stamped in another. The rule used to be a fixed 48 px
+ * threshold between the two faces that existed; it is now NEAREST ladder entry by ratio, which
+ * is the same function font_face_for_px() the renderer would use. Keying it here on a threshold
+ * again would let the device and the preview disagree the moment the ladder changes. */
 
 static int clamp_int(int v, int lo, int hi)
 {
@@ -209,7 +209,7 @@ static int parse_one(cJSON *o, layout_widget_t *w)
     if (cJSON_IsObject(font)) {
         cJSON *size = cJSON_GetObjectItemCaseSensitive(font, "size");
         if (cJSON_IsNumber(size)) {
-            w->font_id = (size->valuedouble >= WGT_VALUE_THRESHOLD_PX) ? FONT_VALUE : FONT_BODY;
+            w->font_id = font_face_for_px(size->valuedouble);
         }
         cJSON *ah = cJSON_GetObjectItemCaseSensitive(font, "align");
         if (cJSON_IsString(ah)) w->align_h = align_h_of(ah->valuestring);

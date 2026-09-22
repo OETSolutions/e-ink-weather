@@ -18,6 +18,7 @@ import {
   setPx,
 } from './bitmap';
 import { FACES, type Face, type Glyph } from './atlas-data';
+import { faceIdForPx } from './face';
 import { WEATHER_ICONS } from './weather-icons-data';
 import { weatherIconIndex, WeatherIcon } from './weather-icons';
 
@@ -249,14 +250,18 @@ export function renderPage(
 
 /** Labels and chrome the web app bakes into the static layer.
  *
- * The property is `font`, not `fontId`, to match the `font` key the firmware's golden
- * generator emits for BOTH labels and fields — one spelling across the fixture, so a consumer
- * cannot read the right key for one and silently miss the other. (It did: renaming this to
- * `fontId` made every label's font undefined, and the labels simply never drew.) */
+ * `font` is a PIXEL SIZE, not a face index, and that distinction is load-bearing. The fixture
+ * and the presets used to carry a bare face index, which was stable only while the panel had
+ * exactly two faces: index 0 meant "the body face". When the ladder grew, index 0 became the
+ * 16 px face, and every label authored as 0 silently shrank — the fixture, the preset and the
+ * golden all disagreed with what the author meant, and the mismatch showed up as a byte
+ * difference hundreds of pixels from the cause. A pixel size means the same thing forever, and
+ * the ladder resolves it in ONE place (faceIdForPx). */
 export interface StaticLabel {
   x: number;
   y: number;
   text: string;
+  /** Pixel size; resolved to a ladder face by buildStaticLayer. */
   font: number;
 }
 
@@ -289,7 +294,7 @@ export function drawText(
 export function buildStaticLayer(labels: StaticLabel[], rules: StaticRule[]): Bitmap {
   const b = createBitmap();
   for (const l of labels) {
-    drawText(b, l.x, l.y, l.text, l.font);
+    drawText(b, l.x, l.y, l.text, faceIdForPx(l.font));
   }
   for (const r of rules) {
     for (let t = 0; t < r.thickness; t++) {

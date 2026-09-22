@@ -13,10 +13,37 @@ Usage:
 """
 
 import json
+import re
 import sys
 
 ALIGN_H = {'L', 'C', 'R'}
 ALIGN_V = {'T', 'M', 'B'}
+
+# THE LADDER, read from the generated shape header so this generator resolves a pixel size to a
+# face with the SAME list the firmware and web app use. It cannot hardcode 20 -> FONT_BODY: the
+# whole point of the ladder is that sizes may be added, and a stale list here would bake the
+# wrong face into the golden that the web app is checked against.
+LADDER_HEADER = 'lib/layout/include/atlas_ladder.h'
+
+
+def load_ladder():
+    src = open(LADDER_HEADER, encoding='utf-8').read()
+    m = re.search(r'#define\s+ATLAS_LADDER\(X\)(.*?)\n\s*/\*\s*end\s*\*/', src, re.S)
+    if not m:
+        sys.exit(f'{LADDER_HEADER}: ATLAS_LADDER list not found')
+    return [int(g) for g in re.findall(r'X\((\d+)\)', m.group(1))]
+
+
+def face_of_px(ladder, px):
+    """Nearest ladder entry by ratio, ties to the smaller — mirrors font_face_for_px()."""
+    if not isinstance(px, (int, float)) or px <= 0:
+        px = ladder[0]
+    best, best_err = ladder[0], None
+    for p in ladder:
+        err = (p / px) if p > px else (px / p)
+        if best_err is None or err < best_err:
+            best, best_err = p, err
+    return best
 
 
 def main():
@@ -24,6 +51,7 @@ def main():
         sys.exit(__doc__)
     src, out = sys.argv[1], sys.argv[2]
     d = json.load(open(src))
+    ladder = load_ladder()
 
     labels = d['labels']
     rules = d['rules']
@@ -56,8 +84,8 @@ def main():
     L.append(f'#define GOLDEN_LABEL_COUNT {len(labels)}')
     L.append('static const static_label_t GOLDEN_LABELS[GOLDEN_LABEL_COUNT] = {')
     for l in labels:
-        L.append(f'    {{ {l["x"]:4d}, {l["y"]:4d}, "{l["text"]}", FONT_'
-                 f'{"VALUE" if l["font"] else "BODY"} }},')
+        fid = face_of_px(ladder, l["font"])
+        L.append(f'    {{ {l["x"]:4d}, {l["y"]:4d}, "{l["text"]}", FONT_{fid} }},')
     L.append('};')
     L.append('')
     L.append('/* Dividers: y, thickness, inset from each edge. */')
@@ -73,9 +101,10 @@ def main():
     L.append(f'#define GOLDEN_FIELD_COUNT {len(fields)}')
     L.append('static const value_field_t GOLDEN_FIELDS[GOLDEN_FIELD_COUNT] = {')
     for f in fields:
+        fid = face_of_px(ladder, f["font"])
         L.append(f'    {{ .x = {f["x"]}, .y = {f["y"]}, .w = {f["w"]}, .h = {f["h"]}, '
                  f'.align_h = \'{f["alignH"]}\', .align_v = \'{f["alignV"]}\', '
-                 f'.font_id = FONT_{"VALUE" if f["font"] else "BODY"}, '
+                 f'.font_id = FONT_{fid}, '
                  f'.kind = {"VALUE_KIND_ICON" if f.get("kind") == "i" else "VALUE_KIND_TEXT"} }},')
     L.append('};')
     L.append('')

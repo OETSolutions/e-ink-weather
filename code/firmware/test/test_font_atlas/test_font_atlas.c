@@ -137,6 +137,63 @@ static void test_metrics_are_self_consistent(void)
     TEST_ASSERT_GREATER_THAN_INT(font_line_height(FONT_BODY), font_line_height(FONT_VALUE));
 }
 
+/* THE LADDER IS A LADDER: strictly ascending in pixel size, and font_id_t indexes it in that
+ * order. If the enum and the table ever fell out of step — the exact failure this build avoids
+ * with the shared ATLAS_LADDER list — then "the 64px face" would resolve to a different size
+ * than the golden and the preview agreed on. */
+static void test_the_ladder_is_strictly_ascending(void)
+{
+    for (int f = 1; f < FONT_COUNT; f++) {
+        TEST_ASSERT_GREATER_THAN_INT(font_px((font_id_t)(f - 1)), font_px((font_id_t)f));
+    }
+    /* The role aliases name real faces, which is the whole reason they exist. */
+    TEST_ASSERT_EQUAL_INT(20, font_px(FONT_BODY));
+    TEST_ASSERT_EQUAL_INT(64, font_px(FONT_VALUE));
+}
+
+/* Nearest-by-ratio, with ties to the SMALLER face. This is the rule the web app mirrors in
+ * faceIdForPx; a divergence here is a preview that lies about the panel. */
+static void test_nearest_face_selection(void)
+{
+    /* Exact ladder entries resolve to themselves. */
+    for (int f = 0; f < FONT_COUNT; f++) {
+        const int px = font_px((font_id_t)f);
+        TEST_ASSERT_EQUAL_INT(f, font_face_for_px((double)px));
+    }
+    /* A value between two faces picks the nearer by RATIO, not the next one up. 52 sits
+     * between 48 and 64: 52/48 = 1.083 vs 64/52 = 1.231, so it must pick 48. A threshold rule
+     * ("big is big") would have picked 64 and rendered a value 23% larger than asked. */
+    TEST_ASSERT_EQUAL_INT(48, font_px(font_face_for_px(52.0)));
+    /* Just past the midpoint by ratio, it flips to the larger face. */
+    TEST_ASSERT_EQUAL_INT(64, font_px(font_face_for_px(56.0)));
+    /* Above the top of the ladder it clamps to the largest face, not past the end. */
+    TEST_ASSERT_EQUAL_INT(128, font_px(font_face_for_px(1000.0)));
+    /* Below the bottom it clamps to the smallest. */
+    TEST_ASSERT_EQUAL_INT(16, font_px(font_face_for_px(1.0)));
+    /* Nonsense input does not index out of bounds or return a bogus face. */
+    TEST_ASSERT_EQUAL_INT(20, font_px(font_face_for_px(0.0)));
+    TEST_ASSERT_EQUAL_INT(20, font_px(font_face_for_px(-5.0)));
+}
+
+/* Every face's y-bearing must fit its int8_t field. A bearing below -128 would wrap POSITIVE
+ * and place a glyph BELOW the baseline — legible-but-wrong text, not a crash, which is the
+ * worst kind of atlas bug. The generator refuses to build a face past this ceiling; this pins
+ * the property in the built artefact too. */
+static void test_bearings_fit_the_int8_field(void)
+{
+    for (int f = 0; f < FONT_COUNT; f++) {
+        int ascent = font_ascent((font_id_t)f);
+        for (char ch = 33; ch < 127; ch++) {
+            int bx = 0, by = 0;
+            TEST_ASSERT_EQUAL_INT(0, font_bearing((font_id_t)f, ch, &bx, &by));
+            /* The deepest ink is bounded by the ascent, so this holds by construction — but a
+             * future face generated past the ceiling would violate it, and this is where that
+             * would be caught rather than on the glass. */
+            TEST_ASSERT_GREATER_OR_EQUAL_INT(-ascent - 1, by);
+        }
+    }
+}
+
 /* Glyphs must be packed back-to-back with no gaps and no overlap. A generator bug that
  * overlapped two glyphs would render plausible-looking but corrupted text; the blitter
  * reads h*ceil(w/8) bytes from the returned pointer and trusts this layout. */
@@ -298,6 +355,9 @@ int main(void)
     RUN_TEST(test_glyph_padding_is_white);
     RUN_TEST(test_glyph_bitmaps_are_not_empty_and_have_ink);
     RUN_TEST(test_metrics_are_self_consistent);
+    RUN_TEST(test_the_ladder_is_strictly_ascending);
+    RUN_TEST(test_nearest_face_selection);
+    RUN_TEST(test_bearings_fit_the_int8_field);
     RUN_TEST(test_glyphs_are_packed_contiguously);
     RUN_TEST(test_punctuation_sits_near_the_baseline);
     RUN_TEST(test_bearings_place_descenders_below_the_baseline);

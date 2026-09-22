@@ -180,15 +180,18 @@ export function defaultLayout(): Config {
 
 /** The static-layer labels for the default layout, for the preview and the golden fixture.
  *  The device never draws text it was not handed values for, so the labels are part of the
- *  LAYOUT the web app bakes into the bitmap. */
+ *  LAYOUT the web app bakes into the bitmap.
+ *
+ *  `font` is a PIXEL SIZE, not a face index: the ladder resolves it in one place, so adding a
+ *  size to the ladder cannot silently re-point a label that was authored as "index 0". */
 export const DEFAULT_LABELS = [
-  { x: 40, y: 32, text: 'NOW', font: 0 },
-  { x: 440, y: 32, text: 'HALLWAY', font: 0 },
-  { x: 680, y: 32, text: 'TODAY HIGH', font: 0 },
-  { x: 440, y: 164, text: 'OUTDOOR', font: 0 },
-  { x: 680, y: 164, text: 'TODAY LOW', font: 0 },
-  { x: 680, y: 296, text: 'TOMORROW HIGH', font: 0 },
-  { x: 40, y: 308, text: 'LOCATION', font: 0 },
+  { x: 40, y: 32, text: 'NOW', font: BODY_PX },
+  { x: 440, y: 32, text: 'HALLWAY', font: BODY_PX },
+  { x: 680, y: 32, text: 'TODAY HIGH', font: BODY_PX },
+  { x: 440, y: 164, text: 'OUTDOOR', font: BODY_PX },
+  { x: 680, y: 164, text: 'TODAY LOW', font: BODY_PX },
+  { x: 680, y: 296, text: 'TOMORROW HIGH', font: BODY_PX },
+  { x: 40, y: 308, text: 'LOCATION', font: BODY_PX },
 ] as const;
 
 /** Dividers, inset from the panel edge so they read as section rules. */
@@ -222,9 +225,9 @@ export const PAGE_ARTWORK: PageArtwork[] = [
     /* Page 1 ("Forecast"): the same three columns, relabelled for the boxes page 1 actually
      * has. Its widgets are at y=100/280/188, so the labels sit above each one. */
     labels: [
-      { x: 40, y: 60, text: 'TODAY HIGH', font: 0 },
-      { x: 40, y: 240, text: 'TODAY LOW', font: 0 },
-      { x: 500, y: 148, text: 'HALLWAY', font: 0 },
+      { x: 40, y: 60, text: 'TODAY HIGH', font: BODY_PX },
+      { x: 40, y: 240, text: 'TODAY LOW', font: BODY_PX },
+      { x: 500, y: 148, text: 'HALLWAY', font: BODY_PX },
     ],
     rules: [{ y: 228, thickness: 2, inset: 40 }],
   },

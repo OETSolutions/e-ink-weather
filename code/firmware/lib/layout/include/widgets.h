@@ -64,7 +64,7 @@ typedef struct {
     int             x, y, w, h;
     char            align_h;        /* 'L' | 'C' | 'R' */
     char            align_v;        /* 'T' | 'M' | 'B' */
-    int             font_id;        /* FONT_BODY or FONT_VALUE */
+    int             font_id;        /* a face on the ladder (font_id_t); see fonts.h */
     char            role;           /* 's' static, 'd' dynamic */
     /* The widget's id from the document. Kept because it is the ONLY key that ties a
      * resolved value back to the box the editor drew, which is what /api/values needs to

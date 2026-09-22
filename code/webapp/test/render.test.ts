@@ -9,6 +9,7 @@ import {
   type ValueField,
 } from '../src/canvas/render';
 import { BODY, VALUE, FONT_BODY, FONT_VALUE } from '../src/canvas/atlas-data';
+import { faceIdForPx } from '../src/canvas/face';
 
 describe('1-bit bitmap (HW-6)', () => {
   it('has the exact panel size', () => {
@@ -133,7 +134,11 @@ describe('renderer vs the firmware golden image (NFR-4, NFR-9)', () => {
         h: f.h,
         alignH: f.alignH,
         alignV: f.alignV,
-        fontId: f.font,
+        /* The fixture carries a PIXEL SIZE, and the renderer takes a face ID — so resolve it
+         * with the same shared rule the firmware's golden header used (face_of_px, which
+         * mirrors font_face_for_px). Passing the size straight through as an id is what made
+         * this test draw nothing: 20 is not a valid face index on a ten-face ladder. */
+        fontId: faceIdForPx(f.font),
         /* 't' is text, 'i' is a weather icon. Dropping this made the test render the icon
          * code "04d" as TEXT while the firmware golden drew the picture — a mismatch that
          * looked like an icon bug but was the cross-check silently testing a different

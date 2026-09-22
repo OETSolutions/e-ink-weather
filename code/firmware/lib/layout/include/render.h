@@ -21,7 +21,9 @@
  *            overwrite the surrounding static art
  *   align_h  'L', 'C' or 'R' — horizontal alignment within the box
  *   align_v  'T', 'M' or 'B' — vertical alignment within the box
- *   font_id  FONT_BODY or FONT_VALUE
+ *   font_id  a face on the font ladder — FONT_16 .. FONT_128, or the role aliases FONT_BODY
+ *            (20 px) and FONT_VALUE (64 px). See fonts.h; the value is any font_id_t, so this
+ *            field is not limited to the two role faces.
  *   kind     't' = the value is TEXT to be set in `font_id`; 'i' = the value is an
  *            OpenWeatherMap icon CODE ("04n") to be drawn as an icon (see weather_icons.h).
  *

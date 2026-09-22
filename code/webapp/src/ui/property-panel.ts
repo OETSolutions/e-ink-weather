@@ -236,8 +236,10 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     /* ---- font ---- */
     const font = w.font ?? { size: 64, align: 'left' as const, valign: 'top' as const };
     const tset = el('fieldset', {}, el('legend', {}, 'Text'));
-    /* The two faces the panel HAS, not a free number: the device cannot rasterise an arbitrary
-     * size, so a spinner offering 10-200 would be a control that mostly does nothing. */
+    /* The faces the panel HAS, not a free number: the device cannot rasterise an arbitrary
+     * size, so a spinner offering 10-200 would be a control that mostly does nothing. The list
+     * is the generated LADDER, so it grows automatically when the ladder does and can never
+     * name a size the device cannot draw. */
     tset.append(
       field('Size', select(String(sizeFor(w)), FACES_AVAILABLE.map((f) => ({ value: String(f.px), label: f.label })), (v) => {
         commit({ font: { ...font, size: Number(v) } });
