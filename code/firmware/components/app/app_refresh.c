@@ -646,7 +646,7 @@ esp_err_t app_render_last_good(void)
     /* Page 0: the boot path shows the last-good image before the network, and it cannot know
      * which page was on the glass when the device slept. Page 0 is the defined default (a
      * single-page layout renders identically at any index). */
-    int slot = -1;
+    int slot = SLOT_NONE;
     if (load_static_layer(s_static, 0, &slot) != 0) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1489,7 +1489,7 @@ void app_refresh_tick(power_source_t source, int force_full)
     /* Pull the static layer into the resident buffer. This is the ONLY whole-panel buffer held:
      * the previous and the next FRAME are each produced a band at a time from it by push_banded(),
      * which is what makes a partial possible on this part (see the block comment on s_static). */
-    int slot = -1;
+    int slot = SLOT_NONE;
     if (load_static_layer(s_static, page_index, &slot) != 0) {
         ESP_LOGE(TAG, "no static layer for page %d", page_index);
         return;
