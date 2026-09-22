@@ -118,7 +118,7 @@ export interface DeviceValues {
 }
 
 /**
- * The values the device last resolved, keyed by widget id.
+ * The values the device last resolved, WITH the page they belong to.
  *
  * THIS IS WHAT MAKES THE PREVIEW HONEST (FR-27: "rendered with real fetched data"). The device
  * holds the OWM key and the HA token and has already run every widget through the same formatter
@@ -126,23 +126,12 @@ export interface DeviceValues {
  * panel without a second implementation of the resolution rules — and in the embedded case the
  * browser has no credentials and, on the setup network, no internet at all.
  *
- * Returns an empty map when the device has not refreshed yet or is unreachable; the caller falls
- * back to its own placeholder rendering, which is what the panel would show before its first
- * fetch anyway.
- */
-export async function getValues(opts: DeviceOptions = {}): Promise<Record<string, string>> {
-  const info = await getValuesInfo(opts);
-  return info?.values ?? {};
-}
-
-/** The device's resolved values WITH the page they belong to.
- *
  * WHY THE PAGE MATTERS: the device stores only the page it is CURRENTLY showing, and it rotates
- * on its own. The editor edits one page at a time, so a poll that ignored the page would paint
+ * on its own. The editor edits one page at a time, so a caller that ignored the page would paint
  * the other page's readings into this page's boxes the moment the scheduler rotated — numbers
  * that look real but belong to a different layout. The caller compares `page` against the index
- * it is editing and only applies a match. Returns null when the device is unreachable or has
- * not resolved anything yet, which is distinct from "this page has no values". */
+ * it is editing and only applies a match. Returns null when the device is unreachable or has not
+ * resolved anything yet, which is distinct from "this page has no values". */
 export async function getValuesInfo(
   opts: DeviceOptions = {},
 ): Promise<{ page: number; pageCount: number; values: Record<string, string> } | null> {
