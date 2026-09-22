@@ -75,7 +75,8 @@ def main():
     for f in fields:
         L.append(f'    {{ .x = {f["x"]}, .y = {f["y"]}, .w = {f["w"]}, .h = {f["h"]}, '
                  f'.align_h = \'{f["alignH"]}\', .align_v = \'{f["alignV"]}\', '
-                 f'.font_id = FONT_{"VALUE" if f["font"] else "BODY"} }},')
+                 f'.font_id = FONT_{"VALUE" if f["font"] else "BODY"}, '
+                 f'.kind = {"VALUE_KIND_ICON" if f.get("kind") == "i" else "VALUE_KIND_TEXT"} }},')
     L.append('};')
     L.append('')
     L.append('static const char *const GOLDEN_VALUES[GOLDEN_FIELD_COUNT] = {')

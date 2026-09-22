@@ -117,7 +117,16 @@ describe('renderer vs the firmware golden image (NFR-4, NFR-9)', () => {
     const staticLayer = buildStaticLayer(layout.labels, layout.rules).data;
 
     const fields: ValueField[] = layout.fields.map(
-      (f: { x: number; y: number; w: number; h: number; alignH: string; alignV: string; font: number }) => ({
+      (f: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        alignH: string;
+        alignV: string;
+        font: number;
+        kind: 't' | 'i';
+      }) => ({
         x: f.x,
         y: f.y,
         w: f.w,
@@ -125,6 +134,11 @@ describe('renderer vs the firmware golden image (NFR-4, NFR-9)', () => {
         alignH: f.alignH,
         alignV: f.alignV,
         fontId: f.font,
+        /* 't' is text, 'i' is a weather icon. Dropping this made the test render the icon
+         * code "04d" as TEXT while the firmware golden drew the picture — a mismatch that
+         * looked like an icon bug but was the cross-check silently testing a different
+         * thing than the firmware. The fixture has carried `kind` since icons landed. */
+        kind: f.kind,
       }),
     );
     const values = layout.fields.map((f: { sample: string }) => f.sample);

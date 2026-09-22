@@ -18,8 +18,15 @@ import {
   setPx,
 } from './bitmap';
 import { FACES, type Face, type Glyph } from './atlas-data';
+import { WEATHER_ICONS } from './weather-icons-data';
+import { weatherIconIndex, WeatherIcon } from './weather-icons';
 
-/** A box on the static layer holding one dynamic string. Mirrors value_field_t. */
+/** A box on the static layer holding one dynamic value. Mirrors value_field_t.
+ *
+ * `kind` mirrors the firmware's `value_field_t.kind`: 't' means the value is TEXT to set in
+ * `fontId`; 'i' means the value is an OpenWeatherMap icon CODE to be drawn as a picture. It
+ * travels with the box rather than with the widget because the renderer is handed fields and
+ * values only — it never sees a binding. */
 export interface ValueField {
   x: number;
   y: number;
@@ -31,6 +38,8 @@ export interface ValueField {
   alignV: string;
   /** 0 = body, 1 = value. Mirrors font_id_t. */
   fontId: number;
+  /** 't' text (default), 'i' weather icon. */
+  kind?: 't' | 'i';
 }
 
 /**
@@ -146,9 +155,51 @@ function blitGlyphClipped(
   }
 }
 
+/**
+ * Draw a weather icon into its box, painting only ink. Mirrors draw_icon() in render.c.
+ *
+ * Scaled to fit the box with NEAREST-NEIGHBOUR sampling: the source is 1 bpp, so there is no
+ * grey to interpolate, and any smoother filter would blur the thin strokes that make a snowflake
+ * a snowflake. Aspect ratio is preserved by using the smaller box dimension.
+ */
+function drawIcon(dst: Bitmap, f: ValueField, code: string | undefined): void {
+  const idx = weatherIconIndex(code);
+  if (idx === WeatherIcon.UNKNOWN) return;
+  const ic = WEATHER_ICONS[idx];
+  if (!ic) return;
+
+  const side = Math.min(f.w, f.h);
+  if (side <= 0) return;
+  const offX = f.x + offsetH(f.alignH, f.w, side);
+  const offY = f.y + offsetV(f.alignV, f.h, side);
+  const srcPitch = (ic.w + 7) >> 3;
+
+  for (let dy = 0; dy < side; dy++) {
+    const sy = Math.floor((dy * ic.h) / side);
+    if (sy < 0 || sy >= ic.h) continue;
+    const py = offY + dy;
+    if (py < f.y || py >= f.y + f.h) continue;
+    for (let dx = 0; dx < side; dx++) {
+      const sx = Math.floor((dx * ic.w) / side);
+      if (sx < 0 || sx >= ic.w) continue;
+      if ((ic.bits[sy * srcPitch + (sx >> 3)]! & (0x80 >> (sx & 7))) === 0) continue;
+      const px = offX + dx;
+      if (px < f.x || px >= f.x + f.w) continue;
+      setPx(dst, px, py, true);
+    }
+  }
+}
+
 /** Draw one field's value. Mirrors draw_field(). */
 function drawField(dst: Bitmap, f: ValueField, s: string | undefined): void {
   if (!s) return; /* nothing to show: leave the static layer intact */
+
+  /* An icon box draws a PICTURE from the value, not the string itself: the value is the OWM
+   * icon code, and rendering it as text would put "04n" on the glass. */
+  if (f.kind === 'i') {
+    drawIcon(dst, f, s);
+    return;
+  }
 
   const face = FACES[f.fontId];
   /* An unknown font id is a BUG in the caller, not a rendering condition — the firmware

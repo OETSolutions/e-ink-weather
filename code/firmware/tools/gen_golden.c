@@ -11,7 +11,8 @@
  *
  * Regenerate ONLY with a deliberate, reviewed reason, and LOOK at the output:
  *   cc -I lib/layout/include -I lib/layout/src -o /tmp/gen_golden tools/gen_golden.c \
- *      lib/layout/src/canvas.c lib/layout/src/fonts.c lib/layout/src/render.c
+ *      lib/layout/src/canvas.c lib/layout/src/fonts.c lib/layout/src/render.c \
+ *      lib/layout/src/weather_icons.c lib/layout/src/weather_icons_data.c
  *   /tmp/gen_golden tools/golden/default_layout.bin
  *   python3 tools/dump_1bpp.py tools/golden/default_layout.bin /tmp/golden.png
  */
@@ -54,10 +55,14 @@ static int write_json(const char *path)
     fprintf(f, "  ],\n  \"fields\": [\n");
     for (int i = 0; i < GOLDEN_FIELD_COUNT; i++) {
         const value_field_t *v = &GOLDEN_FIELDS[i];
+        /* `kind` travels with the box (see value_field_t): 'i' boxes draw a weather icon from
+         * their sample code rather than setting it as text. The web app's cross-check needs it
+         * or it would render an icon box as the literal string "04d". */
         fprintf(f, "    { \"x\": %d, \"y\": %d, \"w\": %d, \"h\": %d, "
                    "\"alignH\": \"%c\", \"alignV\": \"%c\", \"font\": %d, "
-                   "\"sample\": \"%s\" }%s\n",
+                   "\"kind\": \"%c\", \"sample\": \"%s\" }%s\n",
                 v->x, v->y, v->w, v->h, v->align_h, v->align_v, v->font_id,
+                (v->kind == VALUE_KIND_ICON) ? 'i' : 't',
                 GOLDEN_VALUES[i], i + 1 < GOLDEN_FIELD_COUNT ? "," : "");
     }
     fprintf(f, "  ]\n}\n");

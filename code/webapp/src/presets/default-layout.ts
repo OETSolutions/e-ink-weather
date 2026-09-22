@@ -83,6 +83,17 @@ export function defaultLayout(): Config {
         { op: 'gte', threshold: 40, level: 'severe' },
       ],
     }),
+    /* The current-conditions ICON (FR-1's "icons"), beside the condition word. Bound to OWM's
+     * icon field, so its value is the raw icon code ("04d") and the renderer draws the matching
+     * picture — a text field would print the code on the glass. Sized to its box, which is square
+     * so the icon is not distorted: the icon set is square and the renderer fits by the smaller
+     * dimension. Placed in the gap below "2 mph" and left of the LOCATION line, where it reads as
+     * part of the "NOW" block without colliding with any box or label. */
+    value('owm_icon', 268, 258, 62, 62, {
+      binding: { kind: 'owm-current', owmField: 'icon' },
+      format: { fallback: '' },
+      font: { size: BODY_PX, align: 'left', valign: 'top' },
+    }),
     /* Location, in the gap under the wind reading (FR-17's "location/zip display"). It is the
      * place name OWM resolves the configured coordinates to — the same coordinates the lat/lon
      * map picker sets — so it is a statement about WHERE the readings come from, which is worth

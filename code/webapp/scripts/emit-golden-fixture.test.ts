@@ -15,10 +15,16 @@ import { it } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { defaultLayout, DEFAULT_LABELS, DEFAULT_RULES } from '../src/presets/default-layout';
 import { fontIdFor } from '../src/canvas/face';
+import { isIconWidget } from '../src/canvas/widget-kind';
 
 /** The value used for every sample. A number with a tenth, so a decimals/rounding mistake is
  *  visible in the golden rather than rounding away. */
 const SAMPLE = '68.4';
+
+/** The sample for an ICON field, which must be a valid OWM icon CODE — the renderer maps it to a
+ *  picture. "04d" (broken cloud) is used because its icon has ink across the whole box, so a
+ *  scaling or off-by-one mistake is visible in the golden rather than hiding in an empty corner. */
+const ICON_SAMPLE = '04d';
 
 /* Named *.test.ts ONLY because that is what vitest globs. It is skipped unless asked
  * for explicitly, so a normal `npm test` cannot rewrite the committed fixture. */
@@ -38,7 +44,9 @@ it.skipIf(!process.env.GOLDEN_OUT)('emits the golden fixture for the firmware', 
       /* The SAME face rule the renderer and the editor use. Keying off size here while the
        * editor keyed off role is how the two drifted before. */
       font: fontIdFor(w),
-      sample: SAMPLE,
+      /* 'i' for an icon box so the firmware's golden renders a picture, not the code as text. */
+      kind: isIconWidget(w) ? 'i' : 't',
+      sample: isIconWidget(w) ? ICON_SAMPLE : SAMPLE,
     })),
   };
   const out = process.env.GOLDEN_OUT ?? 'test/fixtures/golden-default.json';

@@ -25,6 +25,7 @@ import {
 } from './geometry';
 import { renderPage, type ValueField } from './render';
 import { fontIdFor } from './face';
+import { isIconWidget } from './widget-kind';
 import type { Bitmap } from './bitmap';
 
 /** The grid widgets snap to, in panel pixels. 8 is fine enough to place anything and coarse
@@ -143,6 +144,8 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
       /* ONE shared rule for face selection — see canvas/face.ts for why role is not
        * the right key and why a free-form size cannot work. */
       fontId: fontIdFor(w),
+      /* An icon widget draws a picture from its value (the OWM code) instead of text. */
+      kind: isIconWidget(w) ? 'i' as const : 't' as const,
     }));
 
     const values = state.page.widgets.map((w) => state.values[w.id]);
