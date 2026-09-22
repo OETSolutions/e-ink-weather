@@ -23,6 +23,16 @@ static int px(const uint8_t *buf, int x, int y)
     return (buf[(size_t)y * EPD_PITCH + (size_t)(x >> 3)] >> (7 - (x & 7))) & 1;
 }
 
+/* A render_read_fn over an in-memory static layer, for the band tests. The library's own
+ * equivalent is static (it is an implementation detail of render_compose), so the test supplies
+ * its own — which is also the stronger check, since it exercises the reader contract from outside
+ * the library rather than through it. */
+static int mem_reader_static(void *ctx, size_t offset, uint8_t *dst, size_t len)
+{
+    memcpy(dst, (const uint8_t *)ctx + offset, len);
+    return 0;
+}
+
 /* Count ink bits (0) inside a rectangle. */
 static int ink_in(const uint8_t *buf, int x0, int y0, int x1, int y1)
 {
@@ -312,6 +322,106 @@ static void test_golden_image_of_default_layout(void)
     TEST_ASSERT_EQUAL_MEMORY(golden, fb, EPD_FB_BYTES);
 }
 
+/* ---- band composition: what makes the partial-refresh path possible ----
+ *
+ * `epd_write_frame_partial(prev, next)` needs BOTH frames at once, and two 78,200-byte frames do
+ * not fit this part's DRAM (measured: the only region big enough for one is 113,840 B; the pair
+ * needs 156,400). So the previous and next frames are composed a band of rows at a time, into two
+ * small buffers. That is only correct if a band render is BYTE-IDENTICAL to the whole-frame render
+ * for the rows it covers — otherwise a partial would push a subtly different picture than a full
+ * would, and the panel would accumulate the difference as ghosting.
+ *
+ * These tests pin that equivalence across several band heights, including heights that do not
+ * divide the panel evenly and bands that split a field box.
+ */
+static void test_a_band_matches_the_whole_frame_render(void)
+{
+    /* A range of band heights, deliberately including awkward ones: 1 row, a prime, and more than
+     * half the panel. A band taller than the panel is also covered, because a caller that sizes a
+     * band from a config value could produce one. */
+    static const int heights[] = { 1, 7, 64, 128, 337, EPD_HEIGHT, EPD_HEIGHT + 50 };
+
+    for (unsigned k = 0; k < sizeof(heights) / sizeof(heights[0]); k++) {
+        const int bh = heights[k];
+
+        canvas_t whole;
+        canvas_init(&whole, fb);
+        TEST_ASSERT_EQUAL_INT(0, render_compose(&whole, static_layer,
+                                                GOLDEN_FIELDS, GOLDEN_VALUES,
+                                                GOLDEN_FIELD_COUNT));
+
+        /* Walk the panel in bands of `bh` rows and rebuild the frame. */
+        uint8_t *band = malloc(EPD_FB_BYTES);
+        TEST_ASSERT_NOT_NULL(band);
+        uint8_t *assembled = malloc(EPD_FB_BYTES);
+        TEST_ASSERT_NOT_NULL(assembled);
+
+        for (int y0 = 0; y0 < EPD_HEIGHT; y0 += bh) {
+            int rows = bh;
+            if (y0 + rows > EPD_HEIGHT) rows = EPD_HEIGHT - y0;
+
+            canvas_t b;
+            canvas_init_band(&b, band, y0, rows);
+            TEST_ASSERT_EQUAL_INT(0, render_compose_band(&b, mem_reader_static, static_layer,
+                                                         GOLDEN_FIELDS, GOLDEN_VALUES,
+                                                         GOLDEN_FIELD_COUNT));
+            memcpy(assembled + (size_t)y0 * EPD_PITCH, band, (size_t)rows * EPD_PITCH);
+        }
+
+        TEST_ASSERT_EQUAL_MEMORY_MESSAGE(fb, assembled, EPD_FB_BYTES,
+                                         "band render differs from the whole-frame render");
+        free(band);
+        free(assembled);
+    }
+}
+
+/* A band that holds NO part of any field must be pure static layer — the failure this rules out is
+ * a band renderer that stamps a field into every band (e.g. by treating y as band-relative). */
+static void test_a_band_with_no_fields_is_pure_static_layer(void)
+{
+    /* Find a band of rows that contains no field box at all. */
+    int empty_y = -1;
+    for (int y = 0; y < EPD_HEIGHT; y++) {
+        int covered = 0;
+        for (int i = 0; i < GOLDEN_FIELD_COUNT; i++) {
+            if (y >= GOLDEN_FIELDS[i].y && y < GOLDEN_FIELDS[i].y + GOLDEN_FIELDS[i].h) covered = 1;
+        }
+        if (!covered) { empty_y = y; break; }
+    }
+    if (empty_y < 0) { TEST_IGNORE_MESSAGE("every row carries a field"); return; }
+
+    uint8_t *band = malloc(EPD_FB_BYTES);
+    TEST_ASSERT_NOT_NULL(band);
+    canvas_t b;
+    canvas_init_band(&b, band, empty_y, 1);
+    TEST_ASSERT_EQUAL_INT(0, render_compose_band(&b, mem_reader_static, static_layer,
+                                                 GOLDEN_FIELDS, GOLDEN_VALUES,
+                                                 GOLDEN_FIELD_COUNT));
+    TEST_ASSERT_EQUAL_MEMORY(static_layer + (size_t)empty_y * EPD_PITCH, band, EPD_PITCH);
+    free(band);
+}
+
+/* Bad arguments are rejected rather than read out of bounds — a band canvas with no rows is a
+ * caller bug and must not become a zero-length memcpy that silently looks like success. */
+static void test_band_rejects_bad_arguments(void)
+{
+    uint8_t *band = malloc(EPD_FB_BYTES);
+    TEST_ASSERT_NOT_NULL(band);
+
+    canvas_t b;
+    canvas_init_band(&b, band, 0, 0);
+    TEST_ASSERT_TRUE(render_compose_band(&b, mem_reader_static, static_layer, NULL, NULL, 0) < 0);
+
+    canvas_init_band(&b, band, 0, 8);
+    TEST_ASSERT_TRUE(render_compose_band(NULL, mem_reader_static, static_layer, NULL, NULL, 0) < 0);
+    TEST_ASSERT_TRUE(render_compose_band(&b, NULL, static_layer, NULL, NULL, 0) < 0);
+    TEST_ASSERT_TRUE(render_compose_band(&b, mem_reader_static, static_layer, NULL, NULL, -1) < 0);
+    /* fields/values must be present when the count says so. */
+    TEST_ASSERT_TRUE(render_compose_band(&b, mem_reader_static, static_layer, NULL, NULL, 3) < 0);
+
+    free(band);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -327,6 +437,9 @@ int main(void)
     RUN_TEST(test_unrenderable_value_draws_nothing);
     RUN_TEST(test_fields_are_independent);
     RUN_TEST(test_bad_arguments_are_rejected);
+    RUN_TEST(test_a_band_matches_the_whole_frame_render);
+    RUN_TEST(test_a_band_with_no_fields_is_pure_static_layer);
+    RUN_TEST(test_band_rejects_bad_arguments);
     RUN_TEST(test_golden_image_of_default_layout);
     return UNITY_END();
 }

@@ -58,3 +58,22 @@ void epd_interleave_1to2(const uint8_t *prev1bpp, const uint8_t *next1bpp,
         emit_interleaved(prev1bpp[i], next1bpp[i], &out[2 * i]);
     }
 }
+
+/* See epd_encode.h for the contract these two serve. They are trivial arithmetic; they live here
+ * because the walk they describe is the part of the banded transmit that is easy to get subtly
+ * wrong (an off-by-one leaves a stripe of the previous picture on the glass, which is exactly the
+ * kind of defect that "reports success" and is only caught by looking at the panel). */
+int epd_band_of_row(int y, int band_rows, int height)
+{
+    if (band_rows <= 0 || y < 0 || y >= height) return -1;
+    return y / band_rows;
+}
+
+int epd_band_rows_at(int band_index, int band_rows, int height)
+{
+    if (band_rows <= 0 || band_index < 0) return -1;
+    const int y0 = band_index * band_rows;
+    if (y0 >= height) return -1;
+    const int remaining = height - y0;
+    return (remaining < band_rows) ? remaining : band_rows;
+}

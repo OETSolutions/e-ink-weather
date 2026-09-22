@@ -8,6 +8,18 @@ void canvas_init(canvas_t *c, uint8_t *buf)
 {
     c->px = buf;
     c->len = EPD_FB_BYTES;
+    c->y_off = 0;
+    c->h = EPD_HEIGHT;
+}
+
+void canvas_init_band(canvas_t *c, uint8_t *buf, int y0, int n_rows)
+{
+    c->px = buf;
+    /* `len` is the STORED size, not the panel size: callers that walk the buffer (canvas_fill)
+     * must not write past the rows this band actually holds. */
+    c->len = (n_rows > 0) ? (size_t)n_rows * EPD_PITCH : 0;
+    c->y_off = y0;
+    c->h = (n_rows > 0) ? n_rows : 0;
 }
 
 void canvas_fill(canvas_t *c, int black)
@@ -20,7 +32,14 @@ void canvas_set_px(canvas_t *c, int x, int y, int black)
     if (x < 0 || y < 0 || x >= EPD_WIDTH || y >= EPD_HEIGHT) {
         return;
     }
-    size_t idx = (size_t)y * EPD_PITCH + (size_t)(x >> 3);
+    /* Rows outside this canvas are simply not in the buffer. A band renderer draws a whole page
+     * of widgets into one band at a time, so most of those calls legitimately miss — the y test
+     * that used to be "is this on the panel" is now "is this row in THIS band". */
+    const int row = y - c->y_off;
+    if (row < 0 || row >= c->h) {
+        return;
+    }
+    size_t idx = (size_t)row * EPD_PITCH + (size_t)(x >> 3);
     uint8_t mask = (uint8_t)(0x80u >> (x & 7));
     if (black) {
         c->px[idx] &= (uint8_t)~mask;
@@ -34,7 +53,11 @@ int canvas_get_px(const canvas_t *c, int x, int y)
     if (x < 0 || y < 0 || x >= EPD_WIDTH || y >= EPD_HEIGHT) {
         return 0;
     }
-    size_t idx = (size_t)y * EPD_PITCH + (size_t)(x >> 3);
+    const int row = y - c->y_off;
+    if (row < 0 || row >= c->h) {
+        return 0;
+    }
+    size_t idx = (size_t)row * EPD_PITCH + (size_t)(x >> 3);
     uint8_t mask = (uint8_t)(0x80u >> (x & 7));
     return (c->px[idx] & mask) ? 0 : 1;   /* bit clear => black => 1 */
 }

@@ -49,7 +49,7 @@ extern const int boot_badge_h;
 
 static const char *TAG = "refresh";
 
-/* How long ensure_prev() waits for the freed framebuffer region to coalesce before giving up
+/* How long ensure_static() waits for the freed static-layer region to coalesce before giving up
  * on a tick.
  *
  * MEASURED, NOT GUESSED. When the region is fragmented by a network allocation sitting in the
@@ -69,49 +69,122 @@ static const char *TAG = "refresh";
 #define FB_ACQUIRE_WAIT_MS 15000
 #define FB_ACQUIRE_POLL_MS 50
 
-/* TWO framebuffers. A partial refresh takes the frame CURRENTLY ON THE GLASS and the new
- * frame, and the controller derives each pixel's transition from the pair — so the previous
- * frame has to be kept. Keeping one buffer and treating a partial as "just draw the region"
- * is the mistake that produces a panel full of noise; verified on hardware.
+/* The slot identity meaning "no picture is known to be on the glass", i.e. a partial has no valid
+ * base. Distinct from any REAL identity a layout can have: the artwork sentinels are -(100 + page)
+ * for page 0..7 (-100..-107), the legacy bitmap uses 0 or 1, and the built-in boot mark uses -200
+ * (SLOT_BOOT_LOGO) — so -1 cannot collide with an identity that is genuinely reproducible.
  *
- * THEY ARE HEAP-ALLOCATED, NOT STATIC. Two of them is 156,400 bytes, and the linker's
- * static DRAM region (dram0_0_seg) is only 180,736 bytes — so as static arrays they
- * overflowed it by 23,016 bytes and the firmware would not link at all. On the heap they
- * come out of the 320 KB of RAM this part has, leaving the static region for everything
- * else. Verified: the same two buffers link cleanly when malloc'd.
+ * The distinction matters, because it is not a sign test: the artwork sentinel is NEGATIVE, so
+ * `slot < 0` is true for every real uploaded layout. See s_shown_slot. */
+#define SLOT_NONE      (-1)
+#define SLOT_BOOT_LOGO (-200)
+
+/* The fields to stamp one refresh, and their values. Sized by the parse caps rather than allocated.
+ * This is the TICK-LOCAL page, which also carries the parsed widgets and the FR-27 reporting arrays;
+ * only the three members a render needs are copied into the cross-tick snapshot below. */
+typedef struct {
+    layout_widget_t widgets[LAYOUT_MAX_FIELDS];
+    value_field_t   fields[LAYOUT_MAX_FIELDS];
+    char            values[LAYOUT_MAX_FIELDS][40];
+    const char     *value_ptrs[LAYOUT_MAX_FIELDS];
+    /* The widget id and "was this a real reading" flag, parallel to values/fields, so
+     * GET /api/values (FR-27) can report which box each resolved string belongs to. The id is
+     * copied rather than pointed at: the widget array is overwritten by the next refresh. */
+    char            ids[LAYOUT_MAX_FIELDS][24];
+    int             has_value[LAYOUT_MAX_FIELDS];
+    int             n;              /* how many the page asked for */
+    int             n_fields;       /* how many are actually stamped (dynamic only) */
+} page_render_t;
+
+/* JUST THE DRAWABLE HALF OF A PAGE: the boxes, their strings, and the count.
  *
- * Allocated lazily on first use, because a device that is only ever going to serve the API
- * has no reason to hold 156 KB. */
-static uint8_t *s_fb_prev;
-static uint8_t *s_fb_next;
+ * WHY THIS IS A SEPARATE, SMALL TYPE. The previous frame must be reproducible across ticks, and
+ * page_render_t is 9,320 bytes because it also carries the parsed widgets (24 x 288) and the
+ * FR-27 reporting arrays — none of which a render reads. Keeping one of those resident costs
+ * ~9 KB of .bss, and .bss on this part is DRAM the heap does not get: measured, adding a 9,320-byte
+ * static here dropped the largest free block below the 78,200 bytes the static layer needs, so
+ * NOTHING could be drawn. The drawable half is 1,640 bytes, which fits. */
+typedef struct {
+    value_field_t fields[LAYOUT_MAX_FIELDS];
+    char          values[LAYOUT_MAX_FIELDS][40];
+    const char   *value_ptrs[LAYOUT_MAX_FIELDS];
+    int           n_fields;
+} frame_values_t;
 
-/* Declared here because the render entry points below use them, while their definitions sit
- * after the long explanatory block further down. */
-static int  ensure_prev(void);
-static int  acquire_next(void);
-static void release_next(void);
+/* What a render needs, pointing at either a live page or the snapshot. `values` is `const char **`
+ * rather than `const char *const *` so a live page's array can be used without a cast. */
+typedef struct {
+    const value_field_t *fields;
+    const char *const   *values;
+    int                  n_fields;
+} frame_spec_t;
 
-/* Allocate the RESIDENT framebuffer — the frame on the glass — on first use. Returns 0 on
- * success, -1 if the allocation failed. Only this one is held between refreshes; the second,
- * transient buffer is managed by acquire_next()/release_next() and the block comment further
- * down explains why the split exists. */
-static int ensure_prev(void)
+/* ONE 78,200-byte buffer, holding the STATIC LAYER of the page currently on the glass — not the
+ * composed frame.
+ *
+ * WHY THE STATIC LAYER AND NOT THE FRAME: a partial refresh passes the SSD2677 the previous and
+ * the next frame, because it derives each pixel's transition from the pair. Two frames of 78,200
+ * bytes do not fit this part — the only DRAM region large enough for one is 113,840 bytes and the
+ * pair needs 156,400 — so a second framebuffer NEVER allocated. Measured on the bench: the
+ * transient allocation failed on every refresh and /api/status read `partials_since_full: 0`
+ * against `fulls_total: 6`, so FR-11's partial path had never run and every refresh was a full
+ * panel flash.
+ *
+ * Holding the static layer instead makes both frames derivable from ONE buffer: the previous frame
+ * is this layer stamped with s_prev_values' strings, and the next frame is the same layer stamped
+ * with the current page's values. A partial is only ever taken when the slot identity matches,
+ * which means the two frames genuinely share this layer — so it is the right thing to keep.
+ *
+ * Allocated lazily and FREED ACROSS EVERY FETCH (see app_refresh_tick): it competes for the one
+ * region the TLS handshake also needs, and the handshake wins because a fetch that fails leaves
+ * every reading as "--".
+ *
+ * IT IS HEAP-ALLOCATED, NOT STATIC: as an array it would sit in the linker's static DRAM region
+ * (dram0_0_seg, 180,736 bytes), which is what made an earlier two-buffer version fail to link. */
+static uint8_t *s_static;
+/* The identity of the picture on the glass, from load_static_layer(): a NEGATIVE sentinel for
+ * per-page artwork (-(100+page)), the bitmap's slot for the legacy single bitmap, SLOT_BOOT_LOGO
+ * for the built-in boot mark, SLOT_NONE when nothing is known. Compared for equality to decide
+ * whether a partial is valid.
+ *
+ * IT MUST NOT DOUBLE AS THE "IS ANYTHING ON THE GLASS" FLAG, and that is a bug this code had: the
+ * artwork sentinel is negative, so `s_shown_slot < 0` was true for every real uploaded layout and
+ * every tick read "nothing on the glass" and forced a FULL refresh — which is exactly why
+ * /api/status showed `partials_since_full: 0` no matter what the partial budget said. The two
+ * questions are different and now have different answers: identity here, presence in
+ * s_glass_present below. */
+static int      s_shown_slot = SLOT_NONE;
+/* Non-zero once a push has put an image on the glass and nothing has overwritten or dropped it
+ * since. This, not the sign of the slot, is what refresh_decide() means by "something is on the
+ * glass to diff against". */
+static int      s_glass_present;
+
+/* The values that were stamped into the frame now on the glass, so the PREVIOUS frame can be
+ * recomposed for a partial. This is the whole reason a partial is possible here: the previous
+ * frame is not stored (two frames do not fit), it is REPRODUCED from the resident static layer
+ * plus these values, and 24 strings of 40 bytes is 1.6 KB rather than 78,200. */
+static frame_values_t s_prev_values;
+static int            s_have_prev_values;   /* 0 until a push has recorded what it drew */
+
+/* Allocate the static layer on first use. Returns 0 on success, -1 if the allocation failed. Held
+ * across the push and released across the fetch (see app_refresh_tick). */
+static int ensure_static(void)
 {
-    if (s_fb_prev) return 0;
+    if (s_static) return 0;
 
-    s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-    if (s_fb_prev) return 0;
+    s_static = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
+    if (s_static) return 0;
 
-    /* THE FRAMEBUFFER HAS TO WAIT FOR THE NETWORK STACK TO LET GO.
+    /* THE STATIC LAYER HAS TO WAIT FOR THE NETWORK STACK TO LET GO.
      *
      * Measured on the bench (HEAP_TRACE probe): this device has exactly ONE DRAM region large
-     * enough to hold a 78,200-byte framebuffer — region 0x3ffe4350, ~113 KB (every other region
-     * caps at ~66 KB). The frame is freed across the fetch on USB for TLS (see the note further
-     * down), and when it is freed the region reads as 99.8% free yet is split by a handful of TINY
-     * network-stack allocations (the block walk shows 84 B, 112 B, 128 B and several 28-36 B
-     * pieces) into pieces such as 14,256 + 34,788 + 63,596 — none of which fits a framebuffer.
-     * `free_heap` is ~128 KB in BOTH the failing and the succeeding case, which is why the old
-     * message sent readers hunting a leak: there is none. This is fragmentation, pure and simple.
+     * enough to hold a 78,200-byte buffer — region 0x3ffe4350, ~113 KB (every other region
+     * caps at ~66 KB). It is freed across every fetch for TLS, and when it is freed the region
+     * reads as 99.8% free yet is split by a handful of TINY network-stack allocations (the block
+     * walk shows 84 B, 112 B, 128 B and several 28-36 B pieces) into pieces such as
+     * 14,256 + 34,788 + 63,596 — none of which fits. `free_heap` is ~128 KB in BOTH the failing
+     * and the succeeding case, which is why the old message sent readers hunting a leak: there is
+     * none. This is fragmentation, pure and simple.
      *
      * The pieces COALESCE back into one 98,304-byte block on their own — measured by polling on a
      * failing tick: after ~800 ms the largest block jumped 69,632 -> 98,304 while `free` did not
@@ -121,10 +194,10 @@ static int ensure_prev(void)
      * measured over a 20-tick USB soak at a 30 s interval, the first malloc succeeded every time
      * with the full 98,304-byte block free, and no tick waited. The wait only appears under
      * SUSTAINED fast HTTP churn (the bench harness's 2 s interval plus an artwork upload), where
-     * the clear took 800 ms to several seconds. 5 s covers the realistic range; a pathological
-     * burst can still exceed it, and then one tick keeps the old image and the NEXT tick recovers
-     * (the tick-entry gate above is what stops that costing two ticks). The 5 s ceiling bounds the
-     * cost of a genuine failure: it is only reached when the region truly cannot be had.
+     * the clear took 800 ms to several seconds. 15 s is a comfortable margin over a 1.45 s
+     * measurement, and a tick that still cannot get its buffer keeps the previous image on the
+     * glass — the correct FR-29 behaviour — and RETRIES shortly rather than waiting a whole
+     * interval.
      *
      * On battery this loop is never reached under normal use: the radio is torn down before the
      * render window, so the region is already clean. */
@@ -133,16 +206,16 @@ static int ensure_prev(void)
         vTaskDelay(pdMS_TO_TICKS(FB_ACQUIRE_POLL_MS));
 #if HEAP_TRACE
         if (attempt % 5 == 0) {
-            ESP_LOGW("heaptrace", "  framebuffer wait %2d: largest=%u free=%u", attempt,
+            ESP_LOGW("heaptrace", "  static-layer wait %2d: largest=%u free=%u", attempt,
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                      (unsigned)esp_get_free_heap_size());
         }
 #endif
-        s_fb_prev = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-        if (s_fb_prev) {
+        s_static = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
+        if (s_static) {
 #if HEAP_TRACE
             if (attempt > 0) {
-                ESP_LOGW("heaptrace", "  framebuffer acquired on attempt %d (~%d ms)",
+                ESP_LOGW("heaptrace", "  static layer acquired on attempt %d (~%d ms)",
                          attempt, attempt * FB_ACQUIRE_POLL_MS);
             }
 #endif
@@ -151,27 +224,24 @@ static int ensure_prev(void)
     }
 
     {
-        /* The largest free block is reported, not just the total. Each framebuffer is one
-         * contiguous 76 KiB allocation, so total free heap is the wrong number to look at: a
-         * device with 200 KiB free but no 76 KiB hole cannot draw, and a message quoting only
-         * the total sends the reader looking for a leak that is not there. */
-        ESP_LOGE(TAG, "cannot allocate the framebuffer (%u bytes) "
+        /* The largest free block is reported, not just the total. This is one contiguous 76 KiB
+         * allocation, so total free heap is the wrong number to look at: a device with 200 KiB
+         * free but no 76 KiB hole cannot draw, and a message quoting only the total sends the
+         * reader looking for a leak that is not there. */
+        ESP_LOGE(TAG, "cannot allocate the static layer (%u bytes) "
                       "(free heap %u, largest block %u)",
                  (unsigned)EPD_FB_BYTES,
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         /* The region breakdown, only here: this is the one point where "which block is in the
          * way" is the question, and the dump is too large to print per refresh. */
-        HEAP_DUMP("resident framebuffer allocation failed");
-        HEAP_BLOCKS("resident framebuffer allocation failed");
+        HEAP_DUMP("static layer allocation failed");
+        HEAP_BLOCKS("static layer allocation failed");
         return -1;
     }
 }
 
-/* Which slot's bytes are currently in s_fb_prev. -1 = nothing drawn yet this power cycle. */
-static int s_shown_slot = -1;
-
-/* Set when a tick could not get its resident framebuffer and therefore drew nothing. The image
+/* Set when a tick could not get its static layer and therefore drew nothing. The image
  * on the glass is still the last good one (correct FR-29 behaviour), but the region may stay
  * fragmented for far longer than the acquire wait — measured: a state that held the largest
  * block at ~38 KB for 30 s+ with only ~230 bytes of small USED blocks in the way. So the serve
@@ -249,7 +319,12 @@ static int load_static_layer(uint8_t *dst, int page, int *from_slot)
         return 0;
     }
     memcpy(dst, boot_logo, EPD_FB_BYTES);
-    *from_slot = -1;
+    /* The built-in boot mark is REPRODUCIBLE — it is a const array in flash, not an upload — so it
+     * gets a real identity of its own rather than SLOT_NONE. It must not share -1 with "unknown",
+     * because the two mean opposite things: this one can be a valid diff base, and a partial of the
+     * boot mark against itself is a genuine no-op rather than corruption. -200 cannot collide with
+     * the artwork sentinels (-(100+page) = -100..-107) or the bitmap slots (0 or 1). */
+    *from_slot = SLOT_BOOT_LOGO;
     return 0;
 }
 
@@ -267,22 +342,6 @@ static int load_static_layer(uint8_t *dst, int page, int *from_slot)
  * never INVENTS a position or a label — it stamps the readings the web app's layout asked for
  * (FR-1). Keeping that property is what lets a layout change ship with no firmware update.
  * ------------------------------------------------------------------------------------------ */
-
-/* The fields to stamp this refresh, and their values. Sized by the parse caps rather than
- * allocated: this lives on the calling task's stack, and the parse bounds it. */
-typedef struct {
-    layout_widget_t widgets[LAYOUT_MAX_FIELDS];
-    value_field_t   fields[LAYOUT_MAX_FIELDS];
-    char            values[LAYOUT_MAX_FIELDS][40];
-    const char     *value_ptrs[LAYOUT_MAX_FIELDS];
-    /* The widget id and "was this a real reading" flag, parallel to values/fields, so
-     * GET /api/values (FR-27) can report which box each resolved string belongs to. The id is
-     * copied rather than pointed at: the widget array is overwritten by the next refresh. */
-    char            ids[LAYOUT_MAX_FIELDS][24];
-    int             has_value[LAYOUT_MAX_FIELDS];
-    int             n;              /* how many the page asked for */
-    int             n_fields;       /* how many are actually stamped (dynamic only) */
-} page_render_t;
 
 /* Turn the parsed widgets into the renderer's field/value arrays.
  *
@@ -316,6 +375,160 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
         nf++;
     }
     p->n_fields = nf;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * PUSHING A FRAME OUT OF ONE STATIC LAYER
+ *
+ * A partial refresh hands the SSD2677 the frame CURRENTLY ON THE GLASS and the frame it should
+ * show next, and the controller derives each pixel's transition from the pair. That pair is why
+ * FR-11's partial path had never run on this hardware: two 78,200-byte frames do not fit — the
+ * only DRAM region large enough for one is 113,840 bytes and the pair needs 156,400 — so the
+ * second framebuffer failed to allocate on EVERY refresh. Measured on the bench: the transient
+ * allocation failed on every attempt and /api/status read `partials_since_full: 0` against
+ * `fulls_total: 6`, so every refresh was a full panel flash and the whole FR-11 strategy was
+ * dead code that reported success.
+ *
+ * The frames are therefore not STORED, they are REPRODUCED. One buffer holds the page's static
+ * layer (the picture the web app uploaded, the expensive half at 78,200 bytes); the values that
+ * were stamped on it last time live in s_prev_values, which is 1.6 KB. Stamping
+ * those strings onto the layer gives the frame on the glass, and stamping the new values
+ * gives the next frame — so both are produced a BAND at a time, into two buffers of
+ * RENDER_BAND_ROWS rows each, and neither whole frame ever exists in RAM.
+ *
+ * The layer must be the SAME for both frames, which is guaranteed rather than assumed: the caller
+ * passes `partial` only when the slot identity matches (see app_refresh_tick), and a slot encodes
+ * the picture (load_static_layer). Different page, different artwork, different bitmap => a full
+ * refresh, because a partial across two unrelated pictures would leave ghosted fragments of the
+ * old layout on the glass.
+ *
+ * WHY THE BAND BUFFERS ARE ALLOCATED PER PUSH AND FREED AGAIN: this part has exactly one region
+ * large enough for the static layer, and that region is what the TLS handshake needs on every
+ * fetch. A permanently-held band pair is memory the radio cannot have at boot — the exact
+ * starvation that leaves an unprovisioned device unable to be set up (see app_fbs_reserve()).
+ * Held only inside the push, they cost nothing the radio can see. */
+
+/* The band size, in rows. 136 divides 680 exactly, giving 5 bands and a 15,640-byte buffer each —
+ * the LEAST work per push, which is why it is the first choice. It is only the first choice,
+ * though: on USB the radio keeps running for the API (FR-31), and the static layer plus the radio's
+ * own allocations leave the largest free block around 14,848 bytes — measured on the bench, 792
+ * bytes SHORT of a 15,640-byte band, so the push failed with ESP_ERR_NO_MEM on every tick. Rather
+ * than pin the band to whatever happens to fit today, the size is found by TRIAL: halve it until
+ * both buffers fit. Each halving is a divisor of 680 down to 8 (680 = 2^3 * 5 * 17), so no band is
+ * ever an awkward fraction.
+ *
+ * A smaller band is not a correctness change — the driver walks whatever rows it is given and the
+ * compose is row-exact — it only costs more callback invocations. */
+#define RENDER_BAND_ROWS_MAX 136
+#define RENDER_BAND_ROWS_MIN 8
+
+/* What a band provider needs: the static layer, the two value sets, the band geometry, and the
+ * scratch buffers the composes read out of. */
+typedef struct {
+    uint8_t            *prev_band;      /* composed: what is on the glass */
+    uint8_t            *next_band;      /* composed: what it should show */
+    const frame_spec_t *next;
+    const frame_spec_t *prev;           /* NULL for a full refresh: no previous frame is read */
+    int                 band_rows;      /* the size this push settled on (see above) */
+} band_push_t;
+
+/* The driver's band provider (epd_band_fn).
+ *
+ * IT IS CALLED IN DESCENDING BAND ORDER — the panel scans bottom-up, so the last band goes out
+ * first — and it must write its band where the driver expects it, which is why it returns the rows
+ * it produced and the driver cross-checks against the rows that band actually has.
+ *
+ * `prev` may be NULL for a full refresh: the previous frame is never read then (a full expands the
+ * next frame alone), so composing it would be wasted work — and, worse, a wasted band buffer.
+ *
+ * Returns 0 on success. A compose failure propagates as a non-zero return, which the driver turns
+ * into ESP_ERR_INVALID_STATE and the caller into a failed push that leaves the old image up. */
+static int band_provider(void *ctx, int band_index,
+                         uint8_t *prev_out, uint8_t *next_out, int *rows_out)
+{
+    band_push_t *b = (band_push_t *)ctx;
+    const int y0 = band_index * b->band_rows;
+    const int rows = (EPD_HEIGHT - y0 < b->band_rows) ? (EPD_HEIGHT - y0) : b->band_rows;
+
+    canvas_t c;
+
+    canvas_init_band(&c, b->next_band, y0, rows);
+    if (render_compose_band(&c, flash_reader, s_static,
+                            b->next->fields, b->next->values, b->next->n_fields) != 0) {
+        return -1;
+    }
+
+    if (b->prev) {
+        canvas_init_band(&c, b->prev_band, y0, rows);
+        if (render_compose_band(&c, flash_reader, s_static,
+                                b->prev->fields, b->prev->values, b->prev->n_fields) != 0) {
+            return -1;
+        }
+    }
+
+    *rows_out = rows;
+    (void)prev_out;     /* the driver hands us the buffers we already have in `b` */
+    (void)next_out;
+    return 0;
+}
+
+/* Push the composited page, band by band, out of the resident static layer. Returns ESP_OK, or an
+ * error the caller surfaces and records without changing the glass.
+ *
+ * `partial` selects the wire format AND how much is composed: a partial needs the previous frame as
+ * well, a full does not. The band buffers are taken here, because only the caller knows whether the
+ * partial path is live yet — and they are freed on every exit, including the failures, because a
+ * leaked pair is memory the next fetch's TLS handshake needs. */
+static int push_banded(const frame_spec_t *next, const frame_spec_t *prev, int partial)
+{
+    /* Find the largest band that fits, by trial. See RENDER_BAND_ROWS_MAX for why the size cannot
+     * be a constant. The two buffers are taken together and released together, so a size where only
+     * one fits is not accepted: a partial needs the pair, and settling for a size that cannot hold
+     * both would turn every partial into a full refresh — silently, which is the failure this whole
+     * change exists to remove. */
+    uint8_t *prev_band = NULL;
+    uint8_t *next_band = NULL;
+    int band_rows = 0;
+
+    for (int r = RENDER_BAND_ROWS_MAX; r >= RENDER_BAND_ROWS_MIN; r /= 2) {
+        const size_t bytes = (size_t)r * EPD_PITCH;
+        next_band = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+        if (!next_band) continue;
+        if (!partial) { band_rows = r; break; }
+        prev_band = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+        if (prev_band) { band_rows = r; break; }
+        /* Only one fitted, so this size is no good for a partial: give the buffer back and try the
+         * next size down rather than leaking it and failing. */
+        free(next_band);
+        next_band = NULL;
+    }
+
+    if (!next_band) {
+        ESP_LOGE(TAG, "no band buffer fits (largest block %u); the %s refresh cannot be drawn",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                 partial ? "partial" : "full");
+        free(prev_band);
+        return ESP_ERR_NO_MEM;
+    }
+
+    band_push_t b = {
+        .prev_band = prev_band,
+        .next_band = next_band,
+        .next = next,
+        /* A full refresh composes the next frame only, so the previous VALUES are not needed —
+         * and passing them anyway would make the provider compose a second frame for the sole
+         * purpose of the driver ignoring it. */
+        .prev = partial ? prev : NULL,
+        .band_rows = band_rows,
+    };
+
+    /* The driver is told the SAME band geometry the buffers were sized for; the two must agree or
+     * it would walk past the end of a buffer. */
+    const esp_err_t e = epd_write_frame_banded(band_provider, &b, prev_band, next_band,
+                                               band_rows, partial);
+    free(prev_band);
+    free(next_band);
+    return e;
 }
 
 /* The last temperature this device successfully fetched, and when.
@@ -392,48 +605,44 @@ static int thermal_blocks_render(void)
 
 esp_err_t app_render_last_good(void)
 {
-    if (ensure_prev() != 0) return ESP_ERR_NO_MEM;
-    /* The last-good push happens before the network, so the second buffer is normally
-     * available; if it is not, compose into the resident one and push a full frame. */
-    const int have_next = (acquire_next() == 0);
-    uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
+    if (ensure_static() != 0) return ESP_ERR_NO_MEM;
 
     /* Page 0: the boot path shows the last-good image before the network, and it cannot know
      * which page was on the glass when the device slept. Page 0 is the defined default (a
      * single-page layout renders identically at any index). */
     int slot = -1;
-    if (load_static_layer(work, 0, &slot) != 0) {
-        if (have_next) release_next();      /* see the leak note in app_refresh_tick() */
+    if (load_static_layer(s_static, 0, &slot) != 0) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* No live values yet (this runs before the network), so compose with the static layer
-     * alone. The frame is what the previous power cycle left, which is the point: FR-29
-     * wants the last good image visible immediately, not a blank panel during the fetch. */
-    canvas_t c;
-    canvas_init(&c, work);
-    if (render_compose_stream(&c, flash_reader, work, NULL, NULL, 0) != 0) {
-        if (have_next) release_next();
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const esp_err_t e = epd_write_frame(work);
+    /* No live values yet (this runs before the network), so the frame is the static layer alone.
+     * That is the point: FR-29 wants the last good image visible immediately, not a blank panel
+     * during the fetch, and the values from the previous power cycle are not recoverable — the RAM
+     * that held them did not survive the sleep. So this is the bare picture, and a device that has
+     * never fetched shows exactly that rather than a placeholders frame.
+     *
+     * No values are recorded as the previous frame for the same reason: a later partial must
+     * reproduce THIS frame as its "previous" one, and this frame has nothing stamped on it. */
+    const frame_spec_t none = { .fields = NULL, .values = NULL, .n_fields = 0 };
+    const esp_err_t e = push_banded(&none, NULL, 0);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "panel write failed: %s", esp_err_to_name(e));
         api_note_error("render: panel write failed");
-        if (have_next) release_next();
         return e;
     }
 
-    /* This frame is now on the glass, so it becomes the "previous" frame a later partial
-     * refresh will be diffed against. The second buffer is handed back: it is 76.4 KiB that
-     * the coming TLS handshake needs, and keeping it is what produced the mbedTLS
-     * "sha_get_engine_state" abort. The image is on the glass and the panel is bistable, so
-     * nothing is lost by not holding it. */
-    memcpy(s_fb_prev, work, EPD_FB_BYTES);
+    /* This frame is now on the glass, so it becomes the "previous" frame a later partial refresh
+     * is diffed against — recorded as its VALUES, not as 78,200 bytes, because two whole frames do
+     * not fit this part (see the block comment above push_banded). */
+    s_prev_values.n_fields = 0;
     s_shown_slot = slot;
-    if (have_next) release_next();
+    s_glass_present = 1;
+    s_have_prev_values = 1;
     api_record_refresh(1);       /* a full update by definition */
+    /* Start the datasheet's 24 h clock here too. This IS a full refresh of the panel, so it is the
+     * moment the clock restarts; leaving it at 0 would make the first tick's hours_since_full()
+     * read 0 and postpone the ghosting-clearing refresh by however long this image stayed up. */
+    s_last_full_us = esp_timer_get_time();
     ESP_LOGI(TAG, "last-good image pushed (slot %d)", slot);
     return ESP_OK;
 }
@@ -753,131 +962,99 @@ static int fetch_ha(const fetch_creds_t *c, char (*ids)[48], int n_ids,
 
 esp_err_t app_fbs_reserve(void)
 {
-    /* ONE buffer, and that one is the frame on the glass. Reserving two here is what starved
-     * the radio: measured, the device had 2.9 KiB left after two framebuffers, the linker's
-     * static DRAM and esp_wifi_init(), so the driver aborted with ESP_ERR_NO_MEM and the
-     * device could not be provisioned. The second is acquired inside the render window, where
-     * it is actually needed and where the radio has been torn down on battery — see the block
-     * comment in app_refresh_tick(). */
-    return ensure_prev() == 0 ? ESP_OK : ESP_ERR_NO_MEM;
+    /* ONE buffer, and it holds the static layer. An earlier version reserved TWO 78,200-byte
+     * framebuffers here, which starved the radio: measured, the device had 2.9 KiB left after the
+     * two framebuffers, the linker's static DRAM and esp_wifi_init(), so the driver aborted with
+     * ESP_ERR_NO_MEM and the device could not be provisioned. The band buffers the push needs are
+     * acquired inside the render window and are two orders of magnitude smaller (see push_banded). */
+    return ensure_static() == 0 ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 void app_fbs_release(void)
 {
-    free(s_fb_prev); s_fb_prev = NULL;
-    free(s_fb_next); s_fb_next = NULL;
-    /* The previous frame is gone, so the next push must be a FULL refresh: a partial refresh
-     * would diff the new frame against uninitialised memory and scribble noise on the glass.
-     * Clearing this is what makes that happen — refresh_decide() sees no previous frame and
-     * chooses a full push. */
-    s_shown_slot = -1;
-    ESP_LOGI(TAG, "framebuffers released (%u bytes back to the heap)",
-             (unsigned)(2 * EPD_FB_BYTES));
+    free(s_static); s_static = NULL;
+    /* The picture this firmware could reproduce is gone with the layer, so the next push must be
+     * a FULL refresh: a partial would diff the new frame against a frame it cannot rebuild and
+     * leave ghosted fragments on the glass. Clearing BOTH the identity and the presence flag is
+     * what makes that happen — refresh_decide() then sees nothing on the glass and chooses a full
+     * push. */
+    s_shown_slot = SLOT_NONE;
+    s_glass_present = 0;
+    s_have_prev_values = 0;
+    ESP_LOGI(TAG, "static layer released (%u bytes back to the heap)", (unsigned)EPD_FB_BYTES);
 }
 
 /* Draw the "how to set this up" screen: the AP name, the BLE PoP, and QR codes for the setup
  * page and the two provisioning apps (FR-30).
  *
- * Uses ONE framebuffer, and reuses the resident one when it is already held, because this runs
- * at the last moment before provisioning needs the memory back — so it must not ask for 152 KiB
- * it is about to hand over. Composed via lib/provscreen, which is host-tested (the QR modules
- * are verified byte-for-byte against the reference matrices; see test/test_provscreen). */
+ * Uses the resident static layer, because this runs at the last moment before provisioning needs
+ * the memory back — so it must not ask for a second 78,200-byte buffer it is about to hand over.
+ * Overwriting the layer is safe and deliberate: the boot path releases it immediately afterwards,
+ * and the identity is cleared so the next render reloads a real one rather than diffing a partial
+ * against the setup screen. Composed via lib/provscreen, which is host-tested (the QR modules are
+ * verified byte-for-byte against the reference matrices; see test/test_provscreen). */
 void app_render_setup_screen(void)
 {
-    if (ensure_prev() != 0) {
-        ESP_LOGE(TAG, "cannot draw the setup screen: no framebuffer");
+    if (ensure_static() != 0) {
+        ESP_LOGE(TAG, "cannot draw the setup screen: no static layer");
         return;
     }
-    const int have_next = (acquire_next() == 0);
-    uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
 
     char ap_ssid[32];
     prov_service_name(ap_ssid, sizeof(ap_ssid));
 
     /* Pass the brand badge in HERE rather than drawing it first: the render fills the page
      * white before composing, so anything drawn beforehand would be erased. */
-    if (provscreen_render_branded(work, ap_ssid, PROV_POP_STRING,
+    if (provscreen_render_branded(s_static, ap_ssid, PROV_POP_STRING,
                                   boot_badge, boot_badge_w, boot_badge_h) != 0) {
         ESP_LOGE(TAG, "setup screen render failed");
-        if (have_next) release_next();
         return;
     }
 
     if (epd_wake() != ESP_OK) {
         ESP_LOGE(TAG, "panel did not wake for the setup screen");
-        if (have_next) release_next();
         return;
     }
 
-    const esp_err_t e = epd_write_frame(work);
-    /* The resident buffer follows this like any other full frame, so the NEXT partial refresh
-     * (after provisioning, on a later boot) diffs against the right thing. The slot is -1:
-     * this is not the layout bitmap, and marking it otherwise would make a later partial diff
-     * the setup screen against a layout. */
+    /* Pushed whole rather than banded: the renderer above already produced the full frame in the
+     * layer buffer, so a band pass would only re-read it a band at a time for no memory saving. */
+    const esp_err_t e = epd_write_frame(s_static);
     if (e == ESP_OK) {
-        memcpy(s_fb_prev, work, EPD_FB_BYTES);
-        s_shown_slot = -1;
+        /* Identity cleared, NOT set: this is not the layout bitmap and it carries no layout
+         * values, so marking it otherwise would authorise a later partial to diff a real layout
+         * against the setup screen. Presence is cleared with it for the same reason — something IS
+         * on the glass, but it is not something this firmware can reproduce, and a full refresh is
+         * the only correct way to replace it. */
+        s_shown_slot = SLOT_NONE;
+        s_glass_present = 0;
+        s_have_prev_values = 0;
         ESP_LOGI(TAG, "setup screen shown: SSID \"%s\"", ap_ssid);
     } else {
         ESP_LOGE(TAG, "setup screen push failed: %s", esp_err_to_name(e));
     }
     epd_sleep();
-    if (have_next) release_next();
 }
 
 /* ---------------------------------------------------------------------------------------
- * WHY THE SECOND FRAMEBUFFER IS TRANSIENT RATHER THAN RESIDENT
+ * WHY THE BAND BUFFERS ARE TRANSIENT RATHER THAN RESIDENT
  *
  * Measured on this part: total DRAM available for dynamic allocation is 234.2 KiB, and
  * esp_wifi_init() alone takes 26.2 KiB (5 static RX buffers, a 6.6 KiB driver task, the
- * management and dynamic pools). Add the linker's 52.4 KiB of static .bss/.data and the two
+ * management and dynamic pools). Add the linker's 52.4 KiB of static .bss/.data and two
  * 76.4 KiB framebuffers and the sum is 312 KiB against 234 available — the device cannot hold
- * two framebuffers and a live radio at the same time. With both reserved up front,
+ * TWO FRAMEBUFFERS and a live radio at the same time. With two reserved up front,
  * esp_wifi_init() failed with ESP_ERR_NO_MEM ("Expected to init 10 rx buffer, actual is 6")
  * and the HTTP server then failed with ESP_ERR_HTTPD_ALLOC_MEM, leaving the device with a
  * working panel and no way to configure it. Only ~2.9 KiB was left.
  *
- * Only ONE of the two is actually needed for any length of time:
+ * Only ONE whole-panel buffer is needed for any length of time: the static layer, because it is
+ * the expensive half (78,200 bytes) and both frames of a partial are derived from it. The band
+ * buffers the push composes into are 31 KB for the pair together — small enough to be taken and
+ * given back inside the render window, and the reason a partial is possible here at all.
  *
- *   - s_fb_prev must be resident, because it is the frame currently on the glass and a
- *     partial refresh is diffed against it (epd_write_frame_partial reads it row by row).
- *     It is what survives between refreshes.
- *   - s_fb_next is needed only inside app_refresh_tick() and app_render_last_good() — loaded,
- *     composed into, pushed, and then copied into s_fb_prev. Outside that window it is dead
- *     weight, and holding it is what starves the radio.
- *
- * So s_fb_next is acquired on entry to the render window and released on exit. On battery the
- * radio has already been torn down by net_wifi_disconnect() before the window opens, so the
- * transient allocation always fits; in USB mode the API keeps the radio up, and the ~90 KiB
- * that frees is what lets the HTTP server start at all.
- *
- * The panel is bistable and is put to sleep after every push, so releasing the transient
- * buffer costs nothing visually — the image is on the glass, not in RAM.
+ * The panel is bistable and is put to sleep after every push, so releasing them costs nothing
+ * visually — the image is on the glass, not in RAM.
  * ------------------------------------------------------------------------------------- */
-
-/* Acquire the transient framebuffer. Returns 0 on success. Logs the same diagnostic as
- * ensure_fbs() on failure, because "largest free block" is the number that matters for a
- * single contiguous allocation. */
-static int acquire_next(void)
-{
-    if (s_fb_next) return 0;
-    s_fb_next = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-    if (!s_fb_next) {
-        ESP_LOGE(TAG, "cannot allocate the transient framebuffer (%u bytes) "
-                      "(free heap %u, largest block %u)",
-                 (unsigned)EPD_FB_BYTES,
-                 (unsigned)esp_get_free_heap_size(),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-        return -1;
-    }
-    return 0;
-}
-
-static void release_next(void)
-{
-    free(s_fb_next);
-    s_fb_next = NULL;
-}
 
 void app_refresh_tick(power_source_t source, int force_full)
 {
@@ -886,54 +1063,61 @@ void app_refresh_tick(power_source_t source, int force_full)
      * can see WHERE the contiguous block goes without re-instrumenting and re-flashing. */
     HEAP_DIAG("tick entry");
 
-    /* The resident framebuffer is NOT acquired here, on either power source.
+    /* The static layer is NOT acquired here, on either power source.
      *
-     * It used to be acquired at tick entry on battery, so that the frame would survive the fetch
-     * as the diff base for a partial refresh. That is no longer possible or useful: the fetch needs
-     * the region far more than the frame does (see the release below), and on battery a partial
-     * was never reachable anyway — one refresh per wake, then deep sleep, with s_fb_prev living in
-     * RAM that does not survive it.
+     * It used to be held across the fetch, so the frame would survive as the diff base for a
+     * partial refresh. That is no longer possible or useful: the fetch needs the region far more
+     * than the layer does (see the release below), and on battery a partial was never reachable
+     * anyway — one refresh per wake, then deep sleep, with the layer and its values living in RAM
+     * that does not survive esp_deep_sleep_start().
      *
      * Acquiring it here would also be actively HARMFUL. When the re-acquire at the END of a tick
-     * fails on a fragmented region, s_fb_prev is left NULL; an entry acquire would then fail too
-     * and the tick would return BEFORE the fetch, so one failed render costs the NEXT tick's data
-     * as well as its image, and the device stays stale for several ticks while the region clears
+     * fails on a fragmented region, s_static is left NULL; an entry acquire would then fail too and
+     * the tick would return BEFORE the fetch, so one failed render costs the NEXT tick's data as
+     * well as its image, and the device stays stale for several ticks while the region clears
      * (measured: one failure cascaded into four). Not acquiring means a failed render costs only
      * that tick's image; the next tick fetches and draws normally.
      *
-     * The frame is taken once, at the re-acquire below, after the radio is down and the fetch
+     * The layer is taken once, at the re-acquire below, after the radio is down and the fetch
      * buffers are freed — which is the point at which it is actually needed and most likely to fit. */
-    if (s_fb_prev) { free(s_fb_prev); s_fb_prev = NULL; }
-    HEAP_DIAG("tick entry (no resident frame held)");
+    if (s_static) { free(s_static); s_static = NULL; }
+    HEAP_DIAG("tick entry (no static layer held)");
 
-    /* ---- THE RESIDENT FRAME IS RELEASED ACROSS THE FETCH, ON BOTH POWER SOURCES ----
+    /* ---- THE STATIC LAYER IS RELEASED ACROSS THE FETCH, ON BOTH POWER SOURCES ----
      *
      * WHY IT MUST BE: the TLS handshake needs CONTIGUOUS DRAM for the in-buffer, the out-buffer,
      * the X.509 verification working set and the worker's own stack, and it can only come from the
-     * ONE region large enough for a framebuffer (measured: region 0x3ffe4350, 113,840 bytes — every
-     * other region caps at 64,936). Holding the 78,200-byte frame there leaves 35,640 bytes for
+     * ONE region large enough for a 78,200-byte buffer (measured: region 0x3ffe4350, 113,840 bytes —
+     * every other region caps at 64,936). Holding the layer there leaves 35,640 bytes for
      * everything else, which is not enough. Measured, holding it makes EVERY fetch fail:
      * `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) and `PK verify failed` (X509 alloc),
      * with every reading falling back to "--".
      *
-     * THIS APPLIES ON BATTERY TOO, and the earlier "on battery the frame is held and both fit"
+     * THIS APPLIES ON BATTERY TOO, and the earlier "on battery the layer is held and both fit"
      * reasoning was WRONG — it was true only while the TLS in-buffer was 8192. At the 16384 the
      * server's TLS records actually require (see sdkconfig.defaults), the arithmetic is
-     * 78,200 (frame) + 16,384 (TLS in) + ~4 K (out) + ~19 K (forecast) > 113,840. Measured on the
+     * 78,200 (layer) + 16,384 (TLS in) + ~4 K (out) + ~19 K (forecast) > 113,840. Measured on the
      * bench in battery mode: the handshake failed for BOTH fetches and the panel drew placeholders.
-     * The fetch buffers and the frame cannot coexist in that region at any tolerable buffer size.
+     * The fetch buffers and the layer cannot coexist in that region at any tolerable buffer size.
      *
      * RELEASING COSTS NOTHING ON BATTERY EITHER, because a partial refresh there was never
      * possible in the first place: the device performs ONE refresh per wake and then deep-sleeps,
-     * and s_fb_prev / s_shown_slot live in ordinary RAM that does not survive esp_deep_sleep_start().
-     * So there is no diff base to preserve across a fetch — every battery render is necessarily a
-     * full refresh, and the 78,200 bytes are better spent on the fetch. FR-11's partial strategy
-     * belongs to the always-on path, where it is what keeps flicker and refresh time down.
+     * and s_static / s_prev_values / s_shown_slot live in ordinary RAM that does not survive
+     * esp_deep_sleep_start(). So there is no diff base to preserve across a fetch — every battery
+     * render is necessarily a full refresh, and the 78,200 bytes are better spent on the fetch.
+     * FR-11's partial strategy belongs to the always-on path, where it is what keeps flicker and
+     * refresh time down.
      *
      * The cost of releasing is the re-acquire below, which can fail while the region is
-     * fragmented — see ensure_prev()'s bounded wait, which is what makes that re-acquire reliable.
+     * fragmented — see ensure_static()'s bounded wait, which is what makes that re-acquire reliable.
      * The panel is bistable and asleep between pushes, so releasing costs nothing visible. */
-    s_shown_slot = -1;
+
+    /* NOTE: s_shown_slot and s_glass_present are deliberately NOT cleared here. They describe the
+     * picture ON THE GLASS, which releasing the RAM does not change — the frame is still up there.
+     * Clearing them would say "nothing on the glass" and force a FULL refresh on every tick, which
+     * is how an earlier version of this function made FR-11's partial path dead code. They are
+     * cleared only when the glass is genuinely overwritten by something unreproducible or the layer
+     * is dropped — app_fbs_release() and the setup screen. */
 
     /* WiFi credentials live in NVS, written by provisioning (FR-30) — never compiled in.
      * net_wifi_connect() needs them explicitly, so they are read here rather than assumed. */
@@ -1207,10 +1391,10 @@ void app_refresh_tick(power_source_t source, int force_full)
      * The limit comes from the config THIS TICK ALREADY PARSED, not from api_partial_limit().
      * That function re-reads the stored document through cfg_store_get(), which mallocs the full
      * 16,384-byte CFG_JSON_MAX_LEN block — and this line is INSIDE the render window, in the gap
-     * between releasing the resident framebuffer and re-acquiring it. A transient 16 KB block
-     * landing in the freshly-freed 76 KB hole is precisely the fragmentation that makes the
-     * re-acquire fail, which is silent on the glass. Measured with HEAP_TRACE: the window opens
-     * with one clean 110,592-byte block, and that is the whole margin the framebuffer needs.
+     * between releasing the static layer and re-acquiring it. A transient 16 KB block landing in
+     * the freshly-freed 78 KB hole is precisely the fragmentation that makes the re-acquire fail,
+     * which is silent on the glass. Measured with HEAP_TRACE: the window opens with one clean
+     * 110,592-byte block, and that is the whole margin the layer needs.
      *
      * `cfg` is already parsed above and layout_config_parse() seeds the same default (5) and the
      * same clamp, so this is the identical number with no allocation. */
@@ -1222,8 +1406,15 @@ void app_refresh_tick(power_source_t source, int force_full)
     const int forced_full = force_full || api_take_full_refresh();
     /* "Nothing on the glass" is tracked separately from the partial counter: the counter is
      * reset to 0 BY a full refresh, so treating 0 as "nothing drawn" would make every
-     * refresh a full one and kill the partial path entirely. */
-    const int nothing_on_glass = (s_shown_slot < 0);
+     * refresh a full one and kill the partial path entirely.
+     *
+     * IT IS ITS OWN FLAG, NOT A TEST ON THE SLOT'S SIGN. The artwork identity is a NEGATIVE
+     * sentinel (-(100 + page)), so `s_shown_slot < 0` was true for every device with an uploaded
+     * layout — every tick read "nothing on the glass" and forced a full refresh, which is why
+     * /api/status reported partials_since_full: 0 regardless of the partial budget. The two
+     * questions ("is there anything to diff against" and "is it the same picture") are separate
+     * and are now answered separately. */
+    const int nothing_on_glass = !s_glass_present;
     /* The datasheet's 24 h rule, from real elapsed time — see hours_since_full(). Passing a
      * constant 0 here would silently disable it, which is the one policy that protects the
      * panel from permanent ghosting. */
@@ -1231,79 +1422,40 @@ void app_refresh_tick(power_source_t source, int force_full)
                                          limit, hours_since_full());
     if (forced_full) kind = REFRESH_FULL;
 
-    /* ---- The render window: try for the second framebuffer ----
+    /* ---- The render window: re-acquire the static layer ----
      *
-     * The transient buffer is requested HERE, after the fetch and after net_wifi_disconnect().
-     * That ordering matters, and so does the fact that this is a PREFERENCE rather than a
-     * requirement.
+     * The layer is taken HERE, after the fetch and after net_wifi_disconnect(), because that is
+     * when the region it needs is most likely to be free — see the release note at the top of this
+     * function. It is REQUIRED rather than a preference: without it nothing can be composed, so a
+     * failure fails the tick and leaves the last good image on the glass (FR-29).
      *
-     * On battery the radio was just torn down, which frees roughly 27 KiB, and the buffer
-     * fits — so the partial-refresh path (FR-11) works as designed.
+     * This is the ONE whole-panel buffer the push needs. The previous and next frames are composed
+     * a band at a time out of it (see push_banded), which is what makes FR-11's partial path
+     * reachable on this part at all — the old design asked for a SECOND 78,200-byte framebuffer
+     * here, which never fitted, so every refresh fell back to a full flash and the partial path
+     * was dead code that reported success.
      *
-     * On USB the radio stays up for the API (FR-31), and then it does NOT fit: measured, the
-     * heap has ~82 KiB free when this runs but split into ten blocks with the largest only
-     * 22.5 KiB, because the radio's allocations sit between the free pieces. There is no
-     * ordering that fixes this — two 76.4 KiB framebuffers plus the radio plus the TLS buffers
-     * is about 300 KiB against the 234.2 KiB this part has, so a partial refresh and a live
-     * radio are mutually exclusive.
-     *
-     * Rather than fail, the render falls back to a FULL refresh, which needs only ONE buffer:
-     * compose straight into s_fb_prev (the frame on the glass is not needed to draw a full
-     * frame) and push that. The panel gets the new image either way; the cost is ghosting on
-     * a device that is plugged in and being configured, which is exactly when a full refresh
-     * is least objectionable. On battery — the deployed case, where FR-11's partial strategy
-     * actually matters for power and flicker — the partial path is unaffected. */
-
-    /* Re-acquire the resident frame that USB released across the fetch (above). The wait inside
-     * ensure_prev() is what makes this reliable on USB — see its comment for why the region is
-     * briefly unusable and how long it takes to clear. s_shown_slot is already -1, so the policy
-     * below forces a full refresh — the only kind possible without a diff base. */
-    HEAP_DIAG("before re-acquire of prev");
-    if (ensure_prev() != 0) {
+     * The wait inside ensure_static() is what makes this reliable on USB — see its comment for why
+     * the region is briefly unusable and how long it takes to clear. The slot identity is NOT
+     * cleared, so a partial whose picture is still on the glass remains available. */
+    HEAP_DIAG("before static layer acquire");
+    if (ensure_static() != 0) {
         /* Flag it so the serve loop retries shortly instead of holding the stale image for a
          * full interval; the flag is the only signal, since the image on the glass is
          * deliberately untouched. */
         s_fb_lost = 1;
-        api_note_error("render: out of memory for the framebuffer");
+        api_note_error("render: out of memory for the static layer");
         return;
     }
     s_fb_lost = 0;
-    HEAP_DIAG("after re-acquire of prev");
+    HEAP_DIAG("after static layer acquire");
 
-    const int have_next = (acquire_next() == 0);
-    HEAP_DIAG(have_next ? "after transient acquired" : "transient unavailable");
-    if (!have_next) {
-        ESP_LOGW(TAG, "no second framebuffer (free %u, largest %u); falling back to a full refresh",
-                 (unsigned)esp_get_free_heap_size(),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    }
-    uint8_t *const work = have_next ? s_fb_next : s_fb_prev;
-
-    /* Build the new frame from the static layer plus the page's resolved values.
-     *
-     * The static layer and the fields must come from the SAME layout generation, and the slot
-     * number is what ties them: a partial refresh diffs the new frame against the previous one,
-     * so if the web app pushed a NEW layout bitmap while the field list came from an older
-     * config, the diff would compare two unrelated pictures and leave ghosted fragments of the
-     * old layout on the glass. `slot` changes whenever the bitmap changes, and the partial path
-     * below requires s_shown_slot == slot for exactly this reason. */
+    /* Pull the static layer into the resident buffer. This is the ONLY whole-panel buffer held:
+     * the previous and the next FRAME are each produced a band at a time from it by push_banded(),
+     * which is what makes a partial possible on this part (see the block comment on s_static). */
     int slot = -1;
-    if (load_static_layer(work, page_index, &slot) != 0) {
-        /* EVERY exit after acquire_next() MUST give the transient buffer back. It is 76.4 KiB
-         * of a 234 KiB part, so leaking even one costs a whole framebuffer's worth of the
-         * largest contiguous block — enough that the NEXT refresh cannot allocate its resident
-         * frame and silently keeps the old image on the glass. That is the "reports success,
-         * panel does nothing" failure this path must never produce. */
-        if (have_next) release_next();
-        return;
-    }
-
-    canvas_t c;
-    canvas_init(&c, work);
-    if (render_compose_stream(&c, flash_reader, work,
-                              page.fields, page.value_ptrs, page.n_fields) != 0) {
-        ESP_LOGE(TAG, "compose failed");
-        if (have_next) release_next();
+    if (load_static_layer(s_static, page_index, &slot) != 0) {
+        ESP_LOGE(TAG, "no static layer for page %d", page_index);
         return;
     }
 
@@ -1314,64 +1466,98 @@ void app_refresh_tick(power_source_t source, int force_full)
     if (epd_wake() != ESP_OK) {
         ESP_LOGE(TAG, "panel did not wake");
         api_note_error("render: panel did not wake");
-        if (have_next) release_next();
         return;
     }
 
     /* HW-1: do not draw outside the panel's 0..50 C operating range. Checked HERE, after
      * epd_wake() and before the push, because the guard's read of the controller's temperature is
      * an SPI command that only answers on an awake panel — reading it earlier would make the
-     * guard always come back UNKNOWN. The frame is already composed at this point, but nothing is
-     * drawn to a panel outside its range: that is exactly the "garbage on the glass" HW-1 forbids.
+     * guard always come back UNKNOWN. Nothing is drawn to a panel outside its range: that is
+     * exactly the "garbage on the glass" HW-1 forbids.
      *
      * This logs, and records THROUGH api_note_error, which is /api/status's evidence that a
      * refresh was suppressed and why (FR-33). */
     if (thermal_blocks_render()) {
-        if (have_next) release_next();
         return;
     }
 
-    /* A partial needs BOTH frames, so it is only possible when the second buffer was
-     * obtained. Otherwise this is a full refresh, which is also what the policy asks for when
-     * the static layer changed — a partial against a previous frame from a DIFFERENT image
-     * would diff two unrelated pictures and leave ghosted fragments of the old layout.
+    /* A partial is only valid when the frame on the glass came from the SAME static layer and
+     * the SAME values we still hold: the controller derives each pixel's transition from the
+     * previous/next pair, so diffing against a frame this firmware cannot reproduce would leave
+     * ghosted fragments of an unrelated picture. `s_shown_slot` is the picture's identity (see
+     * load_static_layer) and `s_have_prev_values` says the previous values were recorded.
      *
-     * `actual_partial` is recorded rather than re-derived at the log below. The old log
-     * recomputed "partial" from `kind` alone, which is the DECISION and not the ACTION: when
-     * the transient framebuffer was unavailable the decision was still PARTIAL while the else
-     * branch ran a full refresh, so the log said "partial refresh done" and every FR-11 check
-     * read that as a partial. In USB mode that is the common case, so the log was wrong exactly
-     * when it was being relied on. */
-    const int actual_partial = (have_next && kind == REFRESH_PARTIAL && s_shown_slot == slot);
-    if (actual_partial) {
-        e = epd_write_frame_partial(s_fb_prev, s_fb_next);
-        if (e == ESP_OK) api_record_refresh(0);
-    } else {
-        e = epd_write_frame(work);
-        if (e == ESP_OK) {
-            api_record_refresh(1);
-            /* Only a full refresh restarts the 24 h clock: a partial does not clear
-             * ghosting, so it cannot postpone the need for one. */
-            s_last_full_us = esp_timer_get_time();
-        }
-    }
+     * `actual_partial` is recorded rather than re-derived at the log below. An earlier version
+     * recomputed "partial" from `kind` alone, which is the DECISION and not the ACTION: when the
+     * previous frame could not be reproduced the decision was still PARTIAL while a full refresh
+     * ran, so the log said "partial refresh done" and every FR-11 check read that as a partial. */
+    int actual_partial = (kind == REFRESH_PARTIAL && s_shown_slot == slot &&
+                          s_have_prev_values);
 
+    /* THE PANEL'S WAVEFORM IS THE DRIVER'S BUSINESS, and it enforces it inside every writer
+     * (epd_ensure_waveform): a partial is drawn with the PARTIAL OTP waveform and a full with the
+     * temperature-compensated LUT ladder, and the two are NOT interchangeable. Driving the
+     * controller in one mode while sending the other mode's stream is silent on the wire — the
+     * bytes are accepted and the panel shows something, just wrong (grey, half-transitioned pixels
+     * where a value changed) — so the check belongs where the register state is known, not at this
+     * call site. There were two reasons FR-11's partial path had never run at all: the second
+     * framebuffer never allocated (now replaced by band composition), and epd_init_partial() was
+     * never called. The driver now does both correctly on its own.
+     *
+     * A waveform failure therefore surfaces here as a failed push, which is handled below: the image
+     * stays as it was and the error is recorded for /api/status (FR-33). */
+    const frame_spec_t next = {
+        .fields = page.fields, .values = page.value_ptrs, .n_fields = page.n_fields,
+    };
+    const frame_spec_t prev = {
+        .fields = s_prev_values.fields, .values = s_prev_values.value_ptrs,
+        .n_fields = s_prev_values.n_fields,
+    };
+
+    e = push_banded(&next, &prev, actual_partial);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "panel update failed: %s", esp_err_to_name(e));
         api_note_error("render: panel update failed");
-        if (have_next) release_next();
+        /* A NO-MEM failure here is a heap problem, not a panel problem, and it is transient in the
+         * same way a failed layer acquire is: the region is fragmented by small network allocations
+         * that free on their own. Measured on USB before the adaptive band size existed, the band
+         * buffer missed by 792 bytes on EVERY tick for several minutes — the panel kept a stale
+         * reading the whole time, with nothing retrying it until the next 15-minute interval. Flag
+         * it so the serve loop comes back in seconds. */
+        if (e == ESP_ERR_NO_MEM) s_fb_lost = 1;
         return;
     }
 
-    /* With a second buffer the new frame is copied down into the resident one. In the
-     * fallback the frame was composed into the resident one directly, so it is already there. */
-    if (have_next) memcpy(s_fb_prev, s_fb_next, EPD_FB_BYTES);
+    /* The values just drawn are the ones a LATER partial must reproduce for its "previous" frame,
+     * so they are recorded only after the push succeeded. `slot` too: it identifies the picture,
+     * and a slot recorded against a frame that never made it to the glass would authorise a
+     * partial against the wrong base.
+     *
+     * THE STRINGS ARE COPIED INTO THE SNAPSHOT'S OWN STORAGE AND THE POINTERS REBASED, which is not
+     * incidental. `page.value_ptrs[i]` points into `page.values[i]` — the TICK-LOCAL page, which the
+     * next tick overwrites. Copying the pointers would leave the snapshot pointing at the NEW
+     * values, so the "previous" frame would be composed with the very values it is meant to differ
+     * from, the two frames would be identical, and the partial would write nothing to the glass
+     * while reporting success. Rebasing onto the snapshot's own storage is what makes it a
+     * snapshot. */
+    s_prev_values.n_fields = page.n_fields;
+    for (int i = 0; i < page.n_fields; i++) {
+        s_prev_values.fields[i] = page.fields[i];
+        memcpy(s_prev_values.values[i], page.values[i], sizeof(s_prev_values.values[i]));
+        s_prev_values.value_ptrs[i] = s_prev_values.values[i];
+    }
     s_shown_slot = slot;
-    /* Give the second buffer back. Holding it would starve the NEXT fetch: it is 76.4 KiB
-     * that the TLS handshake needs, and the handshake happens before the next render window.
-     * Releasing it here and re-acquiring there is what keeps both steps alive. */
-    if (have_next) release_next();
-    HEAP_DIAG("after transient released");
+    s_glass_present = 1;
+    s_have_prev_values = 1;
+
+    if (actual_partial) {
+        api_record_refresh(0);
+    } else {
+        api_record_refresh(1);
+        /* Only a full refresh restarts the 24 h clock: a partial does not clear ghosting, so it
+         * cannot postpone the need for one. */
+        s_last_full_us = esp_timer_get_time();
+    }
     api_record_page(page_index);
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              actual_partial ? "partial" : "full",

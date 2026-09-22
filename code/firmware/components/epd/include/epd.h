@@ -17,10 +17,73 @@
  * last good image (FR-29); they must never spin forever. */
 esp_err_t epd_init(void);                                  /* full-update init (HW-5) */
 esp_err_t epd_init_partial(void);                          /* partial-OTP init */
+
+/* Load the waveform that matches the WIRE FORMAT `partial` selects, re-initialising only when the
+ * controller is not already holding the right one. Returns ESP_OK when the correct waveform is
+ * loaded.
+ *
+ * WHY THIS EXISTS AS ITS OWN CALL: the two waveforms are not interchangeable, and driving the
+ * controller in one mode while sending the other mode's byte stream is SILENT — the panel accepts
+ * the bytes and shows the wrong thing (grey, half-transitioned pixels where a value changed).
+ * Whether the right one is loaded depends on history: epd_init() loads the temperature LUT ladder,
+ * epd_init_partial() loads the partial OTP, and epd_wake() re-loads the full ladder ONLY when the
+ * panel was successfully put to sleep. So a FAILED epd_sleep() (a BUSY timeout, which the driver
+ * deliberately reports rather than retrying forever) leaves the partial OTP loaded and the panel
+ * awake — and the next tick, if the policy asks for a full refresh, would then draw a full frame
+ * with the partial waveform.
+ *
+ * Tracking the loaded waveform here rather than at the call site is what makes that unreachable:
+ * the driver owns the register state, so it is the only place that can know it. `partial` selects
+ * which, matching the `partial` flag of epd_write_frame_banded(). */
+esp_err_t epd_ensure_waveform(int partial);
+
 esp_err_t epd_write_frame(const uint8_t *fb1bpp);          /* full update */
 /* Partial update takes the frame CURRENTLY ON THE GLASS plus the new frame; the
  * controller derives each pixel's transition from the pair (vendor PIC_display_Part_ALL). */
 esp_err_t epd_write_frame_partial(const uint8_t *prev1bpp, const uint8_t *next1bpp);
+
+/* ---- banded update: full AND partial ----
+ *
+ * WHY THIS EXISTS: the pair-taking call above needs BOTH whole frames resident, and this part
+ * cannot hold two 78,200-byte framebuffers at once (measured: the only region large enough for one
+ * is 113,840 bytes; the pair needs 156,400). Measured on the bench, the second buffer therefore
+ * failed to allocate on EVERY refresh and `/api/status` showed partials_since_full: 0 against
+ * fulls_total: 6 — FR-11's partial path never ran, and every refresh was a full panel flash.
+ *
+ * The banded writer streams the panel in horizontal bands instead, so the caller holds ONE full
+ * buffer (the static layer) plus two small band buffers, whatever the refresh kind. That is what
+ * makes a partial possible at all on this part.
+ *
+ * The caller supplies a band provider rather than frames:
+ *
+ *   fill(ctx, band_index, prev_out, next_out, rows_out)
+ *
+ * writes the band's rows into the buffers and reports how many rows it produced. Bands are
+ * requested in DESCENDING index order (the panel scans bottom-up, so the first rows sent are the
+ * last natural rows) and each exactly once — a provider that assumes ascending order will produce
+ * a vertically scrambled panel.
+ *
+ * `partial` selects the wire format the controller expects: a partial interleaves the previous and
+ * the next frame because the SSD2677 derives each pixel's TRANSITION from the pair, while a full
+ * expands the next frame alone. The provider must still fill `next_out` for a full; `prev_out` is
+ * then unused and may be ignored.
+ *
+ * `band_rows` MUST be > 0, and `prev_band` / `next_band` each hold band_rows * EPD_PITCH bytes.
+ *
+ * THE CALLER OWNS THE BAND BUFFERS, deliberately. Holding them as driver statics would make them
+ * RESIDENT for the life of the device — and this part has one region large enough for the static
+ * layer, so a permanently-held band pair is memory the radio cannot have at boot, which is the
+ * exact starvation that stops the device being provisioned (see app_refresh.c). The app allocates
+ * them for the push and frees them after, so they exist only inside the render window.
+ *
+ * `prev_band` may be NULL when `partial` is 0: a full update expands the next frame alone and
+ * never reads the previous one. Returns ESP_OK on success. */
+typedef int (*epd_band_fn)(void *ctx, int band_index, uint8_t *prev_out,
+                           uint8_t *next_out, int *rows_out);
+
+esp_err_t epd_write_frame_banded(epd_band_fn fill, void *ctx,
+                                 uint8_t *prev_band, uint8_t *next_band,
+                                 int band_rows, int partial);
 esp_err_t epd_sleep(void);                                 /* power-off + deep sleep (FR-12) */
 
 /* Wake the panel after epd_sleep(), which puts the CONTROLLER into deep sleep (0x07/0xA5).

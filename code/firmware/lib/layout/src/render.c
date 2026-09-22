@@ -110,6 +110,39 @@ int render_compose_stream(canvas_t *c, render_read_fn read, void *ctx,
     return 0;
 }
 
+int render_compose_band(canvas_t *c, render_read_fn read, void *ctx,
+                        const value_field_t *fields, const char *const *values,
+                        int n_fields)
+{
+    if (!c || !c->px || !read) return -1;
+    if (c->h <= 0) return -1;                       /* canvas_init_band with nothing to hold */
+    if (n_fields < 0) return -1;
+    if (n_fields > 0 && (!fields || !values)) return -1;
+
+    /* Copy the static layer ONE BAND at a time, straight from the caller's reader. Reading the
+     * whole 78,200-byte layer and slicing it here would defeat the point: the caller would need a
+     * full-frame buffer to read into, which is the memory this function exists to avoid. */
+    uint8_t window[RENDER_CHUNK];
+    const size_t row_bytes = (size_t)c->h * EPD_PITCH;
+    for (size_t off = 0; off < row_bytes; off += sizeof(window)) {
+        size_t n = sizeof(window);
+        if (off + n > row_bytes) n = row_bytes - off;
+        /* The reader serves the WHOLE panel, so the band's first row is at panel offset
+         * y_off * EPD_PITCH. A reader that assumed offset 0 would copy the top of the picture into
+         * every band, which is exactly the kind of mistake that looks like a renderer bug. */
+        if (read(ctx, (size_t)c->y_off * EPD_PITCH + off, window, n) != 0) return -1;
+        memcpy(c->px + off, window, n);
+    }
+
+    /* Every field is drawn, whatever its y. canvas_set_px() ignores rows outside the band, so a
+     * band that contains none of a field's box simply drops it — no clipping logic is duplicated
+     * here, and a field straddling a band boundary is drawn correctly by BOTH bands. */
+    for (int i = 0; i < n_fields; i++) {
+        draw_field(c, &fields[i], values[i]);
+    }
+    return 0;
+}
+
 /* Adapter so the in-memory path shares one implementation with the streaming path. */
 static int mem_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
 {

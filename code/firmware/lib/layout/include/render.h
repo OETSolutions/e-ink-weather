@@ -60,3 +60,23 @@ int render_compose(canvas_t *c, const uint8_t *static_layer,
 int render_compose_stream(canvas_t *c, render_read_fn read, void *ctx,
                           const value_field_t *fields, const char *const *values,
                           int n_fields);
+
+/* Compose ONE HORIZONTAL BAND of the frame: rows [y0, y0 + n_rows) only.
+ *
+ * WHY A PARTIAL REFRESH NEEDS THIS: `epd_write_frame_partial(prev, next)` derives each pixel's
+ * transition from BOTH frames, so both must exist at once — and two 78,200-byte frames do not fit
+ * this part's DRAM (measured: the only region large enough for one is 113,840 bytes, and the pair
+ * needs 156,400). Composing a band at a time means the previous and the next frame can each be
+ * produced a few dozen rows at a time, so a partial needs two SMALL buffers instead of two whole
+ * framebuffers. Without this, FR-11's partial path cannot run at all: measured on the bench,
+ * `s_fb_next` failed to allocate on every attempt and `/api/status` reported partials_since_full: 0
+ * against fulls_total: 6, so every refresh was a full panel flash.
+ *
+ * `read` supplies the STATIC layer — the same full-panel reader the whole-frame path uses, so the
+ * caller needs one copy of the static layer rather than one per band. Field coordinates stay
+ * panel-absolute; `c` decides which rows it holds (see canvas_init_band).
+ *
+ * Returns 0 on success, negative on bad arguments or a failed static-layer read. */
+int render_compose_band(canvas_t *c, render_read_fn read, void *ctx,
+                        const value_field_t *fields, const char *const *values,
+                        int n_fields);

@@ -110,6 +110,13 @@ static esp_err_t init_common(void)
 /* 1 once the panel has been put into deep sleep and has not been woken since. */
 static int s_asleep;
 
+/* Which WAVEFORM the controller is currently holding: 0 = the full-update temperature LUT ladder
+ * (write_lut_all), 1 = the partial OTP. -1 until any init has run.
+ *
+ * Tracked because the waveform and the wire format must agree and a mismatch is SILENT: the panel
+ * accepts either byte stream and simply shows the wrong image. See epd_ensure_waveform(). */
+static int s_partial_waveform = -1;
+
 esp_err_t epd_init(void)
 {
     s_asleep = 0;   /* init_common() pulses RES, which is what wakes a sleeping controller */
@@ -121,6 +128,7 @@ esp_err_t epd_init(void)
     epd_spi_init();
     esp_err_t first_err = init_common();
     write_lut_all();
+    s_partial_waveform = 0;
     epd_write_cmd(0x04);           /* power on */
     if (epd_wait_ready() != ESP_OK && first_err == ESP_OK) first_err = ESP_ERR_TIMEOUT;
     return first_err;
@@ -135,9 +143,17 @@ esp_err_t epd_init_partial(void)
     epd_write_cmd(0xE0); epd_write_data(0x00);
     epd_write_cmd(0xA5);
     epd_wait_ready();
+    s_partial_waveform = 1;
     epd_write_cmd(0x04);           /* power on */
     if (epd_wait_ready() != ESP_OK && first_err == ESP_OK) first_err = ESP_ERR_TIMEOUT;
     return first_err;
+}
+
+esp_err_t epd_ensure_waveform(int partial)
+{
+    /* Already holding the right one — the common case, since a run of partials repeats. */
+    if (s_partial_waveform == (partial ? 1 : 0)) return ESP_OK;
+    return partial ? epd_init_partial() : epd_init();
 }
 
 /* THE PANEL'S ROW ORDER IS BOTTOM-UP.
@@ -166,6 +182,14 @@ esp_err_t epd_init_partial(void)
  * On timeout the panel is left alone rather than retried, so the previous image stays. */
 esp_err_t epd_write_frame(const uint8_t *fb1bpp)
 {
+    /* The waveform and the wire format MUST agree (see epd_ensure_waveform). Enforced here rather
+     * than at every call site, because a mismatch is silent: the controller accepts either byte
+     * stream and simply shows the wrong image, so the failure would be found by eye on the panel
+     * and attributed to the renderer. */
+    if (!fb1bpp) return ESP_ERR_INVALID_ARG;
+    const esp_err_t we = epd_ensure_waveform(0);
+    if (we != ESP_OK) return we;
+
     static uint8_t line2[EPD_PITCH * 2];   /* one 2bpp row, 230 bytes */
     epd_write_cmd(0x10);
     if (epd_wait_ready() != ESP_OK) return ESP_ERR_TIMEOUT;
@@ -183,6 +207,12 @@ esp_err_t epd_write_frame(const uint8_t *fb1bpp)
  * PIC_display_Part_ALL() bit-interleaves them byte by byte. */
 esp_err_t epd_write_frame_partial(const uint8_t *prev1bpp, const uint8_t *next1bpp)
 {
+    if (!prev1bpp || !next1bpp) return ESP_ERR_INVALID_ARG;
+    /* The PARTIAL OTP waveform, or the interleaved stream is drawn with the full ladder and the
+     * transitions come out wrong. */
+    const esp_err_t we = epd_ensure_waveform(1);
+    if (we != ESP_OK) return we;
+
     static uint8_t line2[EPD_PITCH * 2];
     epd_write_cmd(0x10);
     if (epd_wait_ready() != ESP_OK) return ESP_ERR_TIMEOUT;
@@ -191,6 +221,74 @@ esp_err_t epd_write_frame_partial(const uint8_t *prev1bpp, const uint8_t *next1b
         epd_interleave_1to2(&prev1bpp[off], &next1bpp[off], EPD_PITCH, line2);
         epd_write_data_block(line2, sizeof(line2));
     }
+    epd_write_cmd(0x12);
+    epd_write_data(0x00);
+    return wait_refresh();
+}
+
+esp_err_t epd_write_frame_banded(epd_band_fn fill, void *ctx,
+                                 uint8_t *prev_band, uint8_t *next_band,
+                                 int band_rows, int partial)
+{
+    if (!fill || !next_band || band_rows <= 0) return ESP_ERR_INVALID_ARG;
+    if (partial && !prev_band) return ESP_ERR_INVALID_ARG;
+
+    /* Same rule as the whole-frame writers: the waveform must match the wire format, and a
+     * mismatch is silent on the glass. */
+    const esp_err_t we = epd_ensure_waveform(partial);
+    if (we != ESP_OK) return we;
+
+    /* One interleaved 2 bpp row. Lives here only for the duration of the transfer. */
+    static uint8_t line2[EPD_PITCH * 2];
+
+    epd_write_cmd(0x10);
+    if (epd_wait_ready() != ESP_OK) return ESP_ERR_TIMEOUT;
+
+    /* TRANSMIT ORDER IS BOTTOM-UP (see EPD_TRANSMIT_ROW). Row y on the wire is natural row
+     * EPD_HEIGHT-1-y, so walking y upward walks natural rows DOWNWARD. Bands are therefore
+     * requested in DESCENDING index order — the callback must not assume ascending, which is why
+     * that is stated in the header rather than left to be discovered. Each band is requested
+     * exactly once, because consecutive y values map to a contiguous run of natural rows. */
+    int loaded = -1;
+    int loaded_rows = 0;
+
+    for (int y = 0; y < EPD_HEIGHT; y++) {
+        const int natural = EPD_HEIGHT - 1 - y;
+        /* The band arithmetic is a pure, host-tested function rather than an inline division: an
+         * off-by-one here leaves a stripe of the previous picture on the glass, which looks like a
+         * renderer bug and reports success. See epd_encode.h. */
+        const int band = epd_band_of_row(natural, band_rows, EPD_HEIGHT);
+        if (band < 0) return ESP_ERR_INVALID_STATE;
+
+        if (band != loaded) {
+            int rows = 0;
+            const int rc = fill(ctx, band, prev_band, next_band, &rows);
+            if (rc != 0) return ESP_ERR_INVALID_STATE;
+            /* A band that reports more rows than it was given room for would read past the end of
+             * the buffer on the very next line, so it is refused rather than trusted. */
+            if (rows <= 0 || rows > band_rows) return ESP_ERR_INVALID_ARG;
+            const int expect = epd_band_rows_at(band, band_rows, EPD_HEIGHT);
+            if (rows != expect) return ESP_ERR_INVALID_ARG;
+            loaded = band;
+            loaded_rows = rows;
+        }
+
+        const int row_in_band = natural - band * band_rows;
+        if (row_in_band >= loaded_rows) return ESP_ERR_INVALID_STATE;
+
+        const size_t off = (size_t)row_in_band * EPD_PITCH;
+        /* A PARTIAL interleaves the pair; a FULL expands the next frame alone. Getting this
+         * backwards is silent on the wire — the panel accepts the bytes either way and simply
+         * shows the wrong image — so the choice is driven by the caller's `partial` flag here
+         * rather than inferred. */
+        if (partial) {
+            epd_interleave_1to2(&prev_band[off], &next_band[off], EPD_PITCH, line2);
+        } else {
+            epd_expand_1to2(&next_band[off], EPD_PITCH, line2);
+        }
+        epd_write_data_block(line2, sizeof(line2));
+    }
+
     epd_write_cmd(0x12);
     epd_write_data(0x00);
     return wait_refresh();
