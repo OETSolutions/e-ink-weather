@@ -142,7 +142,7 @@ void app_seed_owm_key(const char *key)
     nvs_handle_t h;
     if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
 
-    char existing[64] = {0};
+    char existing[DEVENV_BUF_OWM_KEY] = {0};
     size_t n = sizeof(existing);
     if (nvs_get_str(h, DEVENV_KEY_OWM_KEY, existing, &n) == ESP_OK && existing[0] != '\0') {
         ESP_LOGI(TAG, "seed: OWM key already present, leaving it alone");
@@ -185,7 +185,7 @@ void app_seed_ha(const char *url, const char *token)
     nvs_handle_t h;
     if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
 
-    char existing[192] = {0};
+    char existing[DEVENV_BUF_HA_URL] = {0};
     size_t n = sizeof(existing);
     if (nvs_get_str(h, DEVENV_KEY_HA_URL, existing, &n) == ESP_OK && existing[0] != '\0') {
         ESP_LOGI(TAG, "seed: HA URL already present, leaving it alone");
@@ -193,14 +193,10 @@ void app_seed_ha(const char *url, const char *token)
         return;
     }
 
-    /* The URL buffer here is deliberately larger than the seed's own copy: HA_URL in .env is
-     * a value the developer wrote, and NVS stores what it is given. A token is checked too, so
-     * a URL without one is not stored — half a credential pair is worse than none, because
-     * fetch_ha() would then look configured and fail at the request instead. */
-    if (token[0] == '\0') {
-        nvs_close(h);
-        return;
-    }
+    /* Both values are written together or not at all. Half a credential pair is worse than none:
+     * fetch_ha() refuses without either, but a stored URL with no token would look configured and
+     * fail at the request instead — and the guard at the top of this function already requires
+     * both, so there is nothing left to re-check here. */
     esp_err_t e = nvs_set_str(h, DEVENV_KEY_HA_URL, url);
     if (e == ESP_OK) e = nvs_set_str(h, DEVENV_KEY_HA_TOKEN, token);
     if (e == ESP_OK) e = nvs_commit(h);
