@@ -397,6 +397,13 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
         f->align_h = w->align_h;
         f->align_v = w->align_v;
         f->font_id = w->font_id;
+        /* A widget bound to OWM's icon field draws the CONDITION ICON for the value rather than
+         * the value's text. The resolved value is the OWM code ("04n"); a text field would print
+         * that code on the glass, and an icon field maps it to a picture (see weather_icons.h).
+         * Only owm-current carries an icon — a daily forecast binding has no icon code to map. */
+        f->kind = (w->binding.kind == BIND_OWM_CURRENT &&
+                   w->binding.owm_field == OWM_F_ICON)
+                ? VALUE_KIND_ICON : VALUE_KIND_TEXT;
 
         /* The buffer is per-field and the pointer array is parallel to `fields`, because
          * render_compose_stream() takes `const char *const *` and does not own the strings. */

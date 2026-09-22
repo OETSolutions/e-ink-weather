@@ -10,7 +10,7 @@
  * firmware only stamps the current readings into those boxes. That is what lets a layout
  * change ship from the web app without a firmware update (FR-1). */
 
-/* A box on the static layer that holds one dynamic string.
+/* A box on the static layer that holds one dynamic value.
  *
  * THERE IS NO `text` FIELD ON PURPOSE: the dynamic string comes from `values[i]`, and any
  * static label is baked into the static layer by the web app. Adding a label here would
@@ -22,13 +22,23 @@
  *   align_h  'L', 'C' or 'R' — horizontal alignment within the box
  *   align_v  'T', 'M' or 'B' — vertical alignment within the box
  *   font_id  FONT_BODY or FONT_VALUE
- */
+ *   kind     't' = the value is TEXT to be set in `font_id`; 'i' = the value is an
+ *            OpenWeatherMap icon CODE ("04n") to be drawn as an icon (see weather_icons.h).
+ *
+ * WHY `kind` LIVES HERE AND NOT IN THE WIDGET: the renderer is handed fields and values and
+ * nothing else — it never sees a binding — so the decision "this box draws a picture, not a
+ * string" has to travel WITH THE BOX. Keeping it out of the renderer would mean teaching the
+ * renderer to parse bindings, which is exactly the layout knowledge FR-1 keeps out of it. */
 typedef struct {
     int  x, y, w, h;
     char align_h;
     char align_v;
     int  font_id;
+    char kind;
 } value_field_t;
+
+#define VALUE_KIND_TEXT 't'
+#define VALUE_KIND_ICON 'i'
 
 /* Read `len` bytes of the static layer starting at `offset` into `dst`.
  * Returns 0 on success, non-zero on failure. */

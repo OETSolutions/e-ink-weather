@@ -212,6 +212,18 @@ int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
     }
 
     if (!v.is_numeric) {
+        /* AN ICON BINDING DELIVERS THE RAW CODE, with no prefix or suffix.
+         *
+         * The value IS the OWM icon code ("04n"), which the renderer turns into a picture. The
+         * affixes exist for readings that are shown as text, and a widget whose format carries a
+         * suffix would otherwise hand the renderer "04n°F" — a string weather_icon_index() cannot
+         * parse, so the icon would silently vanish. This is the same class as the two-byte degree
+         * sign that made a temperature draw without its unit: the value and its presentation are
+         * separate, and a code is not a reading. */
+        if (w->binding.kind == BIND_OWM_CURRENT && w->binding.owm_field == OWM_F_ICON) {
+            snprintf(buf, cap, "%s", v.text);
+            return 1;
+        }
         /* A text reading (conditions). No decimals apply, and the affixes still do, so a
          * widget could render "scattered clouds" unchanged. */
         snprintf(buf, cap, "%s%s%s", w->format.prefix, v.text, w->format.suffix);

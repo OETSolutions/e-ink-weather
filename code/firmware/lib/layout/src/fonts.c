@@ -128,23 +128,6 @@ unsigned font_utf8_next(const char **p)
     return cp;
 }
 
-/* UTF-8 encode a codepoint into `out` (NUL-terminated). Returns the byte length. */
-static int utf8_encode(unsigned cp, char *out)
-{
-    if (cp < 0x80) { out[0] = (char)cp; out[1] = '\0'; return 1; }
-    if (cp < 0x800) {
-        out[0] = (char)(0xC0 | (cp >> 6));
-        out[1] = (char)(0x80 | (cp & 0x3F));
-        out[2] = '\0';
-        return 2;
-    }
-    out[0] = (char)(0xE0 | (cp >> 12));
-    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    out[2] = (char)(0x80 | (cp & 0x3F));
-    out[3] = '\0';
-    return 3;
-}
-
 static int metrics_of_cp(font_id_t font, unsigned cp, glyph_metrics_t *out)
 {
     const face_t *f = face_of(font);

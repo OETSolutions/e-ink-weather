@@ -1,5 +1,6 @@
 #include "render.h"
 #include "fonts.h"
+#include "weather_icons.h"
 #include <string.h>
 
 /* Horizontal offset of the text within its box, for 'L'/'C'/'R'. */
@@ -49,9 +50,57 @@ static void blit_glyph_clipped(canvas_t *c, int gx, int gy,
     }
 }
 
+/* Draw a weather icon into its box, painting only ink over the static layer.
+ *
+ * THE ICON IS SCALED TO FIT ITS BOX rather than drawn at a fixed size: the box is what the user
+ * drew, and an icon larger than its box would spill over the surrounding chrome while one much
+ * smaller would look stranded. The aspect ratio is preserved by using the smaller of the two box
+ * dimensions, and the result is centred per the box's own alignment.
+ *
+ * ONLY NEAREST-NEIGHBOUR SAMPLING IS USED, because the source is 1 bpp. There is no grey to
+ * interpolate: scaling a 1-bit icon with any smoother filter would either blur it into grey
+ * (which the panel cannot show) or, at the downscale ratios involved, drop the thin strokes that
+ * make a snowflake a snowflake. */
+static void draw_icon(canvas_t *c, const value_field_t *f, const char *code)
+{
+    const int idx = weather_icon_index(code);
+    if (idx < 0 || idx >= WEATHER_ICON_COUNT) return;
+    const weather_icon_t *ic = &weather_icons[idx];
+    if (!ic->bits || ic->w <= 0 || ic->h <= 0) return;
+
+    const int box = (f->w < f->h) ? f->w : f->h;
+    if (box <= 0) return;
+    const int side = box;                 /* square icons: the set is drawn square */
+    const int off_x = f->x + offset_h(f->align_h, f->w, side);
+    const int off_y = f->y + offset_v(f->align_v, f->h, side);
+
+    const int src_pitch = (ic->w + 7) / 8;
+    for (int dy = 0; dy < side; dy++) {
+        const int sy = (int)((long)dy * ic->h / side);
+        if (sy < 0 || sy >= ic->h) continue;
+        const int py = off_y + dy;
+        if (py < f->y || py >= f->y + f->h) continue;   /* clip to the box */
+        for (int dx = 0; dx < side; dx++) {
+            const int sx = (int)((long)dx * ic->w / side);
+            if (sx < 0 || sx >= ic->w) continue;
+            if (!((ic->bits[(size_t)sy * src_pitch + (sx >> 3)] >> (7 - (sx & 7))) & 1)) continue;
+            const int px = off_x + dx;
+            if (px < f->x || px >= f->x + f->w) continue;
+            canvas_set_px(c, px, py, 1);
+        }
+    }
+}
+
 static void draw_field(canvas_t *c, const value_field_t *f, const char *s)
 {
     if (!s || !*s) return;          /* nothing to show: leave the static layer intact */
+
+    /* An icon box draws a PICTURE from the value, not the string itself: the value is the OWM
+     * icon code ("04n"), and a code rendered as text would put "04n" on the glass. */
+    if (f->kind == VALUE_KIND_ICON) {
+        draw_icon(c, f, s);
+        return;
+    }
 
     font_id_t font = (font_id_t)f->font_id;
     int text_w = 0, line_h = 0;
