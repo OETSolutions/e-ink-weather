@@ -1498,10 +1498,21 @@ void app_refresh_tick(power_source_t source, int force_full)
     /* The panel may be in deep sleep (the boot path sleeps it after showing the last good
      * image, and the USB serve loop then keeps running). Drawing to a sleeping controller
      * does not fail cleanly — it times out on BUSY, which is indistinguishable from a loose
-     * FPC. Waking is a no-op when it is already awake. */
+     * FPC. Waking is a no-op when it is already awake.
+     *
+     * EVERY EXIT BELOW THE WAKE MUST PUT THE PANEL BACK TO SLEEP, because FR-12 requires the
+     * controller not be left powered between updates. A bare `return` leaves it powered until the
+     * next tick — and when the reason for returning is a thermal block, the next tick blocks on the
+     * same condition, so the panel would sit powered indefinitely. The image is bistable and
+     * survives the sleep, so sleeping costs nothing visible. */
     if (epd_wake() != ESP_OK) {
         ESP_LOGE(TAG, "panel did not wake");
         api_note_error("render: panel did not wake");
+        /* DELIBERATELY NOT followed by epd_sleep(), unlike the exits below. A failed wake means the
+         * panel is not answering, and epd_sleep()'s own BUSY wait is bounded at 20 s — stacking a
+         * second 20-second block on an unresponsive panel would stall the serve loop for 40 s per
+         * tick while making the panel no safer to leave alone. Nothing was drawn, so the next tick
+         * re-inits from scratch regardless. */
         return;
     }
 
@@ -1514,6 +1525,7 @@ void app_refresh_tick(power_source_t source, int force_full)
      * This logs, and records THROUGH api_note_error, which is /api/status's evidence that a
      * refresh was suppressed and why (FR-33). */
     if (thermal_blocks_render()) {
+        epd_sleep();
         return;
     }
 
@@ -1561,6 +1573,7 @@ void app_refresh_tick(power_source_t source, int force_full)
          * reading the whole time, with nothing retrying it until the next 15-minute interval. Flag
          * it so the serve loop comes back in seconds. */
         if (e == ESP_ERR_NO_MEM) s_fb_lost = 1;
+        epd_sleep();        /* FR-12: never leave the controller powered (see the note above) */
         return;
     }
 
