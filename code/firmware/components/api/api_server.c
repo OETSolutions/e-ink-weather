@@ -1236,6 +1236,145 @@ static esp_err_t h_refresh(httpd_req_t *req)
 
 /* The handler lives in api_ota.c — see api_ota.h for why OTA is kept on its own. */
 
+/* ------------------------------------------------------------------ /api/secrets ---- */
+
+/* The credential store, writable from the config app once the device is running.
+ *
+ * WHY THIS EXISTS AT ALL: the OWM key and the HA URL/token could only ever reach NVS through
+ * the captive portal (prov_store_extra_config), which runs on FIRST BOOT only — a device that
+ * is already on the network has no way to be given them. The plan says exactly what was
+ * missing ("the web UI writes the OWM key, HA URL/token and location"), and the symptom on the
+ * bench was a device whose HA boxes read "--" with "HA entities are bound but no HA url/token
+ * is stored" in its log, while HA_URL and HA_TOKEN sat in code/.env. There was no endpoint and
+ * no UI field.
+ *
+ * WRITE-ONLY BY DESIGN. GET reports only WHICH secrets are set, never their values — the
+ * device's own log and API are readable over the same LAN, and echoing a token back would put
+ * it in the browser cache, the devtools network log and any proxy in between. The user who
+ * needs the value has it where they got it.
+ *
+ * AN EMPTY FIELD LEAVES THE STORED VALUE ALONE, which is the same rule the portal applies and
+ * the whole reason the OWM key survives a Save: the app sends the form every time, and treating
+ * a blank as "erase" would wipe a working key because the user came back to change the HA URL.
+ * Erasing is therefore a separate, explicit act — see the factory-reset button — rather than a
+ * side effect of a blank box.
+ *
+ * GATED by api_auth_gate() when protection is on: this is the one endpoint that writes
+ * credentials, so it must sit behind the same token as the other mutating verbs. */
+static esp_err_t h_secrets_put(httpd_req_t *req)
+{
+    if (api_auth_gate(req)) return ESP_OK;
+
+    if (req->content_len <= 0 || (size_t)req->content_len >= API_CONFIG_MAX_LEN) {
+        return api_send_err(req, "413 Payload Too Large", "body too large");
+    }
+    char *body = malloc((size_t)req->content_len + 1);
+    if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
+
+    const int n = api_read_body(req, body, (size_t)req->content_len + 1);
+    if (n < 0) { free(body); return ESP_OK; }
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        return api_send_err(req, "400 Bad Request", "body must be JSON");
+    }
+
+    /* Each field is read as a STRING and passed through only when non-empty. A field that is
+     * absent, null, or "" means "leave it as it is" — see the note above. */
+    const cJSON *owm = cJSON_GetObjectItemCaseSensitive(root, "owmKey");
+    const cJSON *hau = cJSON_GetObjectItemCaseSensitive(root, "haUrl");
+    const cJSON *hat = cJSON_GetObjectItemCaseSensitive(root, "haToken");
+
+    const char *owm_s = (cJSON_IsString(owm) && owm->valuestring[0]) ? owm->valuestring : NULL;
+    const char *hau_s = (cJSON_IsString(hau) && hau->valuestring[0]) ? hau->valuestring : NULL;
+    const char *hat_s = (cJSON_IsString(hat) && hat->valuestring[0]) ? hat->valuestring : NULL;
+
+    /* Validate the HA URL HERE rather than storing a value the fetch will fail on. A bare host
+     * with no scheme ("homeassistant.local:8123") is the common typo, and net_http would report
+     * it as a generic request failure with nothing pointing at the URL. Requiring http:// or
+     * https:// makes that a 400 with the reason on it. */
+    if (hau_s && !(strncmp(hau_s, "http://", 7) == 0 || strncmp(hau_s, "https://", 8) == 0)) {
+        cJSON_Delete(root);
+        return api_send_err(req, "400 Bad Request",
+                            "haUrl must begin with http:// or https://");
+    }
+
+    /* A TRAILING SLASH IS STRIPPED, and the firmware appends a path: fetch_ha() builds
+     * "<ha_url>/api/template", so "http://host:8123/" would produce a double slash. Some HA
+     * reverse proxies 404 on that rather than normalising it — and the failure would look like a
+     * bad token, not a malformed URL. The app strips it too; doing it here as well means a caller
+     * that is not the app (curl, a script) cannot store a form the device mishandles. */
+    char ha_url_norm[192];
+    if (hau_s) {
+        snprintf(ha_url_norm, sizeof(ha_url_norm), "%s", hau_s);
+        size_t L = strlen(ha_url_norm);
+        while (L > 0 && ha_url_norm[L - 1] == '/') ha_url_norm[--L] = '\0';
+        hau_s = ha_url_norm;
+    }
+
+    if (!owm_s && !hau_s && !hat_s) {
+        cJSON_Delete(root);
+        return api_send_err(req, "400 Bad Request", "no credential fields supplied");
+    }
+
+    /* prov_store_extra_config() already owns the "write only what was supplied" rule for every
+     * field it stores, so this reuses it rather than opening NVS a second time with its own
+     * copy of the rule — the exact duplication that made the WiFi keys diverge once already. */
+    const int rc = prov_store_extra_config(owm_s, hau_s, hat_s, 0, 0, 0);
+    cJSON_Delete(root);
+    if (rc != 0) return api_send_err(req, "500 Internal Server Error", "could not store");
+
+    ESP_LOGI(TAG, "stored credentials (%s%s%s)",
+             owm_s ? "owm " : "", hau_s ? "ha-url " : "", hat_s ? "ha-token" : "");
+    /* Ask the refresh path to redraw: a newly entered key changes what every widget resolves
+     * to, and the user is looking at the panel when they press Save. Full, not partial — the
+     * values can change from "--" to a number, which is a content change a partial handles fine,
+     * but the request path forces a full refresh by design (see the serve loop). */
+    api_request_full_refresh();
+    return api_send_json(req, "{\"status\":\"stored\"}", "200 OK");
+}
+
+/* GET reports WHICH secrets are set, never what they are. The boolean shape is deliberate: it
+ * is enough for the UI to show "configured" beside a blank field without ever receiving the
+ * value, so a screenshot or a proxy log cannot leak a token. */
+static esp_err_t h_secrets_get(httpd_req_t *req)
+{
+    nvs_handle_t h;
+    char url[192] = {0};
+    int have_owm = 0, have_url = 0, have_token = 0;
+
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        char k[64] = {0};
+        size_t kn = sizeof(k);
+        have_owm = (nvs_get_str(h, DEVENV_KEY_OWM_KEY, k, &kn) == ESP_OK && k[0] != '\0');
+
+        kn = sizeof(url);
+        have_url = (nvs_get_str(h, DEVENV_KEY_HA_URL, url, &kn) == ESP_OK && url[0] != '\0');
+
+        char t[256] = {0};
+        size_t tn = sizeof(t);
+        have_token = (nvs_get_str(h, DEVENV_KEY_HA_TOKEN, t, &tn) == ESP_OK && t[0] != '\0');
+        nvs_close(h);
+    }
+
+    /* The HA URL IS returned, unlike the token. It is not a secret — the app already needs it
+     * to offer the entity picker (listEntities), and hiding it would make the user retype an
+     * address the device is happily using. The token and the OWM key stay out. */
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return api_send_err(req, "500 Internal Server Error", "oom");
+    cJSON_AddBoolToObject(root, "owmKey", have_owm);
+    cJSON_AddBoolToObject(root, "haToken", have_token);
+    cJSON_AddStringToObject(root, "haUrl", have_url ? url : "");
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return api_send_err(req, "500 Internal Server Error", "oom");
+    const esp_err_t e = api_send_json(req, out, "200 OK");
+    free(out);
+    return e;
+}
+
 /* ----------------------------------------------------------------------- server --- */
 
 esp_err_t api_start(void)
@@ -1262,9 +1401,9 @@ esp_err_t api_start(void)
     cfg.max_open_sockets = 7;
     /* RAISED FROM THE DEFAULT 8, which the API alone now fills (8 endpoints), leaving no slot
      * for the web UI's catch-all — it failed to register with ESP_ERR_HTTPD_HANDLERS_FULL and
-     * the device served 404s for its own page while the API worked fine. Measured need: 8 API
+     * the device served 404s for its own page while the API worked fine. Measured need: 10 API
      * routes + 1 for the UI, with headroom for the next endpoint. */
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 18;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;      /* the OTA handler needs TLS headroom, like net_http */
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -1288,6 +1427,8 @@ esp_err_t api_start(void)
         { .uri = "/api/bitmap",   .method = HTTP_POST, .handler = h_bitmap },
         { .uri = "/api/artwork",  .method = HTTP_POST, .handler = h_artwork },
         { .uri = "/api/refresh",  .method = HTTP_POST, .handler = h_refresh },
+        { .uri = "/api/secrets",  .method = HTTP_GET,  .handler = h_secrets_get },
+        { .uri = "/api/secrets",  .method = HTTP_PUT,  .handler = h_secrets_put },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
