@@ -1307,26 +1307,29 @@ static esp_err_t h_secrets_put(httpd_req_t *req)
         return api_send_err(req, "413 Payload Too Large", "haToken is too long");
     }
 
-    /* Validate the HA URL HERE rather than storing a value the fetch will fail on. A bare host
-     * with no scheme ("homeassistant.local:8123") is the common typo, and net_http would report
-     * it as a generic request failure with nothing pointing at the URL. Requiring http:// or
-     * https:// makes that a 400 with the reason on it. */
-    if (hau_s && !(strncmp(hau_s, "http://", 7) == 0 || strncmp(hau_s, "https://", 8) == 0)) {
-        cJSON_Delete(root);
-        return api_send_err(req, "400 Bad Request",
-                            "haUrl must begin with http:// or https://");
-    }
-
-    /* A TRAILING SLASH IS STRIPPED, and the firmware appends a path: fetch_ha() builds
-     * "<ha_url>/api/template", so "http://host:8123/" would produce a double slash. Some HA
-     * reverse proxies 404 on that rather than normalising it — and the failure would look like a
-     * bad token, not a malformed URL. The app strips it too; doing it here as well means a caller
-     * that is not the app (curl, a script) cannot store a form the device mishandles. */
+    /* Validate and normalise the HA URL. A bare host with no scheme
+     * ("homeassistant.local:8123") is the common typo, and net_http would report it as a generic
+     * request failure with nothing pointing at the URL, so requiring http:// or https:// makes
+     * that a 400 with the reason on it. A trailing slash is stripped because the firmware appends
+     * "/api/template" — a double slash is a 404 on some HA reverse proxies, and that failure
+     * reads like a bad token rather than a malformed URL. The rules live in devcfg_normalize_ha_url()
+     * so the boundary cases are host-tested rather than reachable only on a live device. */
     char ha_url_norm[DEVENV_BUF_HA_URL];
     if (hau_s) {
-        snprintf(ha_url_norm, sizeof(ha_url_norm), "%s", hau_s);
-        size_t L = strlen(ha_url_norm);
-        while (L > 0 && ha_url_norm[L - 1] == '/') ha_url_norm[--L] = '\0';
+        const int nrc = devcfg_normalize_ha_url(hau_s, ha_url_norm, sizeof(ha_url_norm));
+        if (nrc == -2) {
+            cJSON_Delete(root);
+            return api_send_err(req, "400 Bad Request",
+                                "haUrl must begin with http:// or https://");
+        }
+        if (nrc == -3) {
+            cJSON_Delete(root);
+            return api_send_err(req, "400 Bad Request", "haUrl has no host");
+        }
+        if (nrc != 0) {
+            cJSON_Delete(root);
+            return api_send_err(req, "400 Bad Request", "haUrl is not usable");
+        }
         hau_s = ha_url_norm;
     }
 
