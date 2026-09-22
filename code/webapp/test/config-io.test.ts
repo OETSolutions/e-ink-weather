@@ -87,12 +87,12 @@ describe('config file I/O (FR-26)', () => {
   });
 });
 
-/* THE DEVICE'S LIMITS MUST MATCH THE WEB APP'S.
+/* THE DEVICE'S LIMITS AND THE EDITOR'S MUST AGREE — in the direction that matters.
  *
- * The editor refuses to add a 25th box or a 7th alert rule because the firmware parses at most
- * that many and drops the rest without saying so. If these two numbers ever drift, a layout the
- * editor accepts would be silently truncated on the glass — the failure mode this project keeps
- * hitting, where the UI confirms a change that has no effect on the panel.
+ * The editor refuses to add a box past MAX_WIDGETS_PER_PAGE and a 7th alert rule per widget,
+ * because the device cannot honour more. If these ever drift, a layout the editor accepts would
+ * be silently truncated on the glass or refused at save time — the failure mode this project
+ * keeps hitting, where the UI confirms a change that has no effect on the panel.
  *
  * Read from the firmware header itself rather than a copied literal, so a change on either side
  * fails here instead of on the device. */
@@ -101,10 +101,13 @@ describe('webapp and firmware agree on the device limits', () => {
     new URL('../../firmware/lib/layout/include/widgets.h', import.meta.url), 'utf8',
   );
 
-  it('caps widgets per page identically', () => {
+  it('never allows more widgets than the firmware will parse', () => {
+    /* A cap ABOVE LAYOUT_MAX_FIELDS would let a user build a page the device silently truncates.
+     * A cap BELOW it is deliberate — see MAX_WIDGETS_PER_PAGE: the binding limit is the cJSON
+     * tree fitting memory, which is tighter than the parser's array size. */
     const m = /#define\s+LAYOUT_MAX_FIELDS\s+(\d+)/.exec(header);
     expect(m, 'LAYOUT_MAX_FIELDS not found in widgets.h').not.toBeNull();
-    expect(Number(m![1])).toBe(MAX_WIDGETS_PER_PAGE);
+    expect(MAX_WIDGETS_PER_PAGE).toBeLessThanOrEqual(Number(m![1]));
   });
 
   it('caps alert rules per widget identically', () => {

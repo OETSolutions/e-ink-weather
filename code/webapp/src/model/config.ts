@@ -10,16 +10,31 @@
 export const SCHEMA_VERSION = 1;
 
 /**
- * The device's per-page limits, mirrored from the firmware.
+ * The largest page the device reliably STORES.
  *
- * THESE MUST MATCH lib/layout/include/widgets.h. The device parses at most LAYOUT_MAX_FIELDS
- * widgets and LAYOUT_MAX_RULES alert rules per widget, and it does not report what it dropped —
- * so a layout authored past either limit would look complete in the editor and be quietly
- * missing boxes on the glass, which is the silent-truncation failure this project keeps hitting.
- * The editor enforces them so the limit is visible while editing rather than discovered on the
- * panel.
+ * WHY THIS IS BELOW THE FIRMWARE'S LAYOUT_MAX_FIELDS (24) AND IS NOT A MIRROR OF IT: the
+ * firmware's constant bounds how many widgets the layout PARSER will read, but the binding limit
+ * is memory. A PUT parses the document with cJSON, whose tree is several times the document's
+ * size, and on this part (no PSRAM, one big DRAM region split by the httpd and app task stacks)
+ * the largest free block runs 11-22 KB. Measured on hardware: a page of 21 widgets (7.3 KB)
+ * stores every time, and 22 (7.5 KB) is refused every time — with "invalid config", because
+ * cJSON_Parse returns NULL for an allocation failure exactly as it does for a malformed document.
+ *
+ * So the editor caps at the number the device can actually persist. A cap at 24 would let a user
+ * build a layout the editor shows in full and the device then refuses to save, with a message
+ * blaming their document. 20 leaves margin below the measured 21/22 cliff for a busier heap.
  */
-export const MAX_WIDGETS_PER_PAGE = 24;
+export const MAX_WIDGETS_PER_PAGE = 20;
+
+/**
+ * The device's per-widget alert-rule cap, mirrored from LAYOUT_MAX_RULES in
+ * lib/layout/include/widgets.h.
+ *
+ * THIS ONE IS A TRUE MIRROR: the rules are part of each widget's own parsed structure, not extra
+ * top-level tokens, so the limit really is the device's array size. The editor enforces it so the
+ * limit is visible while editing rather than discovered on the panel — the device drops the
+ * overflow without a word.
+ */
 export const MAX_ALERT_RULES_PER_WIDGET = 6;
 
 export { PANEL_WIDTH, PANEL_HEIGHT, FB_BYTES } from './canvas-consts';

@@ -21,19 +21,51 @@ const char *cfg_store_default_json(void) { return DEFAULT_JSON; }
 
 /* Pull a numeric schemaVersion out. A document without one cannot be migrated, so it is
  * refused rather than assumed to be the current version — guessing would silently accept a
- * future document as if it were v1 and store a layout the firmware cannot honour. */
+ * future document as if it were v1 and store a layout the firmware cannot honour.
+ *
+ * THIS SCANS THE TEXT; IT DOES NOT BUILD A cJSON TREE. It used to call cJSON_Parse, which
+ * allocates a node for every token in the document — roughly twice the document's size — and
+ * then layout_config_parse() immediately built the same tree AGAIN. On this part the largest
+ * free block runs 11-17 KB and total free DRAM ~35 KB, so a full-size (8 KB, 24-widget) config
+ * exhausted the heap inside the FIRST parse: cJSON_Parse returned NULL, this function returned
+ * -1, and the PUT was rejected with "invalid config: needs numeric schemaVersion and a valid
+ * layout" — a message about the DOCUMENT for what was a memory failure. Reading one integer
+ * from an 8 KB string must not cost a whole parse. */
 static int read_schema_version(const char *json, int *out)
 {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) return -1;
-    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, "schemaVersion");
-    int rc = -1;
-    if (cJSON_IsNumber(v) && v->valuedouble == (double)(int)v->valuedouble) {
-        *out = (int)v->valuedouble;
-        rc = 0;
+    const char *k = strstr(json, "\"schemaVersion\"");
+    if (!k) return -1;
+
+    /* MUST BE A KEY, not a string VALUE that happens to read "schemaVersion" (a widget id or a
+     * label could contain that text). A key is preceded by `{` or `,` — ignoring whitespace —
+     * and followed by `:`; a value is preceded by `:` and followed by a quote or comma. */
+    const char *p = k;
+    while (p > json && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n' || p[-1] == '\r')) p--;
+    if (p == json || (p[-1] != '{' && p[-1] != ',')) return -1;
+
+    k += strlen("\"schemaVersion\"");
+    while (*k == ' ' || *k == '\t' || *k == '\n' || *k == '\r') k++;
+    if (*k != ':') return -1;
+    k++;
+    while (*k == ' ' || *k == '\t' || *k == '\n' || *k == '\r') k++;
+
+    if (*k < '0' || *k > '9') return -1;
+    /* Bounded so an absurd run of digits cannot overflow the accumulator. A version larger than
+     * the current one is refused by the migrate check anyway, so saturating is safe. */
+    long v = 0;
+    int digits = 0;
+    while (*k >= '0' && *k <= '9') {
+        if (v < 1000000) v = v * 10 + (*k - '0');
+        k++;
+        if (++digits > 9) break;
     }
-    cJSON_Delete(root);
-    return rc;
+    if (digits == 0) return -1;
+    /* MUST BE AN INTEGER. read_schema_version's contract (and its tests) refuse a fractional
+     * version like 1.5 — treating it as 1 would migrate a document whose actual version is
+     * unknown. A decimal point or exponent after the digits is a refusal. */
+    if (*k == '.' || *k == 'e' || *k == 'E') return -1;
+    *out = (int)v;
+    return 0;
 }
 
 int cfg_store_put(const cfg_store_t *store, const char *json)
@@ -44,22 +76,37 @@ int cfg_store_put(const cfg_store_t *store, const char *json)
     int ver = 0;
     if (read_schema_version(json, &ver) != 0) return -2;
 
-    /* 2. migrate to current. devcfg_migrate returns a malloc'd string; a version it does
-     *    not know is a refusal, not a pass-through. */
+    /* 2. migrate to current — BUT ONLY WHEN A MIGRATION IS ACTUALLY NEEDED.
+     *
+     * devcfg_migrate duplicates the whole document. On this part that is a SECOND contiguous
+     * allocation the size of the config, on top of the body buffer the caller already holds, and
+     * at steady state the largest free DRAM block is only ~11 KB (the httpd and app task stacks
+     * permanently split the one big region — see the render notes). So a config that fits in the
+     * body buffer could still fail to duplicate, and the PUT was then rejected with
+     * "invalid config: needs numeric schemaVersion and a valid layout" — a message that points at
+     * the DOCUMENT while the real cause is memory. Observed on hardware: an 8 KB, 24-widget
+     * config was refused intermittently while a 5 KB one saved fine.
+     *
+     * A v1 document needs no rewriting, so nothing is copied for it; the duplicate is made only
+     * when migrate() will genuinely produce a different document. */
+    const char *doc = json;
     char *migrated = NULL;
-    if (devcfg_migrate(ver, DEVCFG_SCHEMA_VERSION, json, &migrated) != 0) return -3;
-    if (!migrated) return -3;
+    if (ver != DEVCFG_SCHEMA_VERSION) {
+        if (devcfg_migrate(ver, DEVCFG_SCHEMA_VERSION, json, &migrated) != 0) return -3;
+        if (!migrated) return -3;
+        doc = migrated;
+    }
 
     /* 3. the layout parser is the real gate: if the firmware cannot act on this document,
      *    storing it would brick the next boot. */
     layout_config_t cfg;
-    if (layout_config_parse(migrated, &cfg) != 0) {
+    if (layout_config_parse(doc, &cfg) != 0) {
         free(migrated);
         return -4;
     }
 
     /* Only now is anything persisted. */
-    int rc = store->write(store->ctx, CFG_KEY, migrated, strlen(migrated) + 1);
+    int rc = store->write(store->ctx, CFG_KEY, doc, strlen(doc) + 1);
     free(migrated);
     return rc == 0 ? 0 : -5;
 }

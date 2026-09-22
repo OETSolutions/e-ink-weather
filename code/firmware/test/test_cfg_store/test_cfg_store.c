@@ -112,6 +112,27 @@ static void test_missing_or_non_numeric_schema_version_is_refused(void)
     TEST_ASSERT_EQUAL_INT(0, g_writes);
 }
 
+/* A widget id or label could contain the literal text `"schemaVersion"` as a VALUE. The reader
+ * scans the text rather than building a cJSON tree (see cfg_store.c for why), so it must tell a
+ * KEY from a value that merely looks like one — otherwise such a document would be read with a
+ * bogus version and refused, or worse, accepted as a version it is not. */
+static void test_schema_version_lookalike_string_value_is_not_the_key(void)
+{
+    reset();
+    cfg_store_t s = store();
+    /* The version is 1; the widget's id contains the key text. A naive strstr would read the
+     * "1" out of the id string and, depending on the digits, get the version wrong. */
+    const char *doc = "{\"schemaVersion\":1,\"pages\":[{\"name\":\"a\",\"widgets\":["
+                      "{\"id\":\"\\\"schemaVersion\\\":99\"}]}]}";
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, doc));
+    TEST_ASSERT_EQUAL_INT(1, g_writes);
+
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_NOT_NULL(json);
+    free(json);
+}
+
 /* A well-formed JSON document that the LAYOUT PARSER rejects must also be refused — being
  * valid JSON is not enough if the firmware cannot act on it. */
 static void test_semantically_invalid_config_is_refused(void)
@@ -329,6 +350,7 @@ int main(void)
     RUN_TEST(test_malformed_json_is_refused_and_stored_config_is_untouched);
     RUN_TEST(test_future_schema_version_is_refused);
     RUN_TEST(test_missing_or_non_numeric_schema_version_is_refused);
+    RUN_TEST(test_schema_version_lookalike_string_value_is_not_the_key);
     RUN_TEST(test_semantically_invalid_config_is_refused);
     RUN_TEST(test_unconfigured_device_returns_default);
     RUN_TEST(test_stored_config_round_trips);

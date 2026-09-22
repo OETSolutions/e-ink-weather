@@ -711,6 +711,46 @@ static esp_err_t h_config_get(httpd_req_t *req)
     return e;
 }
 
+/* Copy the VALUE of a top-level `"key": "value"` string into `out`, without building a cJSON
+ * tree. Returns 0 on success.
+ *
+ * WHY A SCAN AND NOT cJSON: a PUT already parses the document once in cfg_store_put, and every
+ * extra parse of an 8 KB config allocates a cJSON tree (~16 KB here) that does not always fit —
+ * measured on hardware, a 22-widget config was rejected while a 21-widget one stored, purely on
+ * tree size. Reading one short string for the power-mode comparison must not cost a whole parse.
+ * The scan requires the key to be a real key (preceded by `{` or `,` followed by `:`), so a
+ * string VALUE that happens to contain the text cannot be mistaken for it. */
+static int scan_top_string(const char *json, const char *key, char *out, size_t cap)
+{
+    if (!json || !key || !out || cap == 0) return -1;
+    char pat[48];
+    const int pn = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (pn <= 0 || (size_t)pn >= sizeof(pat)) return -1;
+
+    const char *k = strstr(json, pat);
+    while (k) {
+        const char *p = k;
+        while (p > json && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n' || p[-1] == '\r')) p--;
+        if (p != json && (p[-1] == '{' || p[-1] == ',')) break;   /* looks like a key */
+        k = strstr(k + 1, pat);
+    }
+    if (!k) return -1;
+
+    k += pn;
+    while (*k == ' ' || *k == '\t' || *k == '\n' || *k == '\r') k++;
+    if (*k != ':') return -1;
+    k++;
+    while (*k == ' ' || *k == '\t' || *k == '\n' || *k == '\r') k++;
+    if (*k != '"') return -1;
+    k++;
+
+    size_t i = 0;
+    while (k[i] && k[i] != '"' && i < cap - 1) { out[i] = k[i]; i++; }
+    if (k[i] != '"') return -1;              /* unterminated or too long */
+    out[i] = '\0';
+    return 0;
+}
+
 /* Would this document change the power mode the running boot path is already using?
  *
  * Compares against the STORED config, not against a default, so a PUT that merely re-sends
@@ -718,22 +758,28 @@ static esp_err_t h_config_get(httpd_req_t *req)
  * than the raw string, so "battery" and "auto" in different key orders or with whitespace
  * still compare equal in meaning.
  *
- * Returns 0 on any parse failure: a document that cannot be read cannot be a deliberate mode
- * change, and restarting on a malformed body would be a denial-of-service against the owner. */
-static int power_mode_differs(const char *new_json)
+ * Returns 0 on a document that cannot be read: one that cannot be read cannot be a deliberate
+ * mode change, and restarting on a malformed body would be a denial-of-service against the owner.
+ * It does NOT validate the document — cfg_store_put does, and the restart is only reached after
+ * the store succeeds. `fresh_out` receives the document's mode so the caller can word the
+ * restart warning without parsing again. */
+static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
 {
-    layout_config_t fresh;
-    if (layout_config_parse(new_json, &fresh) != 0) return 0;
+    char want[16];
+    if (scan_top_string(new_json, "powerMode", want, sizeof(want)) != 0) return 0;
+    const power_mode_t fresh = power_mode_from_string(want);
+    if (fresh_out) *fresh_out = fresh;
 
     char *stored = NULL;
-    layout_config_t old;
-    memset(&old, 0, sizeof(old));
-    old.power_mode = POWER_MODE_AUTO;      /* matches layout_config_parse's own default */
+    char have[16];
+    power_mode_t old = POWER_MODE_AUTO;        /* matches layout_config_parse's own default */
     if (cfg_store_get(cfg_store_nvs(), &stored) == 0 && stored) {
-        (void)layout_config_parse(stored, &old);
+        if (scan_top_string(stored, "powerMode", have, sizeof(have)) == 0) {
+            old = power_mode_from_string(have);
+        }
         free(stored);
     }
-    return fresh.power_mode != old.power_mode;
+    return fresh != old;
 }
 
 static esp_err_t h_config_put(httpd_req_t *req)
@@ -770,19 +816,33 @@ static esp_err_t h_config_put(httpd_req_t *req)
      * power_mode_differs() reads the STORED config, so calling it after cfg_store_put() would
      * compare the new document against itself and always report "no change" — the restart
      * would silently never happen, which is exactly the saved-but-ignored failure this
-     * feature exists to prevent. */
-    layout_config_t fresh;
-    memset(&fresh, 0, sizeof(fresh));
-    fresh.power_mode = POWER_MODE_AUTO;      /* matches layout_config_parse's default */
-    const int parsed_ok = (layout_config_parse(body, &fresh) == 0);
-    const int power_changed = parsed_ok && power_mode_differs(body);
+     * feature exists to prevent.
+     *
+     * NO EXTRA PARSE HERE. This used to run layout_config_parse(body) FIRST and then call
+     * power_mode_differs(), which parsed it again — two more transient cJSON trees on top of the
+     * one cfg_store_put builds. On this part that was enough to push a full-size config over the
+     * heap: measured on hardware, 21 widgets stored reliably and 22 never did. power_mode_differs
+     * now scans the text, so the store is the only parse of the body. */
+    power_mode_t fresh_mode = POWER_MODE_AUTO;
+    const int power_changed = power_mode_differs(body, &fresh_mode);
 
     /* Validate, then store. cfg_store_put runs schemaVersion -> devcfg_migrate ->
      * layout_config_parse and writes NOTHING unless all three pass. A bad config can
      * therefore never be persisted, so the device cannot be bricked into an unparseable
      * state by a bad PUT (Task 14 Step 2). */
-    if (cfg_store_put(cfg_store_nvs(), body) != 0) {
-        ESP_LOGW(TAG, "rejected config (%d bytes)", n);
+    /* Log the SUB-CODE. "rejected config" alone cannot distinguish a malformed document
+     * (-2/-3/-4) from a failed write (-5), and on this part those have completely different
+     * causes — one is the user's fault, the other is the heap's. Captured ONCE so the
+     * store is not attempted a second time after it has already failed. */
+    const int store_rc = cfg_store_put(cfg_store_nvs(), body);
+    if (store_rc != 0) {
+        /* Log the SUB-CODE. "rejected config" alone cannot distinguish a malformed document
+         * (-2/-3/-4) from a failed write (-5), and on this part those have different causes —
+         * one is the document, the other is the heap. It is logged rather than put in the
+         * response because the two are indistinguishable at the HTTP layer: cJSON_Parse returns
+         * NULL for a malformed document AND for an allocation failure, so the same "-2" can mean
+         * either, and claiming one in the reply would sometimes be a lie. */
+        ESP_LOGW(TAG, "rejected config (%d bytes, code %d)", n, store_rc);
         api_note_error("api: config rejected");
         free(body);
         return api_send_err(req, "400 Bad Request",
@@ -822,7 +882,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
          * so, and saying it afterwards is no use to anyone. The escape is the factory-reset
          * button (5 s on KEY1). */
         char out[256];
-        if (fresh.power_mode == POWER_MODE_BATTERY) {
+        if (fresh_mode == POWER_MODE_BATTERY) {
             snprintf(out, sizeof(out),
                      "{\"status\":\"stored\",\"restarting\":true,\"warning\":"
                      "\"Battery mode puts the display to sleep between updates, so this page "
