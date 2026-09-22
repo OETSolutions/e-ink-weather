@@ -160,7 +160,12 @@ esp_err_t webui_mount(httpd_handle_t server)
         ESP_LOGE(TAG, "could not register the web UI handler: %s", esp_err_to_name(e));
         return e;
     }
-    ESP_LOGI(TAG, "web UI mounted (%d assets, %u bytes of flash)",
-             WEBUI_ASSET_COUNT, (unsigned)0);
+    /* The byte count is summed from the asset table rather than hardcoded. It used to print a
+     * literal 0, which read as "the app is not actually embedded" in a boot log — the opposite of
+     * the truth, and alarming for no reason. */
+    unsigned total = 0;
+    for (int i = 0; i < WEBUI_ASSET_COUNT; i++) total += (unsigned)WEBUI_ASSETS[i].len;
+    ESP_LOGI(TAG, "web UI mounted (%d assets, %u bytes in flash)",
+             WEBUI_ASSET_COUNT, total);
     return ESP_OK;
 }
