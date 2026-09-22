@@ -688,16 +688,21 @@ async function mount(root: HTMLElement): Promise<void> {
       return;
     }
     const token = tokenOverride ?? haTokenInput.value.trim();
+    /* WITHOUT A TOKEN, DO NOT CALL HA AT ALL. The request would be unauthenticated and, because HA
+     * sends no CORS headers by default, would fail as a console error on every page load — noise
+     * that reads as "this app is broken" and hides the real message, which is simply that the token
+     * has not been entered yet. The device can supply no token either (it will not return one), so
+     * the honest state is: not listed, here is how to list it. */
+    if (!token) {
+      panel.setEntities([], 'Enter the Home Assistant token above to load the entity list, or '
+        + 'type the entity id by hand.');
+      return;
+    }
     const res = await listEntities({ baseUrl: base, token });
     if (res.ok) {
       panel.setEntities(
         res.entities.map((e) => ({ entityId: e.entityId, friendlyName: e.friendlyName })),
       );
-    } else if (!token) {
-      /* Say WHY the list is empty rather than reporting HA as unreachable: the missing piece is
-       * the token, and the fix is in the field two lines up. */
-      panel.setEntities([], 'Enter the Home Assistant token above to load the entity list, or '
-        + 'type the entity id by hand.');
     } else {
       panel.setEntities([], `Could not list Home Assistant entities: ${res.error}`);
     }
