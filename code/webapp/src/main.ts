@@ -24,7 +24,7 @@ import { buildStaticLayer } from './canvas/render';
 import { emptyConfig, type Config, type Page, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, getValues, putAuth, type AuthState } from './transfer/device';
+import { getAuth, getValues, putAuth, getSecrets, putSecrets, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -319,6 +319,80 @@ async function mount(root: HTMLElement): Promise<void> {
   }
   describeProduct();
 
+  /* ---- credentials (FR-30) ----
+   *
+   * WHY THIS SECTION EXISTS: the OWM key and the HA URL/token could previously only be set by
+   * the captive portal on FIRST BOOT. A device already on the network had no way to be given
+   * them, so its Home Assistant boxes stayed "--" with no route to fix that short of a factory
+   * reset — which is exactly what the user hit.
+   *
+   * THE FIELDS START BLANK AND ARE NEVER PRE-FILLED WITH THE STORED VALUE. The device will not
+   * send a secret back (see its /api/secrets), and pre-filling would also mean a Save re-sent
+   * whatever was in the box. Blank therefore reads as "leave it alone", and the status line
+   * beside each field says whether the device already holds one — which is the only thing the
+   * user needs from it. */
+  const owmKeyInput = el('input', {
+    type: 'password', id: 'owmKey', autocomplete: 'off', placeholder: 'leave blank to keep the stored key',
+  }) as HTMLInputElement;
+  const haUrlInput = el('input', {
+    type: 'text', id: 'haUrl', autocomplete: 'off', placeholder: 'http://homeassistant.local:8123',
+  }) as HTMLInputElement;
+  const haTokenInput = el('input', {
+    type: 'password', id: 'haToken', autocomplete: 'off', placeholder: 'leave blank to keep the stored token',
+  }) as HTMLInputElement;
+  const owmKeyStatus = el('span', { className: 'badge' }, '');
+  const haTokenStatus = el('span', { className: 'badge' }, '');
+  const credStatus = el('p', { className: 'hint' });
+  const secretsBtn = button('Save credentials', () => void doSaveSecrets());
+
+  function describeSecrets(s: { owmKey: boolean; haToken: boolean; haUrl: string } | null): void {
+    if (!s) {
+      owmKeyStatus.textContent = 'not loaded';
+      haTokenStatus.textContent = 'not loaded';
+      return;
+    }
+    owmKeyStatus.textContent = s.owmKey ? 'configured' : 'not set';
+    haTokenStatus.textContent = s.haToken ? 'configured' : 'not set';
+    /* The HA URL IS returned by the device, so it can be shown — and filling it means the
+     * entity picker below has something to query without the user retyping the address. */
+    if (s.haUrl) haUrlInput.value = s.haUrl;
+  }
+
+  async function doSaveSecrets(): Promise<void> {
+    const body: { owmKey?: string; haUrl?: string; haToken?: string } = {};
+    if (owmKeyInput.value.trim()) body.owmKey = owmKeyInput.value.trim();
+    if (haUrlInput.value.trim()) body.haUrl = haUrlInput.value.trim();
+    if (haTokenInput.value.trim()) body.haToken = haTokenInput.value.trim();
+    if (Object.keys(body).length === 0) {
+      credStatus.textContent = 'Nothing to save — fill at least one field.';
+      credStatus.classList.add('err');
+      return;
+    }
+    secretsBtn.disabled = true;
+    const r = await putSecrets(body);
+    secretsBtn.disabled = false;
+    if (!r.ok) {
+      credStatus.textContent = `Could not save credentials: ${r.error}`;
+      credStatus.classList.add('err');
+      return;
+    }
+    /* Clear the secret fields on success so a later Save cannot re-send them, then re-read the
+     * device's state so the badges reflect what is actually stored. */
+    const enteredToken = haTokenInput.value.trim();
+    owmKeyInput.value = '';
+    haTokenInput.value = '';
+    credStatus.classList.remove('err');
+    credStatus.textContent = 'Saved. The display is refreshing with the new credentials.';
+    const after = await getSecrets();
+    describeSecrets(after.ok ? after.value : null);
+
+    /* Refresh the entity picker with the token just entered. loadEntities() reads the field,
+     * which was cleared a line above — so without this the list would stay empty right after the
+     * user supplied the one thing it was missing, and they would conclude the token was wrong. */
+    const base = haUrlInput.value.trim();
+    if (base && enteredToken) await loadEntities(base, enteredToken);
+  }
+
   /* ---- optional API auth (FR-31) ---- */
   const authBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
   const authLabel = el('label', { className: 'toggle' }) as HTMLLabelElement;
@@ -546,13 +620,25 @@ async function mount(root: HTMLElement): Promise<void> {
        'Save a copy, or load one you saved earlier. Loading does not touch the device until ' +
        'you press Save.'),
     el('div', { className: 'actions' }, fileInput),
-    el('h2', {}, 'Weather source'),
+    el('h2', {}, 'Weather product'),
     el('p', { className: 'sub' },
        'Which OpenWeatherMap product to fetch from. This decides whether official ' +
        'severe-weather alerts are available.'),
     el('div', { className: 'fields' },
        el('div', {}, el('label', { htmlFor: 'owmProduct' }, 'Product'), owmSel)),
     productHint,
+    el('h2', {}, 'Data source credentials'),
+    el('p', { className: 'sub' },
+       'Credentials for the data sources. Stored on the display, never in this file. A blank ' +
+       'field keeps whatever the display already has.'),
+    el('div', { className: 'fields' },
+       el('div', {}, el('label', { htmlFor: 'owmKey' }, 'OpenWeatherMap key'), owmKeyInput, owmKeyStatus)),
+    el('div', { className: 'fields' },
+       el('div', {}, el('label', { htmlFor: 'haUrl' }, 'Home Assistant URL'), haUrlInput),
+       el('div', {}, el('label', { htmlFor: 'haToken' }, 'Home Assistant token'),
+          haTokenInput, haTokenStatus)),
+    el('div', { className: 'actions' }, secretsBtn),
+    credStatus,
     el('h2', {}, 'Access'),
     authLabel,
     authRow,
@@ -576,24 +662,53 @@ async function mount(root: HTMLElement): Promise<void> {
     else describeAuth();
   })();
 
+  /* Read the credential flags AND the stored HA URL. The URL fills the field so the entity
+   * picker below can query HA without the user retyping an address the device already has — the
+   * same reason the location is injected into GET /api/config rather than left to the user. */
+  void (async () => {
+    const r = await getSecrets();
+    describeSecrets(r.ok ? r.value : null);
+    loadEntities(r.ok ? r.value.haUrl : '');
+  })();
+
   /* The HA entity list is fetched once, asynchronously. A failure is not fatal and is explained
    * in the panel rather than shown as an empty picker — "no entities" would read as "your Home
-   * Assistant is empty", which is the worst possible message. */
-  void (async () => {
-    const base = doc.ha?.baseUrl ?? '';
+   * Assistant is empty", which is the worst possible message.
+   *
+   * THE TOKEN COMES FROM THE FORM, NOT THE DEVICE. The device holds the HA token but will not
+   * hand it back (see /api/secrets), and listing entities needs an authenticated request — so
+   * the picker can only populate once the user has typed a token into the field above. Without
+   * one the panel keeps its "type the entity id by hand" escape, which is a working path rather
+   * than a dead end. */
+  /* `tokenOverride` is for the caller that has just received a token and cleared the field — the
+   * save path — so the list can be fetched with a credential the form no longer holds. */
+  async function loadEntities(base: string, tokenOverride?: string): Promise<void> {
     if (!base) {
       panel.setEntities([], 'No Home Assistant URL configured, so type the entity id by hand.');
       return;
     }
-    const res = await listEntities({ baseUrl: base, token: '' });
+    const token = tokenOverride ?? haTokenInput.value.trim();
+    const res = await listEntities({ baseUrl: base, token });
     if (res.ok) {
       panel.setEntities(
         res.entities.map((e) => ({ entityId: e.entityId, friendlyName: e.friendlyName })),
       );
+    } else if (!token) {
+      /* Say WHY the list is empty rather than reporting HA as unreachable: the missing piece is
+       * the token, and the fix is in the field two lines up. */
+      panel.setEntities([], 'Enter the Home Assistant token above to load the entity list, or '
+        + 'type the entity id by hand.');
     } else {
       panel.setEntities([], `Could not list Home Assistant entities: ${res.error}`);
     }
-  })();
+  }
+
+  /* Re-list when the token is provided, so the picker fills in as soon as the user pastes it —
+   * without this the list would stay empty until a reload even after the token was entered. */
+  haTokenInput.addEventListener('change', () => {
+    const base = haUrlInput.value.trim();
+    if (base && haTokenInput.value.trim()) void loadEntities(base);
+  });
 }
 
 const root = document.getElementById('app');
