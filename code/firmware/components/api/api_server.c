@@ -765,9 +765,16 @@ static int scan_top_string(const char *json, const char *key, char *out, size_t 
  * restart warning without parsing again. */
 static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
 {
+    /* An ABSENT powerMode means 'auto', exactly as layout_config_parse() defaults it. Returning
+     * early on a missing key would be wrong: a stored 'battery' document replaced by one that
+     * omits the field IS a change to auto, and treating it as "no change" would leave the device
+     * asleep on a setting the user had just removed — the same silently-ignored save this
+     * comparison exists to prevent. */
     char want[16];
-    if (scan_top_string(new_json, "powerMode", want, sizeof(want)) != 0) return 0;
-    const power_mode_t fresh = power_mode_from_string(want);
+    power_mode_t fresh = POWER_MODE_AUTO;
+    if (scan_top_string(new_json, "powerMode", want, sizeof(want)) == 0) {
+        fresh = power_mode_from_string(want);
+    }
     if (fresh_out) *fresh_out = fresh;
 
     char *stored = NULL;
