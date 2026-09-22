@@ -9,6 +9,19 @@
 
 export const SCHEMA_VERSION = 1;
 
+/**
+ * The device's per-page limits, mirrored from the firmware.
+ *
+ * THESE MUST MATCH lib/layout/include/widgets.h. The device parses at most LAYOUT_MAX_FIELDS
+ * widgets and LAYOUT_MAX_RULES alert rules per widget, and it does not report what it dropped —
+ * so a layout authored past either limit would look complete in the editor and be quietly
+ * missing boxes on the glass, which is the silent-truncation failure this project keeps hitting.
+ * The editor enforces them so the limit is visible while editing rather than discovered on the
+ * panel.
+ */
+export const MAX_WIDGETS_PER_PAGE = 24;
+export const MAX_ALERT_RULES_PER_WIDGET = 6;
+
 export { PANEL_WIDTH, PANEL_HEIGHT, FB_BYTES } from './canvas-consts';
 
 export type AlertOp = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne';
@@ -59,13 +72,50 @@ export interface Widget {
   showsOwmAlerts?: boolean;
 }
 
+/**
+ * A horizontal divider in the static art.
+ *
+ * IT IS PART OF THE CONFIG, not the web app's own table, because the user must be able to move
+ * it: a rule that can only be nudged by editing a preset is a line the user does not control.
+ * The device never sees a rule as a rule — rules are rasterised into the 1-bpp artwork this app
+ * uploads — but they still travel in the document so a saved layout round-trips and a GET hands
+ * back the lines the user actually drew. The firmware's layout parser ignores an unknown
+ * per-page key, and PUT stores the whole body verbatim, so a rule survives the round-trip
+ * without a firmware change.
+ *
+ * `inset` is measured from BOTH panel edges, so a rule spans x=inset .. PANEL_WIDTH-inset.
+ */
+export interface Rule {
+  y: number;
+  thickness: number;
+  inset: number;
+}
+
 export interface Page {
   id: string;
   name: string;
   refreshSeconds: number;
   weight: number;
   widgets: Widget[];
+  /** Dividers, in the static layer (FR-15). Absent means none. */
+  rules?: Rule[];
 }
+
+/** The id every rule shares. A rule is not a widget, but the editor selects, drags and deletes
+ *  one by id like a widget, so it carries the same field with a constant value. A rule can
+ *  never be a widget: its id is reserved here and never assigned to a value box. */
+export const RULE_ID = '@rule';
+
+/** A rule as the editor addresses it: an id plus the divider. */
+export interface RuleSelection extends Rule {
+  id: typeof RULE_ID;
+  index: number;
+}
+
+/** The editor's selection is a widget (by id) or a rule (by id AND index). */
+export type Selection =
+  | { kind: 'widget'; id: string }
+  | { kind: 'rule'; id: string; index: number };
 
 export interface LocationConfig {
   /** Precise position picked on the map. */
@@ -115,6 +165,6 @@ export function emptyConfig(now: Date = new Date()): Config {
     location: { latitude: 0, longitude: 0, zipCode: '' },
     owmProduct: 'auto',
     ha: { mode: 'rest' },
-    pages: [{ id: 'main', name: 'Main', refreshSeconds: 900, weight: 1, widgets: [] }],
+    pages: [{ id: 'main', name: 'Main', refreshSeconds: 900, weight: 1, widgets: [], rules: [] }],
   };
 }

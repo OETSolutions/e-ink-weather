@@ -178,8 +178,12 @@ export function defaultLayout(): Config {
     owmProduct: 'auto',
     ha: { mode: 'rest' },
     pages: [
-      { id: 'main', name: 'Weather', refreshSeconds: 900, weight: 1, widgets: page },
-      { id: 'forecast', name: 'Forecast', refreshSeconds: 900, weight: 1, widgets: page2 },
+      { id: 'main', name: 'Weather', refreshSeconds: 900, weight: 1, widgets: page,
+        rules: DEFAULT_RULES.map((r) => ({ ...r })) },
+      { id: 'forecast', name: 'Forecast', refreshSeconds: 900, weight: 1, widgets: page2,
+        /* THE RULE LIVES IN THE PAGE, matching PAGE_ARTWORK[1]'s y=236 — so the page's art and
+         * the page's config cannot drift apart, and the editor can move it. */
+        rules: [{ y: 236, thickness: 2, inset: 40 }] },
     ],
   };
 }

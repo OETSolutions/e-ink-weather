@@ -21,10 +21,11 @@ import { listEntities } from './data/ha';
 import { previewTextWithLive } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
-import { emptyConfig, type Config, type Page, type Widget } from './model/config';
+import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement';
+import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, getValues, putAuth, getSecrets, putSecrets, type AuthState } from './transfer/device';
+import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -154,17 +155,39 @@ async function saveConfig(doc: Config): Promise<SaveResult> {
  * momentarily wrong panel before the artwork landed.
  */
 /**
+ * Give a page the dividers its art defaults to, when the document carries none.
+ *
+ * WHY THIS IS NEEDED AT ALL: a device configured before rules moved into the document has no
+ * `rules` key, but buildPageLayer() still DRAWS the art table's lines. Left alone, the user would
+ * see dividers on the preview that cannot be grabbed — the drawn set and the editable set would
+ * be different, which is the most confusing possible version of "the line will not move". Seeding
+ * the page from the same table makes them one set, and the next save persists them so the
+ * document genuinely describes the layout.
+ */
+function ensurePageRules(p: Page, index: number): void {
+  if (!Array.isArray(p.rules)) {
+    p.rules = artworkForPage(index).rules.map((r) => ({ ...r }));
+  }
+}
+
+/**
  * Render ONE page's static layer: its labels and rules, baked to a 1 bpp bitmap.
  *
- * MODULE SCOPE, not inside mount(), because both the editor (which draws page 0) and the upload
- * path need it, and the upload runs for every page in the document. A page with no art entry
- * yields a blank layer rather than another page's — see artworkForPage().
+ * MODULE SCOPE, not inside mount(), because both the editor (which draws the page being edited)
+ * and the upload path need it, and the upload runs for every page in the document.
+ *
+ * LABELS COME FROM THE ART TABLE, RULES FROM THE CONFIG. That split is deliberate: a label is
+ * ART with no data behind it, while a rule is something the user moves, so it belongs in the
+ * document. A page with no art entry yields a blank label set rather than another page's — see
+ * artworkForPage() — and falls back to that table's rules only when the config carries none,
+ * which is the case for a page authored before rules moved into the document.
  */
-function buildPageLayer(pageIndex: number): Uint8Array {
+function buildPageLayer(page: Page, pageIndex: number): Uint8Array {
   const art = artworkForPage(pageIndex);
+  const rules = page.rules ?? art.rules;
   return buildStaticLayer(
     art.labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
-    art.rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
+    rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
   ).data;
 }
 
@@ -172,7 +195,7 @@ async function pushArtwork(doc: Config): Promise<SaveResult> {
   /* One layer per page, built from the page's own art. A page with no art table entry gets a
    * blank layer rather than a copy of another page's — a missing picture is honest, the wrong
    * picture is a lie about which page you are looking at. */
-  const layers: (Uint8Array | null)[] = doc.pages.map((_, i) => buildPageLayer(i));
+  const layers: (Uint8Array | null)[] = doc.pages.map((p, i) => buildPageLayer(p, i));
   const up = await uploadArtwork(layers);
   if (!up.ok) return { ok: false, error: up.error ?? 'The artwork upload failed' };
   return { ok: true, restarting: false };
@@ -192,6 +215,7 @@ async function mount(root: HTMLElement): Promise<void> {
    * rather than being read as a length. */
   if (!Array.isArray(page.widgets)) page.widgets = [];
   if (page.widgets.length === 0) page.widgets = starterPage().widgets;
+  ensurePageRules(page, doc.pages.indexOf(page));
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
   /* The device's last resolved values, keyed by widget id (FR-27). Empty until asked for, and
@@ -243,6 +267,72 @@ async function mount(root: HTMLElement): Promise<void> {
   alertToggle.append(alertBox, el('span', {}, 'Preview a firing alert'));
   const saveBtn = button('Save to device', () => void doSave());
 
+  /* ---- adding and removing entities and dividers ----
+   *
+   * ADDING A BOX WAS IMPOSSIBLE BEFORE: the editor could only move boxes that already existed,
+   * so the only way to get a new reading on the glass was to hand-edit the config JSON. The
+   * device already parses whatever widgets the document contains (lib/layout/src/widgets.c), so
+   * the missing half was entirely here.
+   *
+   * A NEW BOX IS PLACED IN A FREE SPOT, not at 0,0. Dropping every new box in the same corner
+   * would stack them exactly on top of each other — invisible, and impossible to tell apart.
+   * canvas/placement.ts finds the first clear spot and is host-tested; this only calls it. */
+
+  function addWidget(): void {
+    /* THE DEVICE CAPS WIDGETS PER PAGE, so the editor must too. Past the cap the panel would
+     * look complete in the preview and the extra boxes would simply not appear on the glass —
+     * the device drops them without a word. Refusing here makes the limit visible while
+     * editing. */
+    if (page.widgets.length >= MAX_WIDGETS_PER_PAGE) {
+      status.textContent =
+        `This page already holds the maximum of ${MAX_WIDGETS_PER_PAGE} boxes the display can `
+        + 'draw. Remove one to add another.';
+      status.classList.add('err');
+      return;
+    }
+    const spot = findPlacement(page.widgets);
+    if (!spot) {
+      status.textContent = 'No free space left for another box. Remove one first.';
+      status.classList.add('err');
+      return;
+    }
+    const nw: Widget = {
+      id: freshWidgetId(page.widgets),
+      x: spot.x, y: spot.y, w: spot.w, h: spot.h,
+      role: 'dynamic',
+      binding: { kind: 'owm-current', owmField: 'temp' },
+      format: { decimals: 1, suffix: '°F', fallback: '--' },
+      /* Sized to the box the placement found, not a fixed 64: the step-down can leave a gap
+       * shorter than the 64 px face's line height, and the numeral would be clipped. */
+      font: { size: fontSizeForBox(spot.h), align: 'left', valign: 'top' },
+    };
+    page.widgets.push(nw);
+    editorState.values = previewValues(page, alertProbe, liveValues);
+    editorState.selection = { kind: 'widget', id: nw.id };
+    panel.show(editorState.selection, page);
+    describe(editorState.selection);
+    editor.redraw();
+    status.classList.remove('err');
+    status.textContent = `Added box “${nw.id}”. Bind it to a reading, then Save to device.`;
+  }
+
+  function addRule(): void {
+    if (!page.rules) page.rules = [];
+    /* THE MIDDLE, NOT THE TOP: a new line at y=0 would sit on the panel's edge under the first
+     * label. 340 is the middle of 680, a visible place the user can immediately drag from. */
+    page.rules.push({ y: 340, thickness: 2, inset: 40 });
+    editor.setLayer(rebuildEditedLayer());
+    editorState.selection = { kind: 'rule', id: RULE_ID, index: page.rules.length - 1 };
+    panel.show(editorState.selection, page);
+    describe(editorState.selection);
+    editor.redraw();
+    status.classList.remove('err');
+    status.textContent = 'Added a divider. Drag it on the panel, or set its Y exactly here.';
+  }
+
+  const addBoxBtn = button('Add box', addWidget);
+  const addRuleBtn = button('Add divider', addRule);
+
   /* ---- file save / load (FR-26) ---- */
   const saveFileBtn = button('Save to file', () => {
     downloadText(exportConfig(doc), configFilename());
@@ -263,12 +353,19 @@ async function mount(root: HTMLElement): Promise<void> {
         doc = next;
         page = doc.pages[0]!;
         if (!Array.isArray(page.widgets)) page.widgets = [];
+        /* SAME SEEDING AS MOUNT, via the same function. A loaded file that predates rules has no
+         * `rules` key, and the layer still draws the art table's lines — so an empty array here
+         * would show dividers that cannot be grabbed, exactly the state ensurePageRules() exists
+         * to prevent. Two different behaviours for the same missing field is also how the
+         * drawn set and the editable set drift apart in the first place. */
+        ensurePageRules(page, doc.pages.indexOf(page));
         editorState.page = page;
-        editorState.selectedId = undefined;
+        editorState.selection = undefined;
         editorState.values = previewValues(page, alertProbe, liveValues);
         picker.setPosition({ lat: doc.location.latitude, lon: doc.location.longitude });
         zipInput.value = doc.location.zipCode ?? '';
-        panel.show(undefined);
+        editor.setLayer(rebuildEditedLayer());
+        panel.show(undefined, page);
         editor.redraw();
         describe(undefined);
         status.textContent = `Loaded “${f.name}”. Review it, then Save to device.`;
@@ -444,12 +541,17 @@ async function mount(root: HTMLElement): Promise<void> {
     describeAuth();
   }
 
-  function describe(id: string | undefined): void {
-    const w = id ? page.widgets.find((x) => x.id === id) : undefined;
+  function describe(s: Selection | undefined): void {
+    if (s?.kind === 'rule') {
+      const r = page.rules?.[s.index];
+      sel.textContent = r ? `divider: y=${Math.round(r.y)} thickness=${r.thickness}` : '';
+      return;
+    }
+    const w = s?.kind === 'widget' ? page.widgets.find((x) => x.id === s.id) : undefined;
     if (!w) {
-      sel.textContent = id
+      sel.textContent = s
         ? ''
-        : 'Nothing selected. Click a value box to move or resize it.';
+        : 'Nothing selected. Click a value box or a divider to move or resize it.';
       return;
     }
     sel.textContent =
@@ -459,12 +561,40 @@ async function mount(root: HTMLElement): Promise<void> {
   /* ---- wiring ---- */
   let editor: EditorHandle;
 
+  /* Rebuild just the page being edited, from its CURRENT rules. The label table is keyed by
+   * page index, so this asks for the page's own art rather than assuming page 0 — a device with
+   * two pages would otherwise edit page 1 with page 0's labels. */
+  function rebuildEditedLayer(): Uint8Array {
+    return buildPageLayer(page, doc.pages.indexOf(page));
+  }
+
   const panel: PropertyPanelHandle = createPropertyPanel({
     host: panelHost,
     onChange: () => {
       /* A format or alert change alters the preview text, so refresh it — otherwise the panel
        * would edit a widget while the canvas kept painting the old value. */
       editorState.values = previewValues(page, alertProbe, liveValues);
+      editor.redraw();
+    },
+    onRuleChange: () => {
+      /* The rule is BAKED INTO THE LAYER, so the panel cannot simply change a number: the line
+       * on the canvas comes from the layer, and without this the edit would be invisible until a
+       * reload. This is the same class of defect as a control that shows a value it never
+       * stores. */
+      editor.setLayer(rebuildEditedLayer());
+    },
+    onDelete: (s) => {
+      if (s.kind === 'rule') {
+        page.rules = (page.rules ?? []).filter((_, i) => i !== s.index);
+        editor.setLayer(rebuildEditedLayer());
+      } else {
+        const i = page.widgets.findIndex((w) => w.id === s.id);
+        if (i >= 0) page.widgets.splice(i, 1);
+        editorState.values = previewValues(page, alertProbe, liveValues);
+      }
+      editorState.selection = undefined;
+      panel.show(undefined, page);
+      describe(undefined);
       editor.redraw();
     },
   });
@@ -480,19 +610,25 @@ async function mount(root: HTMLElement): Promise<void> {
    *
    * ONE LAYER PER PAGE, because the device rotates pages on its own and each page's readings are
    * stamped onto that page's own background. A single shared layer meant page 2's numbers were
-   * drawn under page 1's labels — seen on the glass. `staticLayer` (page 0) is what the EDITOR
-   * draws, since the editor edits one page at a time; `allLayers` is what gets uploaded. */
-  let staticLayer = buildPageLayer(0);
-
+   * drawn under page 1's labels — seen on the glass. The layer the EDITOR draws is rebuilt from
+   * the edited page whenever a rule moves; `pushArtwork` builds them all again on Save. */
   editor = attachEditor({
     canvasEl,
     state: editorState,
-    staticLayer,
-    onChange: () => { /* Commit happens on Save, not per gesture. */ },
-    onSelect: (id) => {
-      editorState.selectedId = id;
-      describe(id);
-      panel.show(id ? page.widgets.find((w) => w.id === id) : undefined);
+    staticLayer: rebuildEditedLayer(),
+    rebuildLayer: rebuildEditedLayer,
+    /* Commit happens on Save, not per gesture — but the INSPECTOR must be re-shown. Its geometry
+     * fields are built once from the widget and never updated during a drag, so without this a
+     * drag moved the box on the panel while the X/Y/W/H numbers beside it kept the values they
+     * had before — the same "the drag did nothing" reading that the live readout line exists to
+     * prevent, in the one place the user is most likely to look to confirm a move. */
+    onChange: () => {
+      panel.show(editorState.selection, page);
+    },
+    onSelect: (s) => {
+      editorState.selection = s;
+      describe(s);
+      panel.show(s, page);
       editor.redraw();
     },
     onUpdate: (w) => {
@@ -501,6 +637,9 @@ async function mount(root: HTMLElement): Promise<void> {
       sel.textContent =
         `${w.id}: x=${Math.round(w.x)} y=${Math.round(w.y)} w=${Math.round(w.w)} h=${Math.round(w.h)}`;
     },
+    onRuleUpdate: (y) => {
+      sel.textContent = `divider: y=${Math.round(y)}`;
+    },
   });
 
   alertBox.addEventListener('change', () => {
@@ -508,22 +647,70 @@ async function mount(root: HTMLElement): Promise<void> {
      * never alarms" guard. */
     alertProbe = alertBox.checked ? 999 : NaN;
     editorState.values = previewValues(page, alertProbe, liveValues);
-    panel.show(editorState.selectedId
-      ? page.widgets.find((w) => w.id === editorState.selectedId)
-      : undefined);
+    panel.show(editorState.selection, page);
     editor.redraw();
   });
 
-  /* Ask the device what it last resolved, and repaint when it answers (FR-27: the preview must
-   * show real fetched data). Deliberately not awaited: the editor has to be usable immediately on
-   * a device that is slow or unreachable, so it paints placeholders first and fills in the real
-   * readings when they arrive. */
-  void getValues({ baseUrl: API }).then((vals) => {
-    if (Object.keys(vals).length === 0) return;   /* unreachable, or nothing drawn yet */
-    liveValues = vals;
-    editorState.values = previewValues(editorState.page, alertProbe, liveValues);
-    editor.redraw();
-  });
+  /* Ask the device what it last resolved, and KEEP ASKING (FR-27: the preview must show real
+   * fetched data).
+   *
+   * WHY A POLL AND NOT ONE FETCH: this used to run once, at mount. On a device that had not yet
+   * finished its own first refresh the answer was empty, the preview stayed on "--", and it never
+   * asked again — so the user saw placeholders for a display that was in fact showing real
+   * readings, and concluded the data was broken. The device refreshes every 15 minutes by
+   * default, so a poll a few seconds apart is plenty and costs one small GET.
+   *
+   * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
+   * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
+   * other page's numbers into this page's boxes the moment the scheduler moved — readings that
+   * look real and belong to a different layout. So a response for another page is ignored, and
+   * the preview keeps its placeholders until the device is showing this page again. */
+  /* Poll for the device's resolved values.
+   *
+   * WHY A POLL AND NOT ONE FETCH: this used to run once, at mount. On a device that had not yet
+   * finished its own first refresh the answer was empty, the preview stayed on "--", and it never
+   * asked again — so the user saw placeholders for a display that was in fact showing real
+   * readings, and concluded the data was broken.
+   *
+   * IT STOPS ONCE VALUES ARRIVE, so it does not become a background load on a small embedded
+   * server — and it is RESTARTED after a save, because a widget the user just added has no value
+   * until the device has resolved it, and without the restart its box would keep the placeholder
+   * for the life of the tab.
+   *
+   * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
+   * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
+   * other page's numbers into this page's boxes the moment the scheduler moved. */
+  const editedPageIndex = (): number => {
+    const i = doc.pages.indexOf(page);
+    return i < 0 ? 0 : i;
+  };
+  let valuesTimer = 0;
+  function pollValues(): void {
+    if (valuesTimer) window.clearInterval(valuesTimer);
+    let tries = 0;
+    const tick = (): void => {
+      tries++;
+      if (tries > 30) { window.clearInterval(valuesTimer); valuesTimer = 0; return; }
+      void getValuesInfo({ baseUrl: API }).then((info) => {
+        if (!info || info.page !== editedPageIndex()) return;
+        if (Object.keys(info.values).length === 0) return;   /* nothing drawn yet; try again */
+        liveValues = info.values;
+        editorState.values = previewValues(editorState.page, alertProbe, liveValues);
+        editor.redraw();
+        /* Enough: the device has resolved this page, and the readings only change when IT
+         * refreshes. Keep the timer running only while something is still missing — a widget the
+         * user just added will be absent from the response until the device has seen it. */
+        const allPresent = editorState.page.widgets
+          .filter((w) => w.role === 'dynamic')
+          .every((w) => liveValues[w.id] !== undefined);
+        if (allPresent) { window.clearInterval(valuesTimer); valuesTimer = 0; }
+      });
+    };
+    tick();
+    valuesTimer = window.setInterval(tick, 2000);
+  }
+  pollValues();
+  window.addEventListener('beforeunload', () => window.clearInterval(valuesTimer));
 
   async function doSave(): Promise<void> {
     const p = picker.getPosition();
@@ -555,6 +742,9 @@ async function mount(root: HTMLElement): Promise<void> {
       setBtn('saved');
       setTimeout(() => setBtn('idle'), 2500);
       status.classList.remove('err', 'busy');
+      /* A widget the user just added has no resolved value until the device has seen this
+       * config, so restart the poll to fill its box in rather than leaving the placeholder. */
+      pollValues();
       if (r.restarting) {
         /* A powerMode change restarts the device, so say so rather than leaving the user
          * watching a dropped connection. */
@@ -605,10 +795,11 @@ async function mount(root: HTMLElement): Promise<void> {
        el('label', { htmlFor: 'zip' }, 'Zip code (general area, optional)'), zipInput),
     el('h2', {}, 'Layout'),
     el('p', { className: 'sub' },
-       'Drag a value box to move it, or drag its edge to resize. This is the real 1-bit output ' +
-       'the panel will show.'),
+       'Drag a value box to move it, or drag its edge to resize. Drag a divider to move the ' +
+       'line. This is the real 1-bit output the panel will show.'),
     el('div', { className: 'toolbar' },
        zoomOut, zoomIn, zoomFit, bitBadge, zoomLabel),
+    el('div', { className: 'actions' }, addBoxBtn, addRuleBtn),
     el('div', { className: 'editorLayout' },
        el('div', { className: 'editorWrap' }, canvasEl),
        panelHost),
@@ -645,7 +836,7 @@ async function mount(root: HTMLElement): Promise<void> {
   );
 
   describe(undefined);
-  panel.show(undefined);
+  panel.show(undefined, page);
   picker.invalidate();
 
   /* The canvas is in the document NOW, so this is the first moment "fit" can be measured against

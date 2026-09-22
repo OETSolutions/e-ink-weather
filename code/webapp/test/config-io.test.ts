@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { exportConfig, importConfig, configFilename } from '../src/transfer/config';
-import { emptyConfig, SCHEMA_VERSION } from '../src/model/config';
+import { readFileSync } from 'node:fs';
+import { emptyConfig, SCHEMA_VERSION, MAX_WIDGETS_PER_PAGE, MAX_ALERT_RULES_PER_WIDGET } from '../src/model/config';
 
 describe('config file I/O (FR-26)', () => {
   it('round-trips a config through a saved file', () => {
@@ -63,7 +64,52 @@ describe('config file I/O (FR-26)', () => {
     expect(Array.isArray(c.pages[0]!.widgets)).toBe(true);
   });
 
+  /* RULES. They are part of the document so the user can move a divider, which means a saved
+   * file must carry them back — a line that vanished on reload would be a divider the user
+   * cannot keep. A page with no `rules` key must still load (an older file), which is why the
+   * field is optional rather than defaulted to a non-empty array. */
+  it('round-trips dividers with their own geometry', () => {
+    const c = emptyConfig();
+    c.pages[0]!.rules = [{ y: 236, thickness: 3, inset: 60 }];
+    const back = importConfig(exportConfig(c));
+    expect(back.pages[0]!.rules).toEqual([{ y: 236, thickness: 3, inset: 60 }]);
+  });
+
+  it('leaves rules absent when the file has none, rather than inventing dividers', () => {
+    const c = importConfig(JSON.stringify({
+      schemaVersion: 1, pages: [{ name: 'P', widgets: [] }],
+    }));
+    expect(c.pages[0]!.rules).toBeUndefined();
+  });
+
   it('names the file with a date so two saves do not collide', () => {
     expect(configFilename(new Date('2026-09-18T00:00:00Z'))).toMatch(/^eink-weather-\d{4}-\d{2}-\d{2}\.json$/);
+  });
+});
+
+/* THE DEVICE'S LIMITS MUST MATCH THE WEB APP'S.
+ *
+ * The editor refuses to add a 25th box or a 7th alert rule because the firmware parses at most
+ * that many and drops the rest without saying so. If these two numbers ever drift, a layout the
+ * editor accepts would be silently truncated on the glass — the failure mode this project keeps
+ * hitting, where the UI confirms a change that has no effect on the panel.
+ *
+ * Read from the firmware header itself rather than a copied literal, so a change on either side
+ * fails here instead of on the device. */
+describe('webapp and firmware agree on the device limits', () => {
+  const header = readFileSync(
+    new URL('../../firmware/lib/layout/include/widgets.h', import.meta.url), 'utf8',
+  );
+
+  it('caps widgets per page identically', () => {
+    const m = /#define\s+LAYOUT_MAX_FIELDS\s+(\d+)/.exec(header);
+    expect(m, 'LAYOUT_MAX_FIELDS not found in widgets.h').not.toBeNull();
+    expect(Number(m![1])).toBe(MAX_WIDGETS_PER_PAGE);
+  });
+
+  it('caps alert rules per widget identically', () => {
+    const m = /#define\s+LAYOUT_MAX_RULES\s+(\d+)/.exec(header);
+    expect(m, 'LAYOUT_MAX_RULES not found in widgets.h').not.toBeNull();
+    expect(Number(m![1])).toBe(MAX_ALERT_RULES_PER_WIDGET);
   });
 });

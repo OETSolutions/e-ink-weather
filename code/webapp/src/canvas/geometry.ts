@@ -1,8 +1,13 @@
-import type { Widget } from '../model/config';
+import type { Rule, Widget } from '../model/config';
 
 export const PANEL_W = 920;
 export const PANEL_H = 680;
 const EDGE = 8;
+
+/** How close, in panel pixels, a pointer must be to a rule's line to grab it. A rule is a
+ *  hairline; without a tolerance it would be nearly impossible to hit. 10 px is under two
+ *  millimetres on the glass and comfortably larger than the 2 px line at fit scale. */
+export const RULE_GRAB = 10;
 
 export type Zone = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -123,6 +128,40 @@ export function clampToPanel(r: Rect): Rect {
   x = Math.min(Math.max(0, x), PANEL_W - w);
   y = Math.min(Math.max(0, y), PANEL_H - h);
   return { x, y, w, h };
+}
+
+/**
+ * The index of the rule under a point, or -1. Nearest wins, so two rules a few pixels apart are
+ * both reachable.
+ *
+ * Rules are tested BEFORE widgets by the caller: a rule may legitimately sit in a gap but never
+ * over a box, and giving the line priority makes it unambiguous when the band it is grabbed in
+ * grazes a box edge. Only the horizontal span `[inset, PANEL_W - inset]` counts, because that is
+ * where the rule is actually drawn — a pointer out beyond an end cap must not grab it.
+ */
+export function ruleHit(rules: Rule[], x: number, y: number): number {
+  let best = -1;
+  let bestD = RULE_GRAB;
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i]!;
+    if (x < r.inset || x > PANEL_W - r.inset) continue;
+    const d = Math.abs(y - r.y);
+    if (d <= bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/**
+ * Move a rule's y by a pointer delta, snapped to the grid and clamped inside the panel.
+ *
+ * VERTICAL ONLY: a rule spans the panel width by construction, so a horizontal drag has nowhere
+ * to go. Clamped one pixel short of the bottom edge so the line — and its thickness below y —
+ * always has at least one row of glass to land on.
+ */
+export function applyRuleDrag(originY: number, dy: number, grid: number): number {
+  const raw = originY + dy;
+  const snapped = snap(raw, grid, [0, PANEL_H]);
+  return Math.min(PANEL_H - 1, Math.max(0, snapped));
 }
 
 export function snap(value: number, grid: number, guides: number[]): number {

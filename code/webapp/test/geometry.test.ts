@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { hitTest, applyResize, applyDrag, guidesFor, clampToPanel, snap } from '../src/canvas/geometry';
-import type { Widget } from '../src/model/config';
+import {
+  hitTest, applyResize, applyDrag, guidesFor, clampToPanel, snap, ruleHit, applyRuleDrag, RULE_GRAB,
+} from '../src/canvas/geometry';
+import type { Rule, Widget } from '../src/model/config';
 const w = (o: Partial<Widget> = {}): Widget => ({ id:'a', x:100, y:100, w:200, h:100, role:'dynamic', ...o });
+const rule = (y: number, o: Partial<Rule> = {}): Rule => ({ y, thickness: 2, inset: 40, ...o });
 describe('hit testing', () => {
   it('finds widget under cursor', () => {
     expect(hitTest([w()],200,150)?.id).toBe('a');
@@ -109,5 +112,52 @@ describe('guides', () => {
     expect(g.x).not.toContain(100); /* a's own left must not be a guide for a */
     expect(g.y).toContain(50);
     expect(g.y).toContain(100);
+  });
+});
+
+/* RULES (dividers). These are the parts the user cannot reach another way: the drag is the only
+ * way to place a line by eye, so the hit tolerance and the clamp are what make the feature work
+ * rather than merely exist. */
+describe('rule hit testing', () => {
+  it('grabs a rule within the tolerance, on either side of the line', () => {
+    const r = [rule(200)];
+    expect(ruleHit(r, 400, 200)).toBe(0);
+    expect(ruleHit(r, 400, 200 + RULE_GRAB)).toBe(0);
+    expect(ruleHit(r, 400, 200 - RULE_GRAB)).toBe(0);
+    expect(ruleHit(r, 400, 200 + RULE_GRAB + 1)).toBe(-1);
+  });
+
+  it('ignores a pointer beyond an end cap', () => {
+    /* The rule spans x=inset..PANEL_W-inset. Outside that it is not drawn, so it must not be
+     * grabbable there — otherwise a click well past the line would move it with no visual cue. */
+    const r = [rule(200, { inset: 100 })];
+    expect(ruleHit(r, 99, 200)).toBe(-1);
+    expect(ruleHit(r, 100, 200)).toBe(0);
+    expect(ruleHit(r, 820, 200)).toBe(0);
+    expect(ruleHit(r, 821, 200)).toBe(-1);
+  });
+
+  it('picks the nearest of two close rules', () => {
+    const r = [rule(200), rule(206)];
+    expect(ruleHit(r, 400, 201)).toBe(0);
+    expect(ruleHit(r, 400, 205)).toBe(1);
+  });
+});
+
+describe('rule drag', () => {
+  it('moves vertically, snapped to the grid', () => {
+    expect(applyRuleDrag(200, 45, 8)).toBe(248);   /* 245 snapped to the nearest 8 */
+  });
+
+  it('clamps at the top and one pixel short of the bottom', () => {
+    expect(applyRuleDrag(4, -500, 8)).toBe(0);
+    /* A rule at 680 would be entirely off the glass, so the bottom stop is 679. */
+    expect(applyRuleDrag(100, 5000, 8)).toBe(679);
+  });
+
+  it('is unaffected by a horizontal drag', () => {
+    /* The function takes only dy — there is no x to move, which is the vertical-only rule
+     * enforced by the signature rather than by a comment. */
+    expect(applyRuleDrag(200, 0, 8)).toBe(200);
   });
 });

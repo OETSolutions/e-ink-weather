@@ -12,16 +12,26 @@
  * So each input handler assigns to the widget before notifying.
  */
 
-import type { AlertLevel, AlertOp, DataBinding, DataSourceKind, Widget } from '../model/config';
+import type {
+  AlertLevel, AlertOp, AlertRule, DataBinding, DataSourceKind, Page, Rule, Selection, Widget,
+} from '../model/config';
 import { describeRule } from '../alerts/rules';
 import { describeBinding } from '../data/binding';
 import { formatPlaceholder } from '../data/format';
 import { FACES_AVAILABLE, sizeFor } from '../canvas/face';
+import { MAX_ALERT_RULES_PER_WIDGET } from '../model/config';
+import { PANEL_WIDTH } from '../model/canvas-consts';
 
 export interface PropertyPanelOptions {
   host: HTMLElement;
-  /** Called after any edit, with the widget that changed. */
+  /** Called after any edit to a value box, with the widget that changed. */
   onChange: (w: Widget) => void;
+  /** Called after any edit to a divider. The rules are baked into the static layer, so the
+   *  shell must rebuild it — a panel that edited the number without repainting would confirm a
+   *  move the preview never shows. */
+  onRuleChange: () => void;
+  /** Called when the user deletes the current selection. */
+  onDelete: (sel: Selection) => void;
   /** Entity ids to offer in the picker, if a list has been fetched. Empty is fine. */
   entities?: { entityId: string; friendlyName?: string }[];
   /** Reports what an entity id looks like, so a typo is caught as it is typed. */
@@ -31,8 +41,8 @@ export interface PropertyPanelOptions {
 }
 
 export interface PropertyPanelHandle {
-  /** Re-render for a different widget, or for no selection. */
-  show(w: Widget | undefined): void;
+  /** Re-render for a different selection, or for no selection. */
+  show(sel: Selection | undefined, page: Page): void;
   /** Replace the entity list after an async fetch completes. */
   setEntities(list: { entityId: string; friendlyName?: string }[], unavailable?: string): void;
 }
@@ -70,10 +80,12 @@ const OPS: AlertOp[] = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'];
 const LEVELS: Exclude<AlertLevel, 'none'>[] = ['advisory', 'warning', 'severe'];
 
 export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHandle {
-  const { host, onChange } = opts;
+  const { host, onChange, onRuleChange, onDelete } = opts;
   let entities = opts.entities ?? [];
   let entitiesUnavailable = opts.entitiesUnavailable;
   let current: Widget | undefined;
+  let currentSel: Selection | undefined;
+  let currentPage: Page | undefined;
 
   /** Assign then notify — see the note at the top of the file. */
   function commit(patch: Partial<Widget>): void {
@@ -82,16 +94,36 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     onChange(current);
   }
 
+  /** Edit the selected rule in place and notify. Rules are `{y, thickness, inset}` and every
+   *  field is a plain number, so there is nothing to merge. */
+  function commitRule(patch: Partial<Rule>): void {
+    if (currentSel?.kind !== 'rule' || !currentPage?.rules) return;
+    const r = currentPage.rules[currentSel.index];
+    if (!r) return;
+    Object.assign(r, patch);
+    onRuleChange();
+  }
+
   function field(label: string, control: HTMLElement): HTMLElement {
     const id = `p-${Math.random().toString(36).slice(2, 8)}`;
     control.id = id;
     return el('div', { className: 'pRow' }, el('label', { htmlFor: id }, label), control);
   }
 
+  /** A number field that reads back the STORED value when it loses focus.
+   *
+   * WHY THE READ-BACK: the handler may clamp the number it is given (a width cannot be 0, a
+   * divider cannot sit below the panel). Without a read-back the field would go on showing what
+   * was typed — "0" — while the widget held 1, and the next render would silently correct it to
+   * a different number than the user last saw. That is the "control shows a value it did not
+   * store" defect class, just in the opposite direction. The field is NOT re-rendered on every
+   * keystroke, because rebuilding the DOM mid-typing drops focus after one digit (see the
+   * geometry note in render()). */
   function numberInput(
     value: number,
     onInput: (n: number) => void,
     step = 1,
+    readBack?: () => number,
   ): HTMLInputElement {
     const i = el('input', { type: 'number', value: String(value), step: String(step) }) as HTMLInputElement;
     i.addEventListener('input', () => {
@@ -100,6 +132,9 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
        * NaN would propagate into the geometry and the config. */
       if (Number.isFinite(n)) onInput(n);
     });
+    if (readBack) {
+      i.addEventListener('blur', () => { i.value = String(readBack()); });
+    }
     return i;
   }
 
@@ -127,6 +162,41 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
   function render(): void {
     host.replaceChildren();
 
+    if (currentSel?.kind === 'rule') {
+      const r = currentPage?.rules?.[currentSel.index];
+      if (!r) {
+        host.append(el('div', { className: 'empty' }, 'Nothing selected.'));
+        return;
+      }
+      host.append(el('h3', {}, 'Divider'));
+      const geo = el('div', { className: 'pGrid' });
+      /* Captured so the blur read-back below does not have to re-narrow the selection. */
+      const ruleIndex = currentSel.index;
+      for (const [label, key, min] of [['Y', 'y', 0], ['Thickness', 'thickness', 1], ['Inset', 'inset', 0]] as const) {
+        geo.append(
+          el('div', {},
+             el('label', {}, label),
+             numberInput(r[key], (n) => {
+               const clampMin = Math.max(min, Math.round(n));
+               /* Thickness and inset are bounded by the panel; y must leave its own line on the
+                * glass, so it stops one pixel short of the bottom edge. */
+               const v = key === 'y' ? Math.min(679, clampMin)
+                       : key === 'inset' ? Math.min(Math.floor(PANEL_WIDTH / 2), clampMin)
+                       : Math.min(20, clampMin);
+               /* NO render() — see the geometry note above: rebuilding the DOM mid-typing drops
+                * focus after one keystroke. onRuleChange already repaints the canvas, which is
+                * the only thing that depends on this value. */
+               commitRule({ [key]: v } as Partial<Rule>);
+             }, 1, () => currentPage?.rules?.[ruleIndex]?.[key] ?? 0)),
+        );
+      }
+      host.append(el('fieldset', {}, el('legend', {}, 'Divider position'), geo,
+        el('p', { className: 'hint' }, 'Drag the line on the panel to move it vertically.')));
+      host.append(el('div', { className: 'actions' },
+        makeButton('Delete divider', () => onDelete(currentSel!))));
+      return;
+    }
+
     if (!current) {
       host.append(el('div', { className: 'empty' },
         'Nothing selected. Click a value box on the panel to move, resize or bind it.'));
@@ -137,6 +207,12 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     host.append(el('h3', {}, `Box: ${w.id}`));
 
     /* ---- geometry (numeric entry, in addition to dragging) ---- */
+    /* NO render() IN THESE HANDLERS. Re-rendering rebuilds the DOM, which REPLACES the input the
+     * user is typing in — so the element loses focus after the first keystroke and the rest of
+     * the digits go nowhere. Confirmed in a browser: typing "140" into X left "1" and focus on
+     * the body. Nothing else on the panel depends on a geometry value, so the field the user is
+     * editing is already the right display; only the canvas needs repainting, and onChange does
+     * that. */
     const geo = el('div', { className: 'pGrid' });
     for (const [label, key] of [['X', 'x'], ['Y', 'y'], ['W', 'w'], ['H', 'h']] as const) {
       geo.append(
@@ -146,8 +222,7 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
              /* Geometry is clamped on the device side too, but clamping here keeps the
               * number the user sees equal to the number stored. */
              commit({ [key]: Math.max(key === 'w' || key === 'h' ? 1 : 0, Math.round(n)) } as Partial<Widget>);
-             render();
-           })),
+           }, 1, () => current?.[key] ?? 0)),
       );
     }
     host.append(el('fieldset', {}, el('legend', {}, 'Position and size'), geo));
@@ -224,12 +299,20 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     /* ---- formatting ---- */
     const fmt = w.format ?? {};
     const fset = el('fieldset', {}, el('legend', {}, 'Number format'));
+    /* The "Shown as:" preview is UPDATED IN PLACE for the same reason as the alert description:
+     * a re-render would replace the input mid-typing and drop focus. IT MUST READ THE WIDGET'S
+     * CURRENT FORMAT, not the `fmt` captured above — commit() builds a NEW format object, so the
+     * captured one still holds the old suffix and the hint would sit one edit behind. */
+    const fmtHint = el('p', { className: 'hint' }, `Shown as: ${formatPlaceholder(fmt)}`);
+    const refreshFmtHint = (): void => {
+      fmtHint.textContent = `Shown as: ${formatPlaceholder(current?.format ?? {})}`;
+    };
     fset.append(
-      field('Decimals', numberInput(fmt.decimals ?? 1, (n) => commit({ format: { ...fmt, decimals: n } }), 1)),
-      field('Prefix', textInput(fmt.prefix ?? '', (s) => commit({ format: { ...fmt, prefix: s } }))),
-      field('Suffix', textInput(fmt.suffix ?? '', (s) => commit({ format: { ...fmt, suffix: s } }))),
-      field('When unavailable', textInput(fmt.fallback ?? '--', (s) => commit({ format: { ...fmt, fallback: s } }))),
-      el('p', { className: 'hint' }, `Shown as: ${formatPlaceholder(fmt)}`),
+      field('Decimals', numberInput(fmt.decimals ?? 1, (n) => { commit({ format: { ...fmt, decimals: n } }); refreshFmtHint(); }, 1)),
+      field('Prefix', textInput(fmt.prefix ?? '', (s) => { commit({ format: { ...fmt, prefix: s } }); refreshFmtHint(); })),
+      field('Suffix', textInput(fmt.suffix ?? '', (s) => { commit({ format: { ...fmt, suffix: s } }); refreshFmtHint(); })),
+      field('When unavailable', textInput(fmt.fallback ?? '--', (s) => { commit({ format: { ...fmt, fallback: s } }); refreshFmtHint(); })),
+      fmtHint,
     );
     host.append(fset);
 
@@ -261,50 +344,66 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     host.append(tset);
 
     /* ---- alert rules ---- */
-    const rules = w.alerts ?? [];
+    /* READ THE WIDGET'S RULES FRESH IN EVERY HANDLER, never a copy captured at render.
+     *
+     * commit() REPLACES w.alerts with a new array, so a captured reference goes stale the moment
+     * any field is edited. The handlers used to re-render after each change, which rebuilt them
+     * with the new array and hid this — but re-rendering also drops focus mid-typing, so it had
+     * to go. Reading fresh is what makes editing two fields of one rule keep BOTH: with a stale
+     * capture, setting the operator and then the threshold spread the ORIGINAL rule for the
+     * second edit and silently reverted the operator. */
+    const alertsOf = (): AlertRule[] => current?.alerts ?? [];
+    const nAlert = alertsOf().length;
     const aset = el('fieldset', {}, el('legend', {}, 'Alerts'));
-    for (let i = 0; i < rules.length; i++) {
-      const r = rules[i]!;
+    for (let i = 0; i < nAlert; i++) {
+      /* The description line is updated IN PLACE, for the same focus reason. */
+      const desc = el('p', { className: 'hint' }, describeRule(alertsOf()[i]!));
+      const edit = (patch: Partial<AlertRule>): void => {
+        const next = alertsOf().slice();
+        next[i] = { ...next[i]!, ...patch };
+        commit({ alerts: next });
+        desc.textContent = describeRule(next[i]!);
+      };
       const row = el('div', { className: 'pRule' },
-        select(r.op, OPS.map((o) => ({ value: o, label: o })), (v) => {
-          const next = rules.slice();
-          next[i] = { ...r, op: v };
-          commit({ alerts: next });
-          render();
-        }),
-        numberInput(r.threshold, (n) => {
-          const next = rules.slice();
-          next[i] = { ...r, threshold: n };
-          commit({ alerts: next });
-          render();
-        }),
-        select(r.level, LEVELS.map((l) => ({ value: l, label: l })), (v) => {
-          const next = rules.slice();
-          next[i] = { ...r, level: v };
-          commit({ alerts: next });
-          render();
-        }),
+        select(alertsOf()[i]!.op, OPS.map((o) => ({ value: o, label: o })), (v) => edit({ op: v })),
+        numberInput(alertsOf()[i]!.threshold, (n) => edit({ threshold: n })),
+        select(alertsOf()[i]!.level, LEVELS.map((l) => ({ value: l, label: l })), (v) => edit({ level: v })),
         makeButton('×', () => {
-          const next = rules.slice();
+          const next = alertsOf().slice();
           next.splice(i, 1);
           commit({ alerts: next });
           render();
         }),
       );
-      aset.append(row, el('p', { className: 'hint' }, describeRule(r)));
+      aset.append(row, desc);
     }
     aset.append(makeButton('Add rule', () => {
-      commit({ alerts: [...rules, { op: 'gt', threshold: 100, level: 'severe' }] });
+      /* The device holds at most MAX_ALERT_RULES_PER_WIDGET rules per widget and ignores the
+       * rest, so a rule added past the cap would be a control that appears to work while having
+       * no effect on the glass. */
+      const cur = alertsOf();
+      if (cur.length >= MAX_ALERT_RULES_PER_WIDGET) return;
+      commit({ alerts: [...cur, { op: 'gt', threshold: 100, level: 'severe' }] });
       render();
     }));
+    if (nAlert >= MAX_ALERT_RULES_PER_WIDGET) {
+      aset.append(el('p', { className: 'hint' },
+        `The display uses at most ${MAX_ALERT_RULES_PER_WIDGET} alert rules per box.`));
+    }
     host.append(aset);
+
+    /* ---- delete ---- */
+    host.append(el('div', { className: 'actions' },
+      makeButton('Delete box', () => onDelete(currentSel!))));
   }
 
   render();
 
   return {
-    show(w: Widget | undefined) {
-      current = w;
+    show(sel, page) {
+      currentSel = sel;
+      currentPage = page;
+      current = sel?.kind === 'widget' ? page.widgets.find((x) => x.id === sel.id) : undefined;
       render();
     },
     setEntities(list, unavailable) {

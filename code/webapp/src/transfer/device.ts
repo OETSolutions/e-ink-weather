@@ -131,13 +131,28 @@ export interface DeviceValues {
  * fetch anyway.
  */
 export async function getValues(opts: DeviceOptions = {}): Promise<Record<string, string>> {
+  const info = await getValuesInfo(opts);
+  return info?.values ?? {};
+}
+
+/** The device's resolved values WITH the page they belong to.
+ *
+ * WHY THE PAGE MATTERS: the device stores only the page it is CURRENTLY showing, and it rotates
+ * on its own. The editor edits one page at a time, so a poll that ignored the page would paint
+ * the other page's readings into this page's boxes the moment the scheduler rotated — numbers
+ * that look real but belong to a different layout. The caller compares `page` against the index
+ * it is editing and only applies a match. Returns null when the device is unreachable or has
+ * not resolved anything yet, which is distinct from "this page has no values". */
+export async function getValuesInfo(
+  opts: DeviceOptions = {},
+): Promise<{ page: number; pageCount: number; values: Record<string, string> } | null> {
   const res = await jsonCall<DeviceValues>('/api/values', { method: 'GET', cache: 'no-store' }, opts);
-  if (!res.ok) return {};
-  const out: Record<string, string> = {};
+  if (!res.ok) return null;
+  const values: Record<string, string> = {};
   for (const v of res.value.values ?? []) {
-    if (typeof v.id === 'string' && typeof v.text === 'string') out[v.id] = v.text;
+    if (typeof v.id === 'string' && typeof v.text === 'string') values[v.id] = v.text;
   }
-  return out;
+  return { page: res.value.page ?? 0, pageCount: res.value.page_count ?? 1, values };
 }
 
 export interface AuthState {

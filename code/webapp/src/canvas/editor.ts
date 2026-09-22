@@ -13,14 +13,17 @@
  * parts (west-edge coupling, right-edge snapping, clamping after snapping) testable at all.
  */
 
-import type { Page, Widget } from '../model/config';
+import type { Page, Selection, Widget } from '../model/config';
+import { RULE_ID } from '../model/config';
 import { PANEL_WIDTH, PANEL_HEIGHT } from '../model/canvas-consts';
 import {
   applyDrag,
   applyResize,
+  applyRuleDrag,
   clampToPanel,
   guidesFor,
   hitTest,
+  ruleHit,
   type Zone,
 } from './geometry';
 import { renderPage, type ValueField } from './render';
@@ -40,8 +43,8 @@ export interface EditorState {
   page: Page;
   /** What each widget's bound value currently reads, for the live preview. */
   values: Record<string, string>;
-  /** The widget whose box should be outlined, if any. */
-  selectedId?: string;
+  /** What is selected: a value box, a divider, or nothing. */
+  selection?: Selection;
 }
 
 export interface EditorHandle {
@@ -49,6 +52,9 @@ export interface EditorHandle {
   redraw(): void;
   /** Recompute the canvas size for its container. */
   resize(): void;
+  /** Replace the static layer and repaint — the shell calls this after a rule moves, because
+   *  the rules are baked into that layer and it would otherwise show the old line. */
+  setLayer(layer: Uint8Array): void;
   /** Force a zoom multiple (1 = fit the container). Returns the zoom now in force. */
   setZoom(z: number | 'fit'): number;
   /** The zoom currently in force. */
@@ -68,10 +74,16 @@ export interface EditorOptions {
    * not given any static art yet.
    */
   staticLayer?: Uint8Array;
+  /**
+   * Rebuild the static layer from the page's CURRENT rules. Called on every move during a rule
+   * drag so the line follows the pointer. The shell owns the label table, so only it can build
+   * this — the editor has no labels of its own.
+   */
+  rebuildLayer?: () => Uint8Array;
   /** Called after a drag or resize commits a change. */
   onChange: (page: Page) => void;
-  /** Called when the pointer selects a widget (or clears the selection on empty space). */
-  onSelect: (id: string | undefined) => void;
+  /** Called when the pointer selects a widget or rule (or clears the selection). */
+  onSelect: (selection: Selection | undefined) => void;
   /**
    * Called on every move DURING a gesture, with the widget as it now stands.
    *
@@ -82,6 +94,8 @@ export interface EditorOptions {
    * as "the drag did nothing" even when it worked.
    */
   onUpdate?: (w: Widget) => void;
+  /** Called on every move DURING a rule drag, with the rule's new y. */
+  onRuleUpdate?: (y: number) => void;
 }
 
 /* The scale is chosen so the whole panel is visible in the container; the canvas backing
@@ -136,9 +150,13 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
   /* One Bitmap reused across repaints. renderPage allocates its own, so this holds the last
    * frame only to avoid re-reading it twice in a single paint. */
   let last: Bitmap | null = null;
+  /* The static art, held here so a rule drag can redraw the line live. */
+  let layer: Uint8Array = opts.staticLayer ?? blankLayer();
 
-  let drag: { id: string; zone: Zone; startX: number; startY: number; origin: Widget } | null =
-    null;
+  let drag:
+    | { kind: 'widget'; id: string; zone: Zone; startX: number; startY: number; origin: Widget }
+    | { kind: 'rule'; index: number; startY: number; originY: number }
+    | null = null;
 
   function redraw(): void {
     const fields: ValueField[] = state.page.widgets.map((w) => ({
@@ -158,7 +176,7 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     }));
 
     const values = state.page.widgets.map((w) => state.values[w.id]);
-    const bmp = renderPage(opts.staticLayer ?? blankLayer(), fields, values);
+    const bmp = renderPage(layer, fields, values);
     last = bmp;
 
     /* Paint the framebuffer as an ImageData at PANEL resolution, then let CSS scale it up.
@@ -180,28 +198,55 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     /* Overlay the selection outline and the guides. This is editor chrome and must NOT be
      * part of the framebuffer — drawing it into the ImageData would corrupt the preview and
      * make a selected widget look different from how it will print. */
-    const sel = state.page.widgets.find((w) => w.id === state.selectedId);
-    if (sel) {
-      const r = widgetRect(sel);
-      ctx.save();
-      ctx.strokeStyle = '#2563eb';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([]);
-      ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-      /* Handle marks at the corners, so the resize affordance is visible. */
-      ctx.fillStyle = '#2563eb';
-      const H = 8;
-      for (const [hx, hy] of [
-        [r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h],
-      ] as [number, number][]) {
-        ctx.fillRect(hx - H / 2, hy - H / 2, H, H);
+    const sel = state.selection;
+    if (sel?.kind === 'widget') {
+      const sw = state.page.widgets.find((w) => w.id === sel.id);
+      if (sw) {
+        const r = widgetRect(sw);
+        ctx.save();
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+        /* Handle marks at the corners, so the resize affordance is visible. */
+        ctx.fillStyle = '#2563eb';
+        const H = 8;
+        for (const [hx, hy] of [
+          [r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h],
+        ] as [number, number][]) {
+          ctx.fillRect(hx - H / 2, hy - H / 2, H, H);
+        }
+        ctx.restore();
       }
-      ctx.restore();
+    } else if (sel?.kind === 'rule') {
+      /* A selected rule is drawn as a bright band over its own pixels plus end caps, so it is
+       * obvious WHICH line is picked even when two sit close together. */
+      const r = state.page.rules?.[sel.index];
+      if (r) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.35)';
+        ctx.fillRect(r.inset, r.y - 3, PANEL_WIDTH - 2 * r.inset, Math.max(1, r.thickness) + 6);
+        ctx.fillStyle = '#2563eb';
+        const H = 10;
+        ctx.fillRect(r.inset - H / 2, r.y + r.thickness / 2 - H / 2, H, H);
+        ctx.fillRect(PANEL_WIDTH - r.inset - H / 2, r.y + r.thickness / 2 - H / 2, H, H);
+        ctx.restore();
+      }
     }
   }
 
   function onPointerDown(e: PointerEvent): void {
     const p = toPanel(canvasEl, e);
+    /* RULES FIRST — see ruleHit(). */
+    const ri = ruleHit(state.page.rules ?? [], p.x, p.y);
+    if (ri >= 0) {
+      const r = state.page.rules![ri]!;
+      drag = { kind: 'rule', index: ri, startY: p.y, originY: r.y };
+      canvasEl.setPointerCapture(e.pointerId);
+      onSelect({ kind: 'rule', id: RULE_ID, index: ri });
+      redraw();
+      return;
+    }
     const hit = hitTest(state.page.widgets, p.x, p.y);
     if (!hit) {
       onSelect(undefined);
@@ -210,9 +255,9 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     }
     const origin = state.page.widgets.find((w) => w.id === hit.id);
     if (!origin) return;
-    drag = { id: hit.id, zone: hit.zone, startX: p.x, startY: p.y, origin };
+    drag = { kind: 'widget', id: hit.id, zone: hit.zone, startX: p.x, startY: p.y, origin };
     canvasEl.setPointerCapture(e.pointerId);
-    onSelect(hit.id);
+    onSelect({ kind: 'widget', id: hit.id });
     redraw();
   }
 
@@ -221,24 +266,48 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
 
     /* No drag in progress: only update the cursor so the resize zones are discoverable. */
     if (!drag) {
+      const overRule = ruleHit(state.page.rules ?? [], p.x, p.y) >= 0;
       const hit = hitTest(state.page.widgets, p.x, p.y);
-      canvasEl.style.cursor = !hit
-        ? 'default'
-        : hit.zone === 'move'
-          ? 'move'
-          : `${hit.zone}-resize`;
+      canvasEl.style.cursor = overRule
+        ? 'ns-resize'
+        : !hit
+          ? 'default'
+          : hit.zone === 'move'
+            ? 'move'
+            : `${hit.zone}-resize`;
       return;
     }
 
-    const dx = p.x - drag.startX;
-    const dy = p.y - drag.startY;
-    const idx = state.page.widgets.findIndex((w) => w.id === drag!.id);
+    if (drag.kind === 'rule') {
+      const rules = state.page.rules;
+      if (!rules) return;
+      /* Snapping, clamping and the vertical-only rule all live in geometry.ts and are
+       * host-tested — this only applies the result. */
+      const y = applyRuleDrag(drag.originY, p.y - drag.startY, SNAP_GRID);
+      rules[drag.index] = { ...rules[drag.index]!, y };
+      /* The layer is what actually DRAWS the line, so it must be rebuilt for the move to be
+       * visible — otherwise the drag would only register on release. */
+      layer = opts.rebuildLayer ? opts.rebuildLayer() : layer;
+      redraw();
+      opts.onRuleUpdate?.(y);
+      return;
+    }
+
+    /* Past the rule branch, this is a widget drag. Captured in a local so TypeScript narrows the
+     * union: `drag` is a mutable closure variable, so the discriminant is not carried past the
+     * return above. */
+    const wd = drag;
+    if (wd.kind !== 'widget') return;
+
+    const dx = p.x - wd.startX;
+    const dy = p.y - wd.startY;
+    const idx = state.page.widgets.findIndex((w) => w.id === wd.id);
     if (idx < 0) return;
 
     let updated: Widget;
-    if (drag.zone === 'move') {
-      const g = guidesFor(state.page.widgets, drag.id);
-      updated = applyDrag(drag.origin, { x: drag.startX, y: drag.startY }, dx, dy, {
+    if (wd.zone === 'move') {
+      const g = guidesFor(state.page.widgets, wd.id);
+      updated = applyDrag(wd.origin, { x: wd.startX, y: wd.startY }, dx, dy, {
         grid: SNAP_GRID,
         guidesX: g.x,
         guidesY: g.y,
@@ -254,7 +323,7 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
        * The clamp can break the "opposite edge stays pinned" property when a drag goes past
        * the edge, and that is the right trade: the widget staying on the panel matters more
        * than an invariant about an off-panel edge. */
-      const raw = applyResize(drag.origin, drag.zone, { x: drag.startX, y: drag.startY }, dx, dy, {
+      const raw = applyResize(wd.origin, wd.zone, { x: wd.startX, y: wd.startY }, dx, dy, {
         grid: SNAP_GRID,
         minW: MIN_W,
         minH: MIN_H,
@@ -340,6 +409,10 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
   return {
     redraw,
     resize,
+    setLayer(next) {
+      layer = next;
+      redraw();
+    },
     setZoom(z) {
       zoomMode = z;
       resize();
