@@ -160,3 +160,33 @@ export function putAuth(
     body: JSON.stringify(body),
   }, opts);
 }
+
+/** Which credentials the device has stored. Values are NOT included — see the device's
+ *  /api/secrets — except the HA URL, which the app needs to offer the entity picker. */
+export interface SecretsState {
+  owmKey: boolean;
+  haToken: boolean;
+  haUrl: string;
+}
+
+export function getSecrets(opts: DeviceOptions = {}): Promise<JsonResult<SecretsState>> {
+  return jsonCall<SecretsState>('/api/secrets', { method: 'GET', cache: 'no-store' }, opts);
+}
+
+/**
+ * Store credentials on the device.
+ *
+ * AN ABSENT OR EMPTY FIELD LEAVES THE STORED VALUE ALONE, which is why the caller sends only
+ * the fields the user actually filled in. The device applies the same rule, so a form submit
+ * with a blank OWM key cannot wipe the working one.
+ */
+export function putSecrets(
+  body: { owmKey?: string; haUrl?: string; haToken?: string },
+  opts: DeviceOptions = {},
+): Promise<JsonResult<{ status?: string }>> {
+  return jsonCall('/api/secrets', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, opts);
+}
