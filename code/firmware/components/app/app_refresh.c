@@ -70,14 +70,22 @@ static const char *TAG = "refresh";
 #define FB_ACQUIRE_POLL_MS 50
 
 /* The slot identity meaning "no picture is known to be on the glass", i.e. a partial has no valid
- * base. Distinct from any REAL identity a layout can have: the artwork sentinels are -(100 + page)
- * for page 0..7 (-100..-107), the legacy bitmap uses 0 or 1, and the built-in boot mark uses -200
- * (SLOT_BOOT_LOGO) — so -1 cannot collide with an identity that is genuinely reproducible.
+ * base. The three identity spaces are kept disjoint BY CONSTRUCTION:
  *
- * The distinction matters, because it is not a sign test: the artwork sentinel is NEGATIVE, so
- * `slot < 0` is true for every real uploaded layout. See s_shown_slot. */
+ *   per-page artwork   -(100 + page*100 + seq)  with page 0..7 and seq 0..99  => -100 .. -899
+ *   the legacy bitmap  its live slot number (0 or 1)
+ *   the built-in mark  SLOT_BOOT_LOGO (-1000)
+ *   unknown            SLOT_NONE (-1)
+ *
+ * The artwork range has room for 8 pages x 100 sequences, and ARTWORK_MAX_PAGES is 8, so the spaces
+ * cannot overlap for any real layout. (An earlier draft used -(100 + page), which left no room for
+ * the sequence and collided with the boot mark at page 1 — see load_static_layer for why the
+ * sequence is required.)
+ *
+ * The distinction from SLOT_NONE matters and is NOT a sign test: the artwork sentinel is NEGATIVE,
+ * so `slot < 0` is true for every real uploaded layout. See s_shown_slot. */
 #define SLOT_NONE      (-1)
-#define SLOT_BOOT_LOGO (-200)
+#define SLOT_BOOT_LOGO (-1000)
 
 /* The fields to stamp one refresh, and their values. Sized by the parse caps rather than allocated.
  * This is the TICK-LOCAL page, which also carries the parsed widgets and the FR-27 reporting arrays;
@@ -143,7 +151,7 @@ typedef struct {
  * (dram0_0_seg, 180,736 bytes), which is what made an earlier two-buffer version fail to link. */
 static uint8_t *s_static;
 /* The identity of the picture on the glass, from load_static_layer(): a NEGATIVE sentinel for
- * per-page artwork (-(100+page)), the bitmap's slot for the legacy single bitmap, SLOT_BOOT_LOGO
+ * per-page artwork (-(100 + page*100 + seq)), the bitmap's slot for the legacy single bitmap, SLOT_BOOT_LOGO
  * for the built-in boot mark, SLOT_NONE when nothing is known. Compared for equality to decide
  * whether a partial is valid.
  *
@@ -303,17 +311,45 @@ static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
  * tried FIRST, and only a page that genuinely has none falls back. */
 static int load_static_layer(uint8_t *dst, int page, int *from_slot)
 {
+    /* The artwork identity is taken ONCE, BEFORE the load, and used whatever the load returns: a
+     * promote that lands between this read and the load would otherwise make the identity describe a
+     * different set from the pixels just read. A promote always follows with
+     * api_request_full_refresh(), so a stale identity here can only cost a full refresh, never
+     * authorise a partial against the wrong picture.
+     *
+     * The loaded set is then identified by (page, seq) — see below for why the seq is essential. */
+    int aw_pages = 0;
+    uint32_t aw_seq = 0;
+    artwork_store_identity(&aw_pages, &aw_seq);
+
     if (artwork_store_load_page(page, dst) == 0) {
-        /* THE IDENTITY MUST INCLUDE THE PAGE, not just "artwork". A partial refresh is diffed
-         * against the previous frame and is only valid when both are the SAME picture; during
-         * rotation the previous frame is the PREVIOUS PAGE's artwork. Returning one shared
-         * sentinel for every page would make a page change look like an unchanged source, and the
-         * partial would diff page 2's new frame against page 1's old one — scribbling ghosted
-         * fragments of the previous layout onto the glass. Encoding the page keeps the check
-         * honest: different page, different identity, therefore a full refresh. */
-        *from_slot = -(100 + page);
+        /* THE IDENTITY MUST INCLUDE BOTH THE PAGE AND THE SET'S SEQUENCE.
+         *
+         * The PAGE, because a partial is only valid when the frame on the glass and the frame about
+         * to be drawn are the same picture — and during rotation the previous frame is the PREVIOUS
+         * PAGE's artwork. A single shared sentinel for every page would make a page change look like
+         * an unchanged source and scribble fragments of page 1's layout onto page 2's.
+         *
+         * The SEQUENCE, because the page index alone cannot see an UPLOAD. Pushing a new layout for
+         * the page that is already on the glass leaves the page index — and therefore an identity
+         * derived only from it — completely unchanged, while the picture underneath changes. A
+         * partial would then diff the new layout against the old one, ghosting the previous layout
+         * behind the new text. The sequence increments on every promote, so an upload changes the
+         * identity and forces the full refresh api_request_full_refresh() already requests. Without
+         * it, that request is the ONLY thing standing between an uploaded layout and a wrong diff.
+         *
+         * Mixed into the negative range so it cannot collide with the bitmap slots (0/1),
+         * SLOT_BOOT_LOGO (-1000), or SLOT_NONE (-1): a page P with sequence S is
+         * -(100 + P*100 + S), which for the 8 possible pages and 100 sequences stays inside
+         * -100..-899 and never reaches the boot mark. See the SLOT_* definitions. */
+        const int seq = (int)(aw_seq % 100u);
+        *from_slot = -(100 + page * 100 + seq);
         return 0;
     }
+    /* A page with no artwork of its OWN falls back rather than borrowing a neighbour's: the wrong
+     * labels on the glass are worse than none. `aw_pages` is unused here — the fallbacks below have
+     * their own identities. */
+    (void)aw_pages;
     if (bitmap_store_load(dst) == 0) {
         *from_slot = api_live_bitmap_slot();
         return 0;
@@ -323,7 +359,7 @@ static int load_static_layer(uint8_t *dst, int page, int *from_slot)
      * gets a real identity of its own rather than SLOT_NONE. It must not share -1 with "unknown",
      * because the two mean opposite things: this one can be a valid diff base, and a partial of the
      * boot mark against itself is a genuine no-op rather than corruption. -200 cannot collide with
-     * the artwork sentinels (-(100+page) = -100..-107) or the bitmap slots (0 or 1). */
+     * the artwork sentinels (-100..-899) or the bitmap slots (0 or 1). */
     *from_slot = SLOT_BOOT_LOGO;
     return 0;
 }
@@ -1409,7 +1445,7 @@ void app_refresh_tick(power_source_t source, int force_full)
      * refresh a full one and kill the partial path entirely.
      *
      * IT IS ITS OWN FLAG, NOT A TEST ON THE SLOT'S SIGN. The artwork identity is a NEGATIVE
-     * sentinel (-(100 + page)), so `s_shown_slot < 0` was true for every device with an uploaded
+     * sentinel (negative for every real uploaded layout), so `s_shown_slot < 0` was true for every device with an uploaded
      * layout — every tick read "nothing on the glass" and forced a full refresh, which is why
      * /api/status reported partials_since_full: 0 regardless of the partial budget. The two
      * questions ("is there anything to diff against" and "is it the same picture") are separate

@@ -351,6 +351,14 @@ int artwork_store_page_count(void)
     return (aw_live(&h) < 0) ? 0 : (int)h.page_count;
 }
 
+void artwork_store_identity(int *page_count_out, uint32_t *seq_out)
+{
+    artwork_hdr_t h;
+    const int live = aw_live(&h);
+    if (page_count_out) *page_count_out = (live < 0) ? 0 : (int)h.page_count;
+    if (seq_out)        *seq_out        = (live < 0) ? 0 : h.seq;
+}
+
 int artwork_store_load_page(int page, uint8_t *out)
 {
     if (!out || page < 0) return -1;

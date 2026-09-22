@@ -94,6 +94,21 @@ int artwork_store_load_page(int page, uint8_t *out);
 /* How many pages the live artwork set covers, or 0 when none is stored. */
 int artwork_store_page_count(void);
 
+/* The live set's identity, for deciding whether the picture on the glass is still the one a render
+ * would produce: *page_count_out = how many pages it covers, *seq_out = its promotion sequence.
+ * Both come from ONE read of the live header, because reading them separately could straddle a
+ * promote and describe a set that never existed as a whole.
+ *
+ * WHY THE SEQUENCE IS NEEDED AND THE PAGE INDEX ALONE IS NOT: a partial refresh is only valid when
+ * the frame on the glass and the frame about to be drawn are built from the SAME picture. A page
+ * index cannot tell those apart across an upload — pushing a NEW layout for the page already on
+ * display keeps the index (and any identity derived from it) unchanged while the picture changes
+ * underneath. A partial would then diff the new layout against the old one and leave ghosted
+ * fragments of the previous layout on the glass. Folding in the promotion sequence makes every
+ * upload change the identity, which is what forces the full refresh that api_request_full_refresh()
+ * already asks for. */
+void artwork_store_identity(int *page_count_out, uint32_t *seq_out);
+
 /* Inflate a zlib stream (RFC1950) into `out`, which must hold ARTWORK_RAW_LEN bytes.
  *
  * DECLARED HERE, NOT IN lib/upload/artwork.h: this is tinfl from the ESP32 ROM, which does not
