@@ -782,6 +782,29 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
     return fresh != old;
 }
 
+/* malloc a request body buffer, retrying briefly if the first attempt fails.
+ *
+ * WHY A RETRY AND NOT A SINGLE ATTEMPT: this part has no PSRAM and ONE big DRAM region, which
+ * the network stack and the refresh machinery split into fragments. The web app pushes ARTWORK
+ * first and the config immediately after, and the artwork upload ends by requesting a FULL
+ * REFRESH — so for a few hundred milliseconds the heap is transiently fragmented and a single
+ * malloc can fail on a device reporting 40 KB free. Observed on hardware: the browser's own save
+ * flow got HTTP 500 {"error":"oom"} and then stored the identical document without complaint a
+ * moment later. The transient is short, so retrying covers it, and this is the same remedy the
+ * render path already uses for the same fragmentation.
+ *
+ * SAFE TO WAIT: nothing has been read from the socket yet, so the body is still there when the
+ * retry succeeds. Returns NULL only after the window has elapsed, which is a genuine OOM. */
+static char *alloc_body_retry(size_t len)
+{
+    char *p = malloc(len);
+    for (int i = 0; i < 40 && !p; i++) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+        p = malloc(len);
+    }
+    return p;
+}
+
 static esp_err_t h_config_put(httpd_req_t *req)
 {
     /* Optional bearer auth (FR-31). Gated because this WRITES the stored config. */
@@ -801,7 +824,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
     if (req->content_len <= 0 || (size_t)req->content_len >= API_CONFIG_MAX_LEN) {
         return api_send_err(req, "413 Payload Too Large", "body too large");
     }
-    char *body = malloc((size_t)req->content_len + 1);
+    char *body = alloc_body_retry((size_t)req->content_len + 1);
     if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
 
     const int n = api_read_body(req, body, (size_t)req->content_len + 1);
@@ -826,22 +849,22 @@ static esp_err_t h_config_put(httpd_req_t *req)
     power_mode_t fresh_mode = POWER_MODE_AUTO;
     const int power_changed = power_mode_differs(body, &fresh_mode);
 
-    /* Validate, then store. cfg_store_put runs schemaVersion -> devcfg_migrate ->
-     * layout_config_parse and writes NOTHING unless all three pass. A bad config can
-     * therefore never be persisted, so the device cannot be bricked into an unparseable
-     * state by a bad PUT (Task 14 Step 2). */
     /* Log the SUB-CODE. "rejected config" alone cannot distinguish a malformed document
      * (-2/-3/-4) from a failed write (-5), and on this part those have completely different
-     * causes — one is the user's fault, the other is the heap's. Captured ONCE so the
-     * store is not attempted a second time after it has already failed. */
-    const int store_rc = cfg_store_put(cfg_store_nvs(), body);
+     * causes — one is the user's fault, the other is the heap's.
+     *
+     * RETRIED BRIEFLY, for the same transient-fragmentation reason as alloc_body_retry(): the
+     * store allocates a cJSON tree and then writes NVS, and either can fail for a few hundred
+     * milliseconds while the heap is split by a refresh the artwork push just triggered. This was
+     * observed as HTTP 400 on a valid document that stored without complaint moments later. A
+     * GENUINELY bad document simply fails every attempt, so retrying costs nothing and cannot
+     * admit something invalid. */
+    int store_rc = cfg_store_put(cfg_store_nvs(), body);
+    for (int i = 0; i < 20 && store_rc != 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+        store_rc = cfg_store_put(cfg_store_nvs(), body);
+    }
     if (store_rc != 0) {
-        /* Log the SUB-CODE. "rejected config" alone cannot distinguish a malformed document
-         * (-2/-3/-4) from a failed write (-5), and on this part those have different causes —
-         * one is the document, the other is the heap. It is logged rather than put in the
-         * response because the two are indistinguishable at the HTTP layer: cJSON_Parse returns
-         * NULL for a malformed document AND for an allocation failure, so the same "-2" can mean
-         * either, and claiming one in the reply would sometimes be a lie. */
         ESP_LOGW(TAG, "rejected config (%d bytes, code %d)", n, store_rc);
         api_note_error("api: config rejected");
         free(body);
@@ -1328,7 +1351,7 @@ static esp_err_t h_secrets_put(httpd_req_t *req)
     if (req->content_len <= 0 || (size_t)req->content_len >= API_CONFIG_MAX_LEN) {
         return api_send_err(req, "413 Payload Too Large", "body too large");
     }
-    char *body = malloc((size_t)req->content_len + 1);
+    char *body = alloc_body_retry((size_t)req->content_len + 1);
     if (!body) return api_send_err(req, "500 Internal Server Error", "oom");
 
     const int n = api_read_body(req, body, (size_t)req->content_len + 1);
