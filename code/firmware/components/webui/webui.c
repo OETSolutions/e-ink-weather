@@ -91,13 +91,19 @@ static esp_err_t serve_asset(httpd_req_t *req, const webui_asset_t *a)
          * which only sets it when it actually compressed the file. */
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     }
-    /* index.html must NOT be cached hard: it is the app shell, and a stale one can reference
-     * assets that no longer exist after a reflash. The hashed-ish ETag covers the rest. */
-    if (strcmp(a->url, WEBUI_INDEX_URL) == 0) {
-        httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    } else {
-        httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
-    }
+    /* EVERY ASSET REVALIDATES, because every asset changes at the SAME URL on a reflash.
+     *
+     * This used to be `public, max-age=86400` for anything but index.html, on the reasoning that
+     * the bundle is 70 KB and re-fetching is wasteful. That reasoning is wrong for this device:
+     * `max-age` tells the browser NOT TO ASK for a day, so after a reflash the user keeps running
+     * the OLD bundle — a real symptom, not a theoretical one. The credentials UI was built,
+     * flashed and verified on the device while the browser kept showing the previous UI with no
+     * credentials section, because a 200 with a fresh ETag never reached it.
+     *
+     * `no-cache` does NOT mean "do not cache" — it means "revalidate before using". The ETag
+     * above then makes the common case a 304 with a few hundred bytes, so the cost the old header
+     * was avoiding is still avoided, and a changed bundle is picked up on the very next load. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
     /* Sent in ONE call. httpd_resp_send reads directly from flash through the mmap, so there is
      * no intermediate buffer to size or overflow. */
