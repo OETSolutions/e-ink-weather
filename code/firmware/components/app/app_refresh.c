@@ -80,7 +80,7 @@ static const char *TAG = "refresh";
  *
  * The artwork range has room for 8 pages x 100 sequences, and ARTWORK_MAX_PAGES is 8, so the spaces
  * cannot overlap for any real layout. (An earlier draft used -(100 + page), which left no room for
- * the sequence and collided with the boot mark at page 1 — see load_static_layer for why the
+ * the sequence and collided with the boot mark at page 1 — see load_static_layer_seg for why the
  * sequence is required.)
  *
  * The distinction from SLOT_NONE matters and is NOT a sign test: the artwork sentinel is NEGATIVE,
@@ -144,14 +144,31 @@ typedef struct {
  * with the current page's values. A partial is only ever taken when the slot identity matches,
  * which means the two frames genuinely share this layer — so it is the right thing to keep.
  *
- * Allocated lazily and FREED ACROSS EVERY FETCH (see app_refresh_tick): it competes for the one
- * region the TLS handshake also needs, and the handshake wins because a fetch that fails leaves
- * every reading as "--".
+ * HELD AS SEGMENTS, NOT ONE CONTIGUOUS BUFFER, and that is the whole fix for the render-OOM report
+ * (2026-09-22). A single 78,200-byte allocation needs the ONE DRAM region large enough to hold it
+ * (0x3ffe4350, 113,840 bytes), and while the HTTP API is live that region is fragmented below
+ * 78,200 by a persistent 8,192-byte httpd task stack plus a 16,384-byte app task stack — neither
+ * frees, so no wait helps. Held as ~16 KB segments the same bytes come from pieces that always fit
+ * (measured: 32,768 bytes allocated fine at the exact moment a 78,200-byte request failed). See
+ * segbuf.h.
  *
- * IT IS HEAP-ALLOCATED, NOT STATIC: as an array it would sit in the linker's static DRAM region
- * (dram0_0_seg, 180,736 bytes), which is what made an earlier two-buffer version fail to link. */
-static uint8_t *s_static;
-/* The identity of the picture on the glass, from load_static_layer(): a NEGATIVE sentinel for
+ * Allocated lazily and FREED ACROSS EVERY FETCH (see app_refresh_tick): the fetch needs contiguous
+ * room the segments would otherwise occupy, and a fetch that fails leaves every reading as "--".
+ *
+ * FREED HERE RATHER THAN IN .bss: as a static array the segments' POINTERS would sit in DRAM that
+ * the heap does not get — see the note on the band buffers. */
+static segbuf_t s_layer;
+
+/* The strip decoder's state (~11 KB), reserved BY ensure_static() before the segments and released
+ * once the layer is loaded (see api_store.h for why the ORDER matters: allocated lazily during the
+ * decode it intermittently finds no hole and the strip silently fails). */
+static artwork_inflate_t *s_inflate;
+
+/* A segment allocator and releaser for s_layer. Plain internal DRAM, the same capability the old
+ * contiguous allocation used. */
+static void *layer_seg_alloc(size_t n) { return heap_caps_malloc(n, MALLOC_CAP_8BIT); }
+static void  layer_seg_free(void *p)   { free(p); }
+/* The identity of the picture on the glass, from load_static_layer_seg(): a NEGATIVE sentinel for
  * per-page artwork (-(100 + page*100 + seq)), the bitmap's slot for the legacy single bitmap, SLOT_BOOT_LOGO
  * for the built-in boot mark, SLOT_NONE when nothing is known. Compared for equality to decide
  * whether a partial is valid.
@@ -175,79 +192,81 @@ static int      s_glass_present;
 static frame_values_t s_prev_values;
 static int            s_have_prev_values;   /* 0 until a push has recorded what it drew */
 
-/* Allocate the static layer on first use. Returns 0 on success, -1 if the allocation failed. Held
- * across the push and released across the fetch (see app_refresh_tick). */
+/* Allocate the resident static layer, as SEGMENTS. Returns 0 on success, -1 on failure.
+ *
+ * SEGMENTATION IS THE FIX for the render-OOM report: a single 78,200-byte request needs the one
+ * DRAM region large enough to hold it, and the live HTTP API fragments that region below 78,200
+ * with allocations that never free. Small segments are always placeable. The sizes are tried
+ * largest-first (16 KB down to 2 KB) so the common case keeps the segment count low and the band
+ * reader's inner loop short; a fragmented heap simply settles on smaller pieces.
+ *
+ * NO INFLATE WINDOW IS RESERVED HERE. The artwork is stored as independent per-strip zlib streams
+ * (see lib/upload/artwork.h), so loading it needs no 32 KB dictionary: only a strip-sized output
+ * buffer and a ~11 KB decompressor that lives on the caller's stack. An earlier single-stream
+ * version reserved a ~44 KB window BEFORE the segments, and that window could only fit the same
+ * large region the segments need — measured at tick 2 with WiFi up, segments + window did not fit
+ * in either order, and the window was also LEAKED on a failed acquire, so every later tick failed
+ * too. Removing the window removes both faults.
+ *
+ * WHY IT STILL WAITS (bounded) BEFORE GIVING UP: a tick that cannot get the layer has to leave the
+ * last good image up (FR-29) and try again shortly. The wait lets a genuinely transient fragmenter
+ * clear, but the segmented allocator makes the wait almost never necessary — a contiguous 78,200
+ * could fail outright where the segmented form succeeds on the first try. */
 static int ensure_static(void)
 {
-    if (s_static) return 0;
+    if (s_layer.n > 0) return 0;
 
-    s_static = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-    if (s_static) return 0;
+    /* RESERVE THE DECOMPRESSOR FIRST — see s_inflate and api_store.h for why the ORDER is
+     * load-bearing. On failure, release whatever was taken so the next tick retries cleanly: a
+     * window leaked here would be memory every later tick needs, which is exactly how the earlier
+     * single-stream version wedged (it reserved the window and returned without giving it back). */
+    if (!s_inflate) s_inflate = artwork_inflate_reserve();
 
-    /* THE STATIC LAYER HAS TO WAIT FOR THE NETWORK STACK TO LET GO.
-     *
-     * Measured on the bench (HEAP_TRACE probe): this device has exactly ONE DRAM region large
-     * enough to hold a 78,200-byte buffer — region 0x3ffe4350, ~113 KB (every other region
-     * caps at ~66 KB). It is freed across every fetch for TLS, and when it is freed the region
-     * reads as 99.8% free yet is split by a handful of TINY network-stack allocations (the block
-     * walk shows 84 B, 112 B, 128 B and several 28-36 B pieces) into pieces such as
-     * 14,256 + 34,788 + 63,596 — none of which fits. `free_heap` is ~128 KB in BOTH the failing
-     * and the succeeding case, which is why the old message sent readers hunting a leak: there is
-     * none. This is fragmentation, pure and simple.
-     *
-     * The pieces COALESCE back into one 98,304-byte block on their own — measured by polling on a
-     * failing tick: after ~800 ms the largest block jumped 69,632 -> 98,304 while `free` did not
-     * move (129,492 before and after). So the fix is to wait for the coalesce rather than fail.
-     *
-     * HOW LONG TO WAIT: at the device's REAL refresh cadence this loop is never entered at all —
-     * measured over a 20-tick USB soak at a 30 s interval, the first malloc succeeded every time
-     * with the full 98,304-byte block free, and no tick waited. The wait only appears under
-     * SUSTAINED fast HTTP churn (the bench harness's 2 s interval plus an artwork upload), where
-     * the clear took 800 ms to several seconds. 15 s is a comfortable margin over a 1.45 s
-     * measurement, and a tick that still cannot get its buffer keeps the previous image on the
-     * glass — the correct FR-29 behaviour — and RETRIES shortly rather than waiting a whole
-     * interval.
-     *
-     * On battery this loop is never reached under normal use: the radio is torn down before the
-     * render window, so the region is already clean. */
-    const int attempts = FB_ACQUIRE_WAIT_MS / FB_ACQUIRE_POLL_MS;
-    for (int attempt = 0; attempt < attempts; attempt++) {
-        vTaskDelay(pdMS_TO_TICKS(FB_ACQUIRE_POLL_MS));
-#if HEAP_TRACE
-        if (attempt % 5 == 0) {
-            ESP_LOGW("heaptrace", "  static-layer wait %2d: largest=%u free=%u", attempt,
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-                     (unsigned)esp_get_free_heap_size());
-        }
-#endif
-        s_static = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
-        if (s_static) {
-#if HEAP_TRACE
-            if (attempt > 0) {
-                ESP_LOGW("heaptrace", "  static layer acquired on attempt %d (~%d ms)",
-                         attempt, attempt * FB_ACQUIRE_POLL_MS);
-            }
-#endif
-            return 0;
-        }
+    if (s_inflate && segbuf_alloc(&s_layer, EPD_FB_BYTES, 16384u, 2048u,
+                                  layer_seg_alloc, layer_seg_free) == 0) {
+        return 0;
     }
 
-    {
-        /* The largest free block is reported, not just the total. This is one contiguous 76 KiB
-         * allocation, so total free heap is the wrong number to look at: a device with 200 KiB
-         * free but no 76 KiB hole cannot draw, and a message quoting only the total sends the
-         * reader looking for a leak that is not there. */
-        ESP_LOGE(TAG, "cannot allocate the static layer (%u bytes) "
-                      "(free heap %u, largest block %u)",
+    /* A failure here means the heap has no room for the layer at all (the decompressor is tiny by
+     * comparison and is not the limiting factor). Give the window back so the retry starts clean. */
+    artwork_inflate_release(s_inflate);
+    s_inflate = NULL;
+    ESP_LOGE(TAG, "cannot allocate the static layer (%u bytes in %u-byte segments) "
+                  "(free heap %u, largest block %u)",
+             (unsigned)EPD_FB_BYTES, 2048u,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    HEAP_DUMP("segmented static layer allocation failed");
+    HEAP_BLOCKS("segmented static layer allocation failed");
+    return -1;
+}
+
+/* A WHOLE-CONTIGUOUS static layer, for the one caller that cannot use segments: the provisioning
+ * screen draws a full frame into a single buffer and hands it to epd_write_frame(). That path runs
+ * BEFORE api_start() on a fresh heap, where a contiguous 78,200 bytes is available. Kept separate
+ * from ensure_static() so the render path never regresses to requiring contiguity. */
+static uint8_t *s_static_contig;
+
+static int ensure_static_contiguous(void)
+{
+    if (s_static_contig) return 0;
+    s_static_contig = heap_caps_malloc(EPD_FB_BYTES, MALLOC_CAP_8BIT);
+    if (!s_static_contig) {
+        ESP_LOGE(TAG, "cannot allocate a contiguous static layer for the setup screen "
+                      "(%u bytes) (free heap %u, largest block %u)",
                  (unsigned)EPD_FB_BYTES,
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-        /* The region breakdown, only here: this is the one point where "which block is in the
-         * way" is the question, and the dump is too large to print per refresh. */
-        HEAP_DUMP("static layer allocation failed");
-        HEAP_BLOCKS("static layer allocation failed");
         return -1;
     }
+    return 0;
+}
+
+/* The band reader over the segmented layer: the renderer pulls the static layer through this, so
+ * it never needs the layer to be contiguous. */
+static int seg_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
+{
+    return segbuf_read((const segbuf_t *)ctx, offset, dst, len);
 }
 
 /* Set when a tick could not get its static layer and therefore drew nothing. The image
@@ -291,15 +310,6 @@ static int hours_since_full(void)
     return h > 24 ? 24 : (int)h;    /* clamp: past the boundary the exact value is moot */
 }
 
-/* Read the static layer from flash through the streaming renderer, so the 78,200-byte
- * image is never resident in RAM on top of the two framebuffers (which would be 235 KB). */
-static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
-{
-    const uint8_t *base = (const uint8_t *)ctx;
-    memcpy(dst, base + offset, len);
-    return 0;
-}
-
 /* Pull the static layer into `dst`. Returns 0 on success.
  *
  * Preference order: the page's OWN artwork, then the single legacy bitmap, then the built-in boot
@@ -310,20 +320,18 @@ static int flash_reader(void *ctx, size_t offset, uint8_t *dst, size_t len)
  * page stamped its readings onto ANOTHER page's artwork — page 2's "TOMORROW HIGH" label sitting
  * over page 1's temperature — which was seen on hardware. The page's own picture is therefore
  * tried FIRST, and only a page that genuinely has none falls back. */
-static int load_static_layer(uint8_t *dst, int page, int *from_slot)
+static int load_static_layer_seg(segbuf_t *b, int page, int *from_slot)
 {
     /* The artwork identity is taken ONCE, BEFORE the load, and used whatever the load returns: a
      * promote that lands between this read and the load would otherwise make the identity describe a
      * different set from the pixels just read. A promote always follows with
      * api_request_full_refresh(), so a stale identity here can only cost a full refresh, never
-     * authorise a partial against the wrong picture.
-     *
-     * The loaded set is then identified by (page, seq) — see below for why the seq is essential. */
+     * authorise a partial against the wrong picture. */
     int aw_pages = 0;
     uint32_t aw_seq = 0;
     artwork_store_identity(&aw_pages, &aw_seq);
 
-    if (artwork_store_load_page(page, dst) == 0) {
+    if (s_inflate && artwork_store_load_page_seg(page, b, s_inflate) == 0) {
         /* THE IDENTITY MUST INCLUDE BOTH THE PAGE AND THE SET'S SEQUENCE.
          *
          * The PAGE, because a partial is only valid when the frame on the glass and the frame about
@@ -351,16 +359,20 @@ static int load_static_layer(uint8_t *dst, int page, int *from_slot)
      * labels on the glass are worse than none. `aw_pages` is unused here — the fallbacks below have
      * their own identities. */
     (void)aw_pages;
-    if (bitmap_store_load(dst) == 0) {
+    if (bitmap_store_load_seg(b) == 0) {
         *from_slot = api_live_bitmap_slot();
         return 0;
     }
-    memcpy(dst, boot_logo, EPD_FB_BYTES);
-    /* The built-in boot mark is REPRODUCIBLE — it is a const array in flash, not an upload — so it
-     * gets a real identity of its own rather than SLOT_NONE. It must not share -1 with "unknown",
-     * because the two mean opposite things: this one can be a valid diff base, and a partial of the
-     * boot mark against itself is a genuine no-op rather than corruption. -200 cannot collide with
-     * the artwork sentinels (-100..-899) or the bitmap slots (0 or 1). */
+    /* The built-in boot mark is a const array in flash, so it is copied in — a segmented write per
+     * 4 KB rather than one memcpy. It is REPRODUCIBLE, so it gets a real identity of its own rather
+     * than SLOT_NONE: it must not share -1 with "unknown", because the two mean opposite things —
+     * this one can be a valid diff base, and a partial of the boot mark against itself is a genuine
+     * no-op rather than corruption. */
+    for (size_t off = 0; off < EPD_FB_BYTES; off += 4096u) {
+        size_t n = EPD_FB_BYTES - off;
+        if (n > 4096u) n = 4096u;
+        if (segbuf_write(b, off, boot_logo + off, n) != 0) return -1;
+    }
     *from_slot = SLOT_BOOT_LOGO;
     return 0;
 }
@@ -442,7 +454,7 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
  *
  * The layer must be the SAME for both frames, which is guaranteed rather than assumed: the caller
  * passes `partial` only when the slot identity matches (see app_refresh_tick), and a slot encodes
- * the picture (load_static_layer). Different page, different artwork, different bitmap => a full
+ * the picture (load_static_layer_seg). Different page, different artwork, different bitmap => a full
  * refresh, because a partial across two unrelated pictures would leave ghosted fragments of the
  * old layout on the glass.
  *
@@ -497,14 +509,14 @@ static int band_provider(void *ctx, int band_index,
     canvas_t c;
 
     canvas_init_band(&c, b->next_band, y0, rows);
-    if (render_compose_band(&c, flash_reader, s_static,
+    if (render_compose_band(&c, seg_reader, &s_layer,
                             b->next->fields, b->next->values, b->next->n_fields) != 0) {
         return -1;
     }
 
     if (b->prev) {
         canvas_init_band(&c, b->prev_band, y0, rows);
-        if (render_compose_band(&c, flash_reader, s_static,
+        if (render_compose_band(&c, seg_reader, &s_layer,
                                 b->prev->fields, b->prev->values, b->prev->n_fields) != 0) {
             return -1;
         }
@@ -655,9 +667,13 @@ esp_err_t app_render_last_good(void)
      * which page was on the glass when the device slept. Page 0 is the defined default (a
      * single-page layout renders identically at any index). */
     int slot = SLOT_NONE;
-    if (load_static_layer(s_static, 0, &slot) != 0) {
+    if (load_static_layer_seg(&s_layer, 0, &slot) != 0) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* The strip decoder has done its job for this load — give the ~11 KB back before the band
+     * buffers are taken, so the push has the room. It is re-reserved on the next ensure_static(). */
+    artwork_inflate_release(s_inflate);
+    s_inflate = NULL;
 
     /* No live values yet (this runs before the network), so the frame is the static layer alone.
      * That is the point: FR-29 wants the last good image visible immediately, not a blank panel
@@ -1042,7 +1058,9 @@ esp_err_t app_fbs_reserve(void)
 
 void app_fbs_release(void)
 {
-    free(s_static); s_static = NULL;
+    segbuf_free(&s_layer, layer_seg_free);
+    artwork_inflate_release(s_inflate); s_inflate = NULL;
+    free(s_static_contig); s_static_contig = NULL;
     /* The picture this firmware could reproduce is gone with the layer, so the next push must be
      * a FULL refresh: a partial would diff the new frame against a frame it cannot rebuild and
      * leave ghosted fragments on the glass. Clearing BOTH the identity and the presence flag is
@@ -1065,8 +1083,15 @@ void app_fbs_release(void)
  * verified byte-for-byte against the reference matrices; see test/test_provscreen). */
 void app_render_setup_screen(void)
 {
-    if (ensure_static() != 0) {
-        ESP_LOGE(TAG, "cannot draw the setup screen: no static layer");
+    /* Give the segmented render layer back FIRST. The setup screen needs a whole contiguous frame
+     * for epd_write_frame(), and holding both at once is 156 KB — more than the boot heap has.
+     * Nothing needs the segmented layer after this point: the boot path releases all of it
+     * immediately afterwards, and this screen clears the glass identity anyway. */
+    segbuf_free(&s_layer, layer_seg_free);
+    artwork_inflate_release(s_inflate); s_inflate = NULL;
+
+    if (ensure_static_contiguous() != 0) {
+        ESP_LOGE(TAG, "cannot draw the setup screen: no contiguous static layer");
         return;
     }
 
@@ -1075,7 +1100,7 @@ void app_render_setup_screen(void)
 
     /* Pass the brand badge in HERE rather than drawing it first: the render fills the page
      * white before composing, so anything drawn beforehand would be erased. */
-    if (provscreen_render_branded(s_static, ap_ssid, PROV_POP_STRING,
+    if (provscreen_render_branded(s_static_contig, ap_ssid, PROV_POP_STRING,
                                   boot_badge, boot_badge_w, boot_badge_h) != 0) {
         ESP_LOGE(TAG, "setup screen render failed");
         return;
@@ -1088,7 +1113,7 @@ void app_render_setup_screen(void)
 
     /* Pushed whole rather than banded: the renderer above already produced the full frame in the
      * layer buffer, so a band pass would only re-read it a band at a time for no memory saving. */
-    const esp_err_t e = epd_write_frame(s_static);
+    const esp_err_t e = epd_write_frame(s_static_contig);
     if (e == ESP_OK) {
         /* Identity cleared, NOT set: this is not the layout bitmap and it carries no layout
          * values, so marking it otherwise would authorise a later partial to diff a real layout
@@ -1142,17 +1167,23 @@ void app_refresh_tick(power_source_t source, int force_full)
      * that does not survive esp_deep_sleep_start().
      *
      * Acquiring it here would also be actively HARMFUL. When the re-acquire at the END of a tick
-     * fails on a fragmented region, s_static is left NULL; an entry acquire would then fail too and
+     * fails on a fragmented region, s_layer is left empty; an entry acquire would then fail too and
      * the tick would return BEFORE the fetch, so one failed render costs the NEXT tick's data as
      * well as its image, and the device stays stale for several ticks while the region clears
      * (measured: one failure cascaded into four). Not acquiring means a failed render costs only
      * that tick's image; the next tick fetches and draws normally.
      *
      * The layer is taken once, at the re-acquire below, after the radio is down and the fetch
-     * buffers are freed — which is the point at which it is actually needed and most likely to fit. */
-    if (s_static) { free(s_static); s_static = NULL; }
+     * buffers are freed — which is the point at which it is actually needed and most likely to fit.
+     *
+     * THE RE-ACQUIRE IS NOW RELIABLE WHERE IT USED TO RACE: the layer is held as SEGMENTS, so it no
+     * longer needs the ONE contiguous 78,200-byte block that the live API fragments below size. See
+     * ensure_static(). */
+    segbuf_free(&s_layer, layer_seg_free);
+    /* The strip decoder is released at tick entry too, so a tick that failed after reserving it
+     * cannot carry the ~11 KB into the next tick's fetch. It is re-reserved by ensure_static(). */
+    artwork_inflate_release(s_inflate); s_inflate = NULL;
     HEAP_DIAG("tick entry (no static layer held)");
-
     /* ---- THE STATIC LAYER IS RELEASED ACROSS THE FETCH, ON BOTH POWER SOURCES ----
      *
      * WHY IT MUST BE: the TLS handshake needs CONTIGUOUS DRAM for the in-buffer, the out-buffer,
@@ -1172,7 +1203,7 @@ void app_refresh_tick(power_source_t source, int force_full)
      *
      * RELEASING COSTS NOTHING ON BATTERY EITHER, because a partial refresh there was never
      * possible in the first place: the device performs ONE refresh per wake and then deep-sleeps,
-     * and s_static / s_prev_values / s_shown_slot live in ordinary RAM that does not survive
+     * and s_layer / s_prev_values / s_shown_slot live in ordinary RAM that does not survive
      * esp_deep_sleep_start(). So there is no diff base to preserve across a fetch — every battery
      * render is necessarily a full refresh, and the 78,200 bytes are better spent on the fetch.
      * FR-11's partial strategy belongs to the always-on path, where it is what keeps flicker and
@@ -1520,15 +1551,19 @@ void app_refresh_tick(power_source_t source, int force_full)
     s_fb_lost = 0;
     HEAP_DIAG("after static layer acquire");
 
-    /* Pull the static layer into the resident buffer. This is the ONLY whole-panel buffer held:
-     * the previous and the next FRAME are each produced a band at a time from it by push_banded(),
-     * which is what makes a partial possible on this part (see the block comment on s_static). */
+    /* Pull the static layer into the resident SEGMENTED buffer. This is the ONLY whole-panel buffer
+     * held: the previous and the next FRAME are each produced a band at a time from it by
+     * push_banded(), which is what makes a partial possible on this part (see the block comment on
+     * the layer). */
     int slot = SLOT_NONE;
-    if (load_static_layer(s_static, page_index, &slot) != 0) {
+    if (load_static_layer_seg(&s_layer, page_index, &slot) != 0) {
         ESP_LOGE(TAG, "no static layer for page %d", page_index);
         return;
     }
-
+    /* The strip decoder has done its job — give the ~11 KB back before the band buffers are taken,
+     * so the push has the room. ensure_static() re-reserves it on the next tick. */
+    artwork_inflate_release(s_inflate);
+    s_inflate = NULL;
     /* The panel may be in deep sleep (the boot path sleeps it after showing the last good
      * image, and the USB serve loop then keeps running). Drawing to a sleeping controller
      * does not fail cleanly — it times out on BUSY, which is indistinguishable from a loose
@@ -1567,7 +1602,7 @@ void app_refresh_tick(power_source_t source, int force_full)
      * the SAME values we still hold: the controller derives each pixel's transition from the
      * previous/next pair, so diffing against a frame this firmware cannot reproduce would leave
      * ghosted fragments of an unrelated picture. `s_shown_slot` is the picture's identity (see
-     * load_static_layer) and `s_have_prev_values` says the previous values were recorded.
+     * load_static_layer_seg) and `s_have_prev_values` says the previous values were recorded.
      *
      * `actual_partial` is recorded rather than re-derived at the log below. An earlier version
      * recomputed "partial" from `kind` alone, which is the DECISION and not the ACTION: when the

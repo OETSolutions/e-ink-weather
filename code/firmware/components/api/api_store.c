@@ -2,9 +2,10 @@
 #include "bitmap_slot.h"
 #include "bitmap_upload.h"   /* BITMAP_UPLOAD_MAX_CHUNK and the shared upload_crc32 */
 #include "artwork.h"
-#include "miniz.h"          /* the ROM's inflater — see artwork_inflate() below */
+#include "miniz.h"          /* the ROM's inflater — see inflate_one() below */
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_heap_caps.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include <string.h>
@@ -139,6 +140,42 @@ int bitmap_store_load(uint8_t *out)
      * mismatch here means the partition itself is damaged — the image must not be shown. */
     if (bitmap_slot_crc32(out, BITMAP_SLOT_LEN) != h.crc) {
         ESP_LOGE(TAG, "slot %d CRC mismatch on read", live);
+        return -1;
+    }
+    return 0;
+}
+
+int bitmap_store_load_seg(segbuf_t *b)
+{
+    if (!b || b->total < BITMAP_SLOT_LEN) return -1;
+
+    const int live = bitmap_store_live_slot_internal(NULL);
+    if (live < 0) {
+        ESP_LOGI(TAG, "no valid bitmap in either slot");
+        return -1;
+    }
+    bitmap_slot_hdr_t h;
+    read_hdr((bitmap_slot_id_t)live, &h);
+    const esp_partition_t *p = slot_part((bitmap_slot_id_t)live);
+    if (!p) return -1;
+
+    /* The bitmap is stored RAW, so it can go straight to the segments — one flash read per
+     * segment, no staging buffer. The CRC is verified over what was read, segment by segment,
+     * using the CONTINUING form: bitmap_slot_crc32() only computes a one-shot CRC and would
+     * silently checksum just the last segment. upload_crc32() chains (it un-complements, folds in
+     * the new bytes and re-complements), so crc32 over the segments equals crc32 over the whole. */
+    uint32_t crc = 0;
+    for (int i = 0; i < b->n; i++) {
+        const size_t n = segbuf_seg_len(b->total, b->seg_bytes, i);
+        if (n == 0) continue;
+        if (esp_partition_read(p, sizeof(h) + (size_t)i * b->seg_bytes, b->seg[i], n) != ESP_OK) {
+            ESP_LOGE(TAG, "slot %d segment %d read failed", live, i);
+            return -1;
+        }
+        crc = upload_crc32(crc, b->seg[i], n);
+    }
+    if (crc != h.crc) {
+        ESP_LOGE(TAG, "slot %d CRC mismatch on segmented read", live);
         return -1;
     }
     return 0;
@@ -359,18 +396,24 @@ void artwork_store_identity(int *page_count_out, uint32_t *seq_out)
     if (seq_out)        *seq_out        = (live < 0) ? 0 : h.seq;
 }
 
-int artwork_store_load_page(int page, uint8_t *out)
+/* Read page `page`'s entry from the live slot into `*e`, and return the live partition.
+ *
+ * Returns the partition, or NULL (with `*e` zeroed) when there is no live artwork, no entry for
+ * this page, or the table cannot be read. Shared by the segmented loader so the "which page, and
+ * is it really there" rules have ONE implementation — the rule that matters being "a page with no
+ * artwork must not inherit a neighbour's", which is what artwork_entry_at() enforces. */
+static const esp_partition_t *aw_page_entry(int page, artwork_hdr_t *h_out, artwork_entry_t *e)
 {
-    if (!out || page < 0) return -1;
+    memset(e, 0, sizeof(*e));
 
     artwork_hdr_t h;
     const int live = aw_live(&h);
     if (live < 0) {
         ESP_LOGI(TAG, "no artwork stored; page %d renders on a blank layer", page);
-        return -1;
+        return NULL;
     }
     const esp_partition_t *p = aw_part(live);
-    if (!p) return -1;
+    if (!p) return NULL;
 
     /* Read the WHOLE entry table (8 entries, ~96 bytes) and let the pure module apply the rules.
      * Reading only this page's entry and open-coding the checks here would put the same rules in
@@ -379,31 +422,121 @@ int artwork_store_load_page(int page, uint8_t *out)
     artwork_entry_t table[ARTWORK_MAX_PAGES];
     memset(table, 0, sizeof(table));
     const uint32_t n = (h.page_count > ARTWORK_MAX_PAGES) ? ARTWORK_MAX_PAGES : h.page_count;
-    if (n == 0) return -1;
+    if (n == 0) return NULL;
     if (esp_partition_read(p, sizeof(artwork_hdr_t), table,
                            sizeof(artwork_entry_t) * n) != ESP_OK) {
         ESP_LOGE(TAG, "artwork table read failed");
-        return -1;
+        return NULL;
     }
+    if (artwork_entry_at(&h, table, (uint32_t)page, e) != 0) {
+        ESP_LOGI(TAG, "page %d has no artwork of its own; rendering a blank layer", page);
+        return NULL;
+    }
+    if (h_out) *h_out = h;
+    return p;
+}
+
+/* The strip decoder's working state: just the decompressor (~11 KB). NO dictionary, because a
+ * page is a run of independent per-strip streams (see artwork.h). OPAQUE so the caller does not
+ * depend on the ROM's miniz types. */
+struct artwork_inflate {
+    tinfl_decompressor dec;
+};
+
+/* WHY THE CALLER RESERVES THIS, BEFORE THE LAYER'S SEGMENTS: not for size — at ~11 KB it coexists
+ * with the segments easily, unlike the old 44 KB whole-layer window — but for PLACEMENT. Allocated
+ * lazily inside the decode, the segments already hold the large blocks and a request of this size
+ * class intermittently finds no hole, so the strip fails and the panel silently keeps its old
+ * picture (measured: 2 failures across 8 refreshes on the bench). Reserved FIRST, it takes a block
+ * while the heap is still clean. */
+artwork_inflate_t *artwork_inflate_reserve(void)
+{
+    artwork_inflate_t *w = heap_caps_malloc(sizeof(*w), MALLOC_CAP_8BIT);
+    if (!w) {
+        ESP_LOGE(TAG, "no heap for the strip decompressor (%u bytes)", (unsigned)sizeof(*w));
+        return NULL;
+    }
+    return w;
+}
+
+void artwork_inflate_release(artwork_inflate_t *w)
+{
+    free(w);
+}
+
+/* Inflate exactly ONE self-contained zlib stream (RFC1950) into `out`, which must hold `out_len`
+ * bytes. Returns the number of INPUT bytes consumed on success, or -1 on failure.
+ *
+ * WHY IT REPORTS THE INPUT CONSUMED: a page is a run of back-to-back strip streams with no length
+ * prefix between them (see artwork.h), so the only way to find the next strip is to let the decoder
+ * say how much of the previous one it read. tinfl_decompress() writes that back through its
+ * in-size pointer; the mem_to_mem helper does not expose it, which is why this walks the low-level
+ * coroutine directly.
+ *
+ * NO DICTIONARY: each strip is compressed on its own, so no match can back-reference before the
+ * strip's start. TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF with an output buffer of exactly the
+ * strip's size is therefore valid — miniz rejects a non-wrapping buffer only when a match's
+ * distance reaches before the output start, which a self-contained stream never does.
+ *
+ * TINFL_FLAG_HAS_MORE_INPUT is deliberately NOT passed: the whole stream is on flash, so a short
+ * read must fail outright rather than report "needs more input" and be mistaken for success. */
+static int inflate_one(artwork_inflate_t *w, const uint8_t *comp, size_t comp_len,
+                       uint8_t *out, size_t out_len)
+{
+    tinfl_init(&w->dec);
+
+    size_t in_avail = comp_len;
+    size_t out_avail = out_len;
+    const tinfl_status st = tinfl_decompress(&w->dec, comp, &in_avail, out, out, &out_avail,
+                                             TINFL_FLAG_PARSE_ZLIB_HEADER |
+                                             TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    if (st != TINFL_STATUS_DONE || out_avail != out_len) return -1;
+    return (int)in_avail;   /* the decoder's own count of the bytes this stream used */
+}
+
+/* Inflate page `page`'s artwork into a SEGMENTED buffer, one INDEPENDENT STRIP STREAM at a time.
+ *
+ * WHY STRIP BY STRIP AND NOT ONE STREAM: see the block comment on ARTWORK_STRIP_RAW. In short, a
+ * single whole-layer zlib stream needs a 32 KB dictionary whose ~44 KB working set can only fit the
+ * same large DRAM region the layer's segments need — and the two together do not fit. Strips need
+ * no dictionary, so this path never competes with the layer for a large block.
+ *
+ * The strips are back-to-back inside the page's single stored blob, so the cursor walks it with no
+ * per-strip offset table — the strip size is fixed and divides the layer exactly. */
+int artwork_store_load_page_seg(int page, segbuf_t *b, artwork_inflate_t *w)
+{
+    if (!b || !w || page < 0 || b->total < ARTWORK_RAW_LEN) return -1;
 
     artwork_entry_t e;
-    if (artwork_entry_at(&h, table, (uint32_t)page, &e) != 0) {
-        ESP_LOGI(TAG, "page %d has no artwork of its own; rendering a blank layer", page);
-        return -1;
-    }
+    const esp_partition_t *p = aw_page_entry(page, NULL, &e);
+    if (!p) return -1;
 
-    /* Read the stream into a static scratch (measured 966 bytes for the shipped layout; the
-     * budget is 4 KB) and inflate straight into the caller's 78,200-byte buffer, so this never
-     * allocates a layer of its own. */
+    /* Read the whole page blob into a static scratch. Measured 1,633-2,800 bytes for the shipped
+     * two-page layout (20 strips); the budget is 4 KB, which the encoder refuses to exceed. */
     static uint8_t comp[ARTWORK_MAX_COMP];
     if (esp_partition_read(p, artwork_blob_offset() + e.offset, comp, e.comp_len) != ESP_OK) {
         ESP_LOGE(TAG, "artwork stream read failed for page %d", page);
         return -1;
     }
-    if (artwork_inflate(comp, e.comp_len, out) != (int)ARTWORK_RAW_LEN) {
-        ESP_LOGE(TAG, "artwork inflate failed for page %d (page_count=%u comp_len=%u)",
-                 page, (unsigned)h.page_count, (unsigned)e.comp_len);
-        return -1;
+
+    /* One strip's inflated bytes. Static, not on the render worker's stack (see main.c). */
+    static uint8_t strip[ARTWORK_STRIP_RAW];
+
+    size_t in = 0;
+    for (int i = 0; i < (int)ARTWORK_STRIP_COUNT; i++) {
+        const int used = inflate_one(w, comp + in, e.comp_len - in, strip, ARTWORK_STRIP_RAW);
+        if (used <= 0) {
+            ESP_LOGE(TAG, "artwork strip %d/%u of page %d failed to inflate "
+                          "(comp_len=%u, consumed=%u)",
+                     i, (unsigned)ARTWORK_STRIP_COUNT, page, (unsigned)e.comp_len, (unsigned)in);
+            return -1;
+        }
+        in += (size_t)used;
+
+        if (segbuf_write(b, (size_t)i * ARTWORK_STRIP_RAW, strip, ARTWORK_STRIP_RAW) != 0) {
+            ESP_LOGE(TAG, "artwork strip %d write failed for page %d", i, page);
+            return -1;
+        }
     }
     return 0;
 }
@@ -596,34 +729,4 @@ void artwork_store_abort_upload(void)
      * PREVIOUS artwork stays live. Programming a zero header would be pointless and, being a
      * clear-bits-only operation, could not be undone by a later promote. */
     s_aw.active = 0;
-}
-
-/* ------------------------------------------------------------------ artwork inflate ------
- *
- * WHY THE ROM AND NOT A BUNDLED INFLATER: this firmware sits at ~80% of its OTA slot and FR-18
- * requires the whole web app be served from the same flash, so ~6 KB of inflate code is worth
- * avoiding. ESP32's ROM exports tinfl_decompress_mem_to_mem() (verified in
- * components/esp_rom/esp32/ld/esp32.rom.ld), the same miniz IDF itself uses, so this costs no
- * flash at all. The COMPRESSOR is the web app's (Node's zlib), so the only agreement needed
- * between the two sides is a format both already implement.
- *
- * The streams are ZLIB (RFC1950), not gzip: TINFL_FLAG_PARSE_ZLIB_HEADER expects a zlib header,
- * and a gzip stream's 1f 8b framing would be rejected. Node's deflateSync emits 78 da for this
- * data, which is what the flag wants — a gzipSync stream would fail here for a reason that has
- * nothing to do with the picture.
- *
- * TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF is passed because the whole 78,200-byte layer lands in
- * one caller-supplied buffer, so there is no ring to wrap and the dictionary is the output.
- * TINFL_FLAG_HAS_MORE_INPUT is deliberately NOT passed: the entire stream is on flash, so a
- * short read must fail outright rather than report "needs more input". */
-int artwork_inflate(const uint8_t *comp, size_t comp_len, uint8_t *out)
-{
-    if (!comp || !out || comp_len == 0) return -1;
-    if (comp_len > ARTWORK_MAX_COMP) return -1;
-
-    const size_t got = tinfl_decompress_mem_to_mem(
-        out, ARTWORK_RAW_LEN, comp, comp_len,
-        TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-    if (got != ARTWORK_RAW_LEN) return -1;
-    return (int)got;
 }

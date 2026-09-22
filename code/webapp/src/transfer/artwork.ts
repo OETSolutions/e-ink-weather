@@ -20,6 +20,14 @@
  * The table is padded to ARTWORK_MAX_PAGES entries because the device reads it at a FIXED offset
  * — an entry can then be located without reading the whole table first.
  *
+ * A PAGE IS A RUN OF INDEPENDENT PER-STRIP STREAMS, NOT ONE STREAM. The device decompresses each
+ * strip on its own with no LZ dictionary (see artwork.h for why: a single whole-layer stream needs
+ * a 32 KB dictionary whose working set cannot coexist with the layer on the device's fragmented
+ * heap). So each page's entry points at ARTWORK_STRIP_COUNT back-to-back strip streams, compressed
+ * here independently — a back-reference must never cross a strip boundary, or the dictionary-free
+ * decode fails. The strips tile the layer exactly (the strip size divides it), so there is no
+ * partial tail.
+ *
  * THE STREAMS ARE ZLIB (RFC1950), NOT GZIP. The device passes TINFL_FLAG_PARSE_ZLIB_HEADER, which
  * expects a zlib header; a gzip stream's 1f 8b framing would be rejected for a reason unrelated to
  * the picture. So this uses `deflate`, never `gzip`.
@@ -52,11 +60,17 @@ async function zlibDeflate(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
-/** Must match artwork.h. */
-export const ARTWORK_MAGIC = 0x50474554;
+/** Must match artwork.h. The magic was bumped when a page became a run of per-strip streams — see
+ * the note on ARTWORK_MAGIC in the header; the value must stay in lockstep with the firmware. */
+export const ARTWORK_MAGIC = 0x53474150;
 export const ARTWORK_MAX_PAGES = 8;
 export const ARTWORK_RAW_LEN = FB_BYTES;
 export const ARTWORK_MAX_COMP = 4096;
+/* The strip geometry, mirrored from artwork.h. 3,910 raw bytes = 34 panel rows (34 x 115-byte
+ * pitch); 20 strips tile the 680-row layer exactly. The device decompresses each strip with no
+ * dictionary, so every strip MUST be its own zlib stream with no cross-strip back-reference. */
+export const ARTWORK_STRIP_RAW = 3910;
+export const ARTWORK_STRIP_COUNT = ARTWORK_RAW_LEN / ARTWORK_STRIP_RAW; /* 20 */
 const ARTWORK_ENTRY_LEN = 12;
 const ARTWORK_HDR_LEN = 16;
 
@@ -89,9 +103,14 @@ function writeU32(view: DataView, off: number, v: number): void {
  * "borrow another page's". That distinction is the whole point of the feature, so a missing page
  * must be expressible rather than filled in.
  *
- * Throws if a layer is the wrong size, or if a compressed stream exceeds the device's per-page
- * budget: a stream the device would refuse is better caught here, with a message, than discovered
- * as a blank panel.
+ * EACH PAGE IS COMPRESSED AS ARTWORK_STRIP_COUNT INDEPENDENT STRIP STREAMS, concatenated. This is
+ * a hard requirement, not an optimisation: the device decodes each strip with NO dictionary, so a
+ * back-reference that crossed a strip boundary would land outside the strip's output buffer and
+ * fail. Compressing the whole layer as one stream would produce exactly that.
+ *
+ * Throws if a layer is the wrong size, or if a page's total compressed size exceeds the device's
+ * per-page budget: a stream the device would refuse is better caught here, with a message, than
+ * discovered as a blank panel.
  */
 export async function encodeArtwork(
   layers: (Uint8Array | null)[],
@@ -111,14 +130,25 @@ export async function encodeArtwork(
     if (l.length !== ARTWORK_RAW_LEN) {
       throw new Error(`page ${i}: layer must be ${ARTWORK_RAW_LEN} bytes, got ${l.length}`);
     }
-    const comp = await zlibDeflate(l);
-    if (comp.length > ARTWORK_MAX_COMP) {
+    /* Compress strip by strip and concatenate. A strip is exactly ARTWORK_STRIP_RAW bytes (the
+     * layer divides evenly), so the slices tile it with no tail. */
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (let k = 0; k < ARTWORK_STRIP_COUNT; k++) {
+      const c = await zlibDeflate(l.subarray(k * ARTWORK_STRIP_RAW, (k + 1) * ARTWORK_STRIP_RAW));
+      parts.push(c);
+      total += c.length;
+    }
+    if (total > ARTWORK_MAX_COMP) {
       throw new Error(
-        `page ${i}: compressed layer is ${comp.length} bytes, over the device's ` +
+        `page ${i}: compressed layer is ${total} bytes, over the device's ` +
         `${ARTWORK_MAX_COMP}-byte budget. The layout is too detailed to store.`,
       );
     }
-    streams.push(comp);
+    const page = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { page.set(p, off); off += p.length; }
+    streams.push(page);
   }
 
   /* Lay the blob out first, so each entry's offset is known before the table is written. */

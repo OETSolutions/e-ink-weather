@@ -16,6 +16,8 @@ import {
   ARTWORK_MAGIC,
   ARTWORK_MAX_PAGES,
   ARTWORK_RAW_LEN,
+  ARTWORK_STRIP_RAW,
+  ARTWORK_STRIP_COUNT,
 } from '../src/transfer/artwork';
 
 /** A layer that is mostly white with a little ink, like a real layout. */
@@ -23,6 +25,31 @@ function layer(seed = 1): Uint8Array {
   const b = new Uint8Array(ARTWORK_RAW_LEN).fill(0xff);
   for (let i = 0; i < 400; i++) b[(i * 137 + seed) % ARTWORK_RAW_LEN] = 0x00;
   return b;
+}
+
+/**
+ * Decode a page's stored blob the way the DEVICE does: a run of ARTWORK_STRIP_COUNT independent
+ * zlib streams, inflated one after another with no shared dictionary. The device's tinfl reports
+ * how many input bytes each strip consumed; Node's inflateSync does not, so the strip's compressed
+ * length is recovered here by inflating the shortest prefix that yields exactly one strip. That is
+ * a faithful mirror of "the next strip starts where this one's stream ended".
+ */
+function decodeStrips(page: Uint8Array): Uint8Array {
+  const out = new Uint8Array(ARTWORK_RAW_LEN);
+  let at = 0;
+  for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+    let used = 0;
+    for (let n = 1; n <= page.length - at; n++) {
+      let r: Buffer | null = null;
+      try { r = inflateSync(Buffer.from(page.subarray(at, at + n))); } catch { /* need more input */ }
+      if (r && r.length === ARTWORK_STRIP_RAW) { used = n; break; }
+      if (r && r.length > ARTWORK_STRIP_RAW) break; // overshot: not a valid strip boundary
+    }
+    expect(used, `strip ${i} must inflate to exactly ${ARTWORK_STRIP_RAW} bytes`).toBeGreaterThan(0);
+    out.set(inflateSync(Buffer.from(page.subarray(at, at + used))), i * ARTWORK_STRIP_RAW);
+    at += used;
+  }
+  return out;
 }
 
 function u32(b: Uint8Array, off: number): number {
@@ -69,13 +96,46 @@ describe('encodeArtwork', () => {
     expect(raw0).toBe(ARTWORK_RAW_LEN);
     expect(raw1).toBe(ARTWORK_RAW_LEN);
     expect(off0).toBe(0);
-    expect(off1).toBe(len0); // contiguous, so the device can read a stream in one go
+    expect(off1).toBe(len0); // contiguous, so the device can read a page in one go
 
-    // Each stream really does inflate back to the layer it came from.
-    expect(inflateSync(Buffer.from(blob.subarray(blobOff + off0, blobOff + off0 + len0))).length)
-      .toBe(ARTWORK_RAW_LEN);
-    expect(inflateSync(Buffer.from(blob.subarray(blobOff + off1, blobOff + off1 + len1))).length)
-      .toBe(ARTWORK_RAW_LEN);
+    // Each page really does decode back to the layer it came from, strip by strip.
+    const p0 = decodeStrips(blob.subarray(blobOff + off0, blobOff + off0 + len0));
+    expect(p0).toEqual(layer(1));
+    const p1 = decodeStrips(blob.subarray(blobOff + off1, blobOff + off1 + len1));
+    expect(p1).toEqual(layer(2));
+  });
+
+  /* THE STRIPS MUST BE INDEPENDENT. The device decodes each with NO dictionary, so a back-reference
+   * that crossed a strip boundary would land outside the strip's output buffer and fail. This
+   * decodes each strip from its own start and asserts the bytes equal the source — which only holds
+   * if the encoder compressed strips independently rather than as one stream. */
+  it('compresses each strip independently, so no back-reference crosses a boundary', async () => {
+    const src = layer(11);
+    const { blob } = await encodeArtwork([src]);
+    const blobOff = 16 + 12 * ARTWORK_MAX_PAGES;
+    const pageLen = u32(blob, 16 + 4);
+    const page = blob.subarray(blobOff, blobOff + pageLen);
+
+    /* Decode strip k as the DEVICE does: from the strip's own byte offset, with a fresh inflater
+     * and an output buffer of exactly one strip. If any strip depended on an earlier one's output,
+     * inflating it alone would fail or produce the wrong bytes. */
+    const decoded = decodeStrips(page);
+    expect(decoded).toEqual(src);
+
+    /* And prove independence directly: every strip, inflated ALONE from its recorded start, yields
+     * its own slice. A single whole-layer stream would make every strip but the first fail here. */
+    let at = 0;
+    for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+      const lone = new Uint8Array(inflateSync(Buffer.from(page.subarray(at, at + ARTWORK_STRIP_RAW + 512)))
+        .subarray(0, ARTWORK_STRIP_RAW));
+      expect(lone).toEqual(src.subarray(i * ARTWORK_STRIP_RAW, (i + 1) * ARTWORK_STRIP_RAW));
+      /* Advance to the next strip by the length that decodes to exactly one strip. */
+      let used = 0;
+      for (let n = 1; n <= page.length - at; n++) {
+        try { if (inflateSync(Buffer.from(page.subarray(at, at + n))).length === ARTWORK_STRIP_RAW) { used = n; break; } } catch { /* */ }
+      }
+      at += used;
+    }
   });
 
   /* THE STREAMS MUST BE ZLIB, NOT GZIP. The device passes TINFL_FLAG_PARSE_ZLIB_HEADER, which
@@ -155,7 +215,9 @@ describe('encodeArtwork', () => {
     await expect(encodeArtwork([noise])).rejects.toThrow(/budget|too detailed/);
   });
 
-  /* The whole point of compressing: a realistic layout must fit in a fraction of the raw size. */
+  /* The whole point of compressing: a realistic layout must fit in a fraction of the raw size.
+   * The per-strip split costs a little (each strip carries its own zlib header and empty-stream
+   * terminator), so the bar is generous rather than the exact whole-stream ratio. */
   it('compresses a realistic layer far below its raw size', async () => {
     const { blob } = await encodeArtwork([layer(7)]);
     expect(blob.length).toBeLessThan(4096);

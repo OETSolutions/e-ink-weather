@@ -18,19 +18,49 @@
  * 'deflate' = zlib); the decompressor is the ROM's tinfl, so neither costs this firmware any
  * flash.
  *
- * THE FORMAT is one header per page plus a blob of concatenated streams:
+ * A PAGE IS A SET OF INDEPENDENT PER-STRIP STREAMS, NOT ONE STREAM. A single zlib stream for the
+ * whole 78,200-byte layer needs a 32 KB LZ dictionary to decompress into — and that 44 KB working
+ * set (dictionary + decompressor state) can only be placed in the ONE DRAM region large enough for
+ * a contiguous layer, which the live HTTP API also needs for the layer itself. Measured with heap
+ * tracing: the pair does not fit in EITHER order once WiFi is up, so saves silently stopped
+ * reaching the panel. Splitting the layer into fixed ARTWORK_STRIP_RAW-byte strips, each its OWN
+ * zlib stream with no cross-strip back-references, removes the dictionary entirely: a strip
+ * inflates with an output buffer the size of the strip. The strip size divides the layer exactly,
+ * so the strips tile it with no partial tail.
+ *
+ * THE FORMAT is one header per page plus a blob of concatenated streams; each page's entry covers
+ * ARTWORK_STRIP_COUNT back-to-back strip streams:
  *
  *     artwork_hdr_t   magic, page_count, crc, seq
  *     entry[page]     offset, comp_len, raw_len
- *     blob            the concatenated zlib streams
+ *     blob            the concatenated zlib streams (per page: the strip streams, in order)
  *
  * An entry with raw_len == 0 means "this page has no artwork", which is distinct from "empty
  * artwork": the renderer then falls back to a blank layer rather than to another page's picture.
  * A page with no artwork must NOT inherit a neighbouring page's, or the wrong labels appear. */
 
-#define ARTWORK_MAGIC       0x50474554u   /* "TEGP" little-endian — "PAGE" reversed */
+/* "TEGP" little-endian — "PAGE" reversed. BUMPED to "PAGS" (reversed) when a page became a run of
+ * independent per-strip streams: an older whole-layer blob is still zlib, still within the size
+ * budget, and still passes the entry checks, so WITHOUT a magic change the device would accept it,
+ * fail to decode it as strips, and log that failure every tick. Changing the magic makes the
+ * incompatibility explicit — an old slot reads as "no artwork" and the render falls back cleanly
+ * (FR-29) until the web app pushes a new set. The web app mirrors this value. */
+#define ARTWORK_MAGIC       0x53474150u   /* "PAGS" little-endian */
 #define ARTWORK_MAX_PAGES   8             /* matches LAYOUT_MAX_PAGES */
 #define ARTWORK_RAW_LEN     78200u        /* one inflated layer (HW-6) */
+
+/* THE STRIP GEOMETRY, and every number here is load-bearing (see the block comment above).
+ *
+ * 3,910 raw bytes is exactly 34 panel rows (34 x 115-byte pitch), so 20 strips tile the 680-row
+ * layer EXACTLY — no partial tail strip, which a size that did not divide the layer would leave
+ * and which the decoder would then have to special-case. Kept small so a strip's INFLATE OUTPUT
+ * (the only buffer a strip stream needs, since it has no dictionary) is small enough to be placed
+ * however the heap is fragmented. The compressor and the decompressor MUST agree on these, so they
+ * live here next to the format and the web app mirrors them (webapp/src/transfer/artwork.ts). */
+#define ARTWORK_STRIP_RAW   3910u
+#define ARTWORK_STRIP_COUNT (ARTWORK_RAW_LEN / ARTWORK_STRIP_RAW)   /* 20 */
+_Static_assert(ARTWORK_STRIP_RAW * ARTWORK_STRIP_COUNT == ARTWORK_RAW_LEN,
+               "the strip size must divide the layer exactly");
 
 /* The compressed budget per page. The measured default layer is 966 bytes; 4 KB allows a
  * genuinely detailed layout (a bitmap-heavy one) to still fit, and 8 pages x 4 KB is 32 KB —
@@ -116,9 +146,9 @@ uint32_t artwork_crc32_finish(uint32_t crc);
 
 /* ------------------------------------------------------------------ decompression ----
  *
- * DEFLATE IS NOT DECLARED HERE ON PURPOSE. The inflater is tinfl from the ESP32 ROM (via
- * components/api/api_store.c's artwork_inflate()), which does not exist on the host this library
- * must also build for. Declaring it in this header would force every host test that includes
- * artwork.h to carry a device-only symbol. lib/upload is pure: validation, slot selection, table
- * lookup and checksums — all host-testable (NFR-6) — and the ROM half lives in the IDF component,
- * the same split the bitmap store uses. */
+ * DEFLATE IS NOT DECLARED HERE ON PURPOSE. The inflater is tinfl from the ESP32 ROM (see
+ * components/api/api_store.c), which does not exist on the host this library must also build for.
+ * Declaring it in this header would force every host test that includes artwork.h to carry a
+ * device-only symbol. lib/upload is pure: validation, slot selection, table lookup and checksums —
+ * all host-testable (NFR-6) — and the ROM half lives in the IDF component, the same split the
+ * bitmap store uses. The strip geometry above is the contract the two halves share. */

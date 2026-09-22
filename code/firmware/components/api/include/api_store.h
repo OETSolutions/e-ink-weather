@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "cfg_store.h"
 #include "artwork.h"
+#include "segbuf.h"
 
 /* Device backends for the stores (IF-1, IF-2a).
  *
@@ -18,6 +19,34 @@
  * The config document is a few KB; NVS holds it comfortably (the partition is 24 KB). The
  * BITMAP does not go here: at 78,200 bytes it is three times the whole partition. */
 const cfg_store_t *cfg_store_nvs(void);
+
+/* Load the live static layer into a SEGMENTED buffer (see segbuf.h for why segments exist: the
+ * one DRAM region large enough for a contiguous 78,200-byte layer is fragmented below it by the
+ * live API — the httpd and app task stacks alone split it — so a contiguous allocation fails there
+ * intermittently while the render still needs the bytes). This is the path the render uses.
+ *
+ * `b` must already have been sized with segbuf_alloc(). Returns 0 on success and -1 for the same
+ * reasons a contiguous load would (no artwork for the page, no valid bitmap, nothing stored).
+ *
+ * The artwork is stored as INDEPENDENT PER-STRIP zlib streams and inflated strip by strip (see
+ * lib/upload/artwork.h), so this needs NO 32 KB LZ dictionary — an earlier single-stream version
+ * needed a ~44 KB working set that could only fit the SAME large region the layer's segments need,
+ * and the two together did not fit once WiFi was up. What remains is a ~11 KB decompressor state.
+ *
+ * THAT STATE IS RESERVED BY THE CALLER, BEFORE THE SEGMENTS, and freed once the layer is loaded.
+ * Not for size — 11 KB coexists with the segments easily — but for PLACEMENT: allocated lazily
+ * during the decode (when the segments already hold the large blocks) it intermittently found no
+ * hole of its size class and the strip failed, which on the glass looks like the panel silently
+ * keeping its old picture. Reserved first, it takes a block while the heap is still clean. So the
+ * reservation is a SEPARATE, ORDERED STEP the caller performs before sizing the layer. */
+typedef struct artwork_inflate artwork_inflate_t;
+
+artwork_inflate_t *artwork_inflate_reserve(void);
+void artwork_inflate_release(artwork_inflate_t *w);
+
+int bitmap_store_load_seg(segbuf_t *b);
+
+int artwork_store_load_page_seg(int page, segbuf_t *b, artwork_inflate_t *w);
 
 /* Read the live static bitmap into `out` (BITMAP_SLOT_LEN bytes).
  *
@@ -83,14 +112,6 @@ int bitmap_store_live_slot(void);
  * bits — a promote writing seq 1 over a stored 0 would silently fail. See artwork_store_write_chunk.
  */
 
-/* Inflate page `page`'s artwork into `out` (ARTWORK_RAW_LEN bytes).
- *
- * Returns 0 on success. Returns -1 when there is no artwork for that page, which is a NORMAL
- * state (a device that has never been pushed artwork, or a config with more pages than it has
- * pictures for) — the caller renders a blank layer rather than borrowing another page's, because
- * the wrong labels on the glass are worse than none. */
-int artwork_store_load_page(int page, uint8_t *out);
-
 /* How many pages the live artwork set covers, or 0 when none is stored. */
 int artwork_store_page_count(void);
 
@@ -108,14 +129,6 @@ int artwork_store_page_count(void);
  * upload change the identity, which is what forces the full refresh that api_request_full_refresh()
  * already asks for. */
 void artwork_store_identity(int *page_count_out, uint32_t *seq_out);
-
-/* Inflate a zlib stream (RFC1950) into `out`, which must hold ARTWORK_RAW_LEN bytes.
- *
- * DECLARED HERE, NOT IN lib/upload/artwork.h: this is tinfl from the ESP32 ROM, which does not
- * exist on the host, and the artwork library must stay pure so its tests build natively (NFR-6).
- * Returns ARTWORK_RAW_LEN on success, or -1 on failure (a truncated or non-zlib stream). A
- * failure leaves `out` partially written, so the caller must not render it — check the result. */
-int artwork_inflate(const uint8_t *comp, size_t comp_len, uint8_t *out);
 
 int artwork_store_begin_upload(void);
 int artwork_store_write_chunk(uint32_t offset, const uint8_t *data, uint32_t len);

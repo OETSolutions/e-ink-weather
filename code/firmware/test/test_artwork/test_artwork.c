@@ -332,6 +332,92 @@ static void test_real_webapp_blob_refuses_a_page_it_does_not_contain(void)
     TEST_ASSERT_EQUAL_INT(-1, artwork_entry_at(&h, table, 7, &e));}
 
 /* ===================================================================================
+ * THE STRIP DECODE CONTRACT, decoded on the HOST with the system zlib.
+ *
+ * THE RISK THIS COVERS: the device decodes a page as ARTWORK_STRIP_COUNT INDEPENDENT zlib streams,
+ * each with NO dictionary (the layer's 32 KB dictionary cannot coexist with the layer on the
+ * fragmented device heap — see lib/upload/artwork.h). That only works if the web app really
+ * compressed each strip on its own, with no back-reference across a strip boundary. If it did not,
+ * the device's dictionary-free decode fails at some strip and the panel keeps its old picture —
+ * which no amount of testing the two sides separately would reveal, because the encoder's output
+ * is valid zlib either way.
+ *
+ * So this walks the fixture EXACTLY as the device does: inflate one strip from the current input
+ * offset into an output buffer of exactly ARTWORK_STRIP_RAW bytes, take the decoder's consumed
+ * input count as the next strip's offset, and assert every byte against the source layer. zlib's
+ * raw-inflate reports that count, which is the same number the ROM's tinfl gives the firmware.
+ * =================================================================================== */
+
+/* Inflate ONE self-contained stream from `in`(len) into `out`(out_len) with NO dictionary, using
+ * zlib's raw entry point. Returns the number of INPUT bytes consumed, or -1 on failure. This mirrors
+ * the firmware's inflate_one(): a fresh inflater per strip, output buffer exactly the strip size. */
+#include <zlib.h>
+static int host_inflate_one(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len)
+{
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    /* A raw windowBits of 15 with no dictionary: zlib reads the RFC1950 header itself. The device
+     * uses TINFL_FLAG_PARSE_ZLIB_HEADER, which is the same thing. */
+    if (inflateInit(&zs) != Z_OK) return -1;
+    zs.next_in = (Bytef *)in;
+    zs.avail_in = (uInt)in_len;
+    zs.next_out = out;
+    zs.avail_out = (uInt)out_len;
+    const int rc = inflate(&zs, Z_FINISH);
+    const size_t produced = out_len - zs.avail_out;
+    const uLong used = zs.total_in;
+    inflateEnd(&zs);
+    if ((rc != Z_STREAM_END && produced != out_len) || produced != out_len) return -1;
+    return (int)used;
+}
+
+/* Decode a whole page's strip run into `out` (ARTWORK_RAW_LEN bytes), exactly as the device does. */
+static int host_decode_page(const uint8_t *page, size_t page_len, uint8_t *out)
+{
+    size_t at = 0;
+    for (unsigned i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+        const int used = host_inflate_one(page + at, page_len - at,
+                                          out + (size_t)i * ARTWORK_STRIP_RAW, ARTWORK_STRIP_RAW);
+        if (used <= 0) return -1;
+        at += (size_t)used;
+    }
+    return 0;
+}
+
+/* Every strip must decode ALONE. This is the direct proof that the encoder did not emit one
+ * whole-layer stream: if it had, strips 1..n-1 would each fail here (their back-references point
+ * before their own start), which is precisely what would break the device. */
+static void test_each_fixture_strip_decodes_alone_with_no_dictionary(void)
+{
+    artwork_hdr_t h;
+    memcpy(&h, FIXTURE_ART, sizeof(h));
+    artwork_entry_t table[ARTWORK_MAX_PAGES];
+    memcpy(table, FIXTURE_ART + sizeof(artwork_hdr_t), sizeof(table));
+
+    uint8_t page[ARTWORK_RAW_LEN];
+    for (uint32_t pg = 0; pg < h.page_count; pg++) {
+        artwork_entry_t e;
+        TEST_ASSERT_EQUAL_INT(0, artwork_entry_at(&h, table, pg, &e));
+        const uint8_t *stream = FIXTURE_ART + artwork_blob_offset() + e.offset;
+
+        /* The whole page decodes, strip by strip, to ARTWORK_RAW_LEN bytes. */
+        TEST_ASSERT_EQUAL_INT(0, host_decode_page(stream, e.comp_len, page));
+
+        /* AND each strip decodes from its own offset with a fresh inflater — the property that
+         * distinguishes per-strip streams from one stream. */
+        size_t at = 0;
+        for (unsigned i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+            uint8_t one[ARTWORK_STRIP_RAW];
+            const int used = host_inflate_one(stream + at, e.comp_len - at, one, ARTWORK_STRIP_RAW);
+            TEST_ASSERT_GREATER_THAN_INT(0, used);
+            TEST_ASSERT_EQUAL_UINT8_ARRAY(page + (size_t)i * ARTWORK_STRIP_RAW, one,
+                                          ARTWORK_STRIP_RAW);
+            at += (size_t)used;
+        }
+    }
+}
+
+/* ===================================================================================
  * UPLOAD CHUNK PLACEMENT: the client's header must NEVER reach the slot's offset 0.
  *
  * THE BUG THIS LOCKS DOWN: the client sends header + table + blob and the header carries seq 0
@@ -411,6 +497,7 @@ int main(void)
     RUN_TEST(test_real_webapp_blob_crc_matches_the_device_algorithm);
     RUN_TEST(test_real_webapp_blob_entries_point_at_usable_streams);
     RUN_TEST(test_real_webapp_blob_refuses_a_page_it_does_not_contain);
+    RUN_TEST(test_each_fixture_strip_decodes_alone_with_no_dictionary);
     RUN_TEST(test_chunk_inside_the_header_goes_to_ram_not_flash);
     RUN_TEST(test_chunk_past_the_header_goes_to_flash_at_its_own_offset);
     RUN_TEST(test_a_straddling_chunk_is_split_at_the_header_boundary);
