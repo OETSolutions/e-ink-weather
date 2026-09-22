@@ -12,14 +12,15 @@
  * So each input handler assigns to the widget before notifying.
  */
 
-import type {
-  AlertLevel, AlertOp, AlertRule, DataBinding, DataSourceKind, Page, Rule, Selection, Widget,
+import {
+  MAX_ALERT_RULES_PER_WIDGET,
+  type AlertLevel, type AlertOp, type AlertRule, type DataBinding, type DataSourceKind,
+  type Page, type Rule, type Selection, type Widget,
 } from '../model/config';
 import { describeRule } from '../alerts/rules';
 import { describeBinding } from '../data/binding';
 import { formatPlaceholder } from '../data/format';
 import { FACES_AVAILABLE, sizeFor } from '../canvas/face';
-import { MAX_ALERT_RULES_PER_WIDGET } from '../model/config';
 import { PANEL_WIDTH } from '../model/canvas-consts';
 
 export interface PropertyPanelOptions {

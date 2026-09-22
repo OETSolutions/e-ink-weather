@@ -651,21 +651,8 @@ async function mount(root: HTMLElement): Promise<void> {
     editor.redraw();
   });
 
-  /* Ask the device what it last resolved, and KEEP ASKING (FR-27: the preview must show real
-   * fetched data).
-   *
-   * WHY A POLL AND NOT ONE FETCH: this used to run once, at mount. On a device that had not yet
-   * finished its own first refresh the answer was empty, the preview stayed on "--", and it never
-   * asked again — so the user saw placeholders for a display that was in fact showing real
-   * readings, and concluded the data was broken. The device refreshes every 15 minutes by
-   * default, so a poll a few seconds apart is plenty and costs one small GET.
-   *
-   * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
-   * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
-   * other page's numbers into this page's boxes the moment the scheduler moved — readings that
-   * look real and belong to a different layout. So a response for another page is ignored, and
-   * the preview keeps its placeholders until the device is showing this page again. */
-  /* Poll for the device's resolved values.
+  /* Poll the device for the values it last resolved (FR-27: the preview must show real fetched
+   * data).
    *
    * WHY A POLL AND NOT ONE FETCH: this used to run once, at mount. On a device that had not yet
    * finished its own first refresh the answer was empty, the preview stayed on "--", and it never
