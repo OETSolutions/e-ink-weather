@@ -144,17 +144,23 @@ export function defaultLayout(): Config {
   ];
 
   /* A second page so the rotation scheduler is exercised by default rather than only when a
-   * user happens to add one. It reuses the same boxes at night-appropriate sizes. */
+   * user happens to add one.
+   *
+   * ITS GEOMETRY IS DELIBERATE, and this was fixed after seeing it on the glass: the boxes used to
+   * sit at y=100/280/188 with a rule at y=228, which put the rule 16 px UNDER the HALLWAY reading —
+   * a stray underline through the right column that read as "the layout is broken". Now the two top
+   * boxes share a baseline (they end at 192), the rule sits in the clear gap below them, and the
+   * bottom box starts under its own label. A rule must never cross a value box. */
   const page2: Widget[] = [
-    value('n_high', 40, 100, 400, 120, {
+    value('n_high', 40, 96, 400, 96, {
       binding: { kind: 'owm-daily', dayIndex: 0, owmField: 'max' },
       alerts: TEMP_ALERTS,
     }),
-    value('n_low', 40, 280, 400, 120, {
+    value('n_low', 40, 284, 400, 96, {
       binding: { kind: 'owm-daily', dayIndex: 0, owmField: 'min' },
       alerts: TEMP_ALERTS,
     }),
-    value('n_hallway', 500, 188, 380, 120, {
+    value('n_hallway', 500, 96, 380, 96, {
       binding: { kind: 'ha', entityId: HA_HALLWAY },
       alerts: TEMP_ALERTS,
     }),
@@ -222,14 +228,15 @@ export interface PageArtwork {
 export const PAGE_ARTWORK: PageArtwork[] = [
   { labels: [...DEFAULT_LABELS], rules: [...DEFAULT_RULES] },
   {
-    /* Page 1 ("Forecast"): the same three columns, relabelled for the boxes page 1 actually
-     * has. Its widgets are at y=100/280/188, so the labels sit above each one. */
+    /* Page 1: two labels down the left column, one in the right, with the rule in the gap between
+     * the top row and the bottom box. The widgets are at y=96 (high, hallway) and y=284 (low), so
+     * each label sits just above its box and the rule at y=236 clears both rows. */
     labels: [
       { x: 40, y: 60, text: 'TODAY HIGH', font: BODY_PX },
-      { x: 40, y: 240, text: 'TODAY LOW', font: BODY_PX },
-      { x: 500, y: 148, text: 'HALLWAY', font: BODY_PX },
+      { x: 40, y: 248, text: 'TODAY LOW', font: BODY_PX },
+      { x: 500, y: 60, text: 'HALLWAY', font: BODY_PX },
     ],
-    rules: [{ y: 228, thickness: 2, inset: 40 }],
+    rules: [{ y: 236, thickness: 2, inset: 40 }],
   },
 ];
 

@@ -648,6 +648,13 @@ async function mount(root: HTMLElement): Promise<void> {
   panel.show(undefined);
   picker.invalidate();
 
+  /* The canvas is in the document NOW, so this is the first moment "fit" can be measured against
+   * the real column width. attachEditor() ran before the append above (the DOM is built first), so
+   * its own resize saw no parent; without this call the panel would stay at 1:1 and overflow the
+   * column — the exact "not fit by default" defect this fixes. The editor's ResizeObserver keeps it
+   * correct after this. */
+  editor.resize();
+
   window.addEventListener('resize', () => {
     picker.invalidate();
     editor.resize();

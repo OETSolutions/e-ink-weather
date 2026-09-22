@@ -88,11 +88,20 @@ export interface EditorOptions {
  * store stays at PANEL_WIDTH × PANEL_HEIGHT and CSS scales it. Drawing at panel resolution
  * and letting the browser scale is what keeps the result pixel-crisp — drawing at the
  * on-screen size would blur every glyph edge and hide exactly the defects the preview is
- * for. */
+ * for.
+ *
+ * MEASURED FROM THE CONTENT BOX, not the border box. The wrap carries padding (and may show a
+ * scrollbar), so fitting to its BORDER box would size the canvas to the full box and push it past
+ * the padded content area — a horizontal scrollbar and a preview that is subtly too wide. clientWidth
+ * excludes the scrollbar; subtracting the padding leaves the space the canvas actually has. */
 function fitScale(el: HTMLElement): number {
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return 1;
-  return Math.min(rect.width / PANEL_WIDTH, rect.height / PANEL_HEIGHT);
+  const cs = getComputedStyle(el);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  const w = el.clientWidth - padX;
+  const h = el.clientHeight - padY;
+  if (w <= 0 || h <= 0) return 1;
+  return Math.min(w / PANEL_WIDTH, h / PANEL_HEIGHT);
 }
 
 /** Panel-space coordinates from a pointer event, accounting for the CSS scale. */
@@ -283,16 +292,50 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     return zoomMode;
   }
 
+  /* CSS scaling MUST NOT SMOOTH the pixels when the canvas is UP-scaled, or the preview lies about
+   * crispness — a blurred preview would hide exactly the single-pixel defects the preview exists to
+   * reveal.
+   *
+   * BUT IT MUST SMOOTH WHEN THE CANVAS IS DOWN-scaled, which is the common case (a fit on a laptop
+   * is ~0.7x). `pixelated` is nearest-neighbour, so at 0.7x it simply DROPS two of every three
+   * pixels: a 1-2 px rule loses most of its ink and reads as a broken line, and thin glyph strokes
+   * break up — reported as "the text looks terrible, some aliasing problem". Smoothing (the browser
+   * default) averages instead, so a downscaled rule stays a continuous grey line and the glyphs stay
+   * legible. The output is still 1-bit; this only decides how the browser resamples it on the way to
+   * the screen. So the choice is made by DIRECTION: pixelated at 1:1 and above, smooth below. */
+  function applyRendering(s: number): void {
+    canvasEl.style.imageRendering = s >= 1 ? 'pixelated' : 'auto';
+  }
+
+  /* FIT MUST BE MEASURED AFTER LAYOUT, AND RE-MEASURED WHEN THE CONTAINER CHANGES.
+   *
+   * fitScale() reads the PARENT's content box, and attachEditor() runs BEFORE the canvas is
+   * appended to the document (the caller builds the DOM, then appends). Detached, there is no
+   * parent, so the fit could not be computed and the canvas was pinned at PANEL_WIDTH x
+   * PANEL_HEIGHT CSS pixels — 920px wide in a ~690px column, overflowing and clipped at a negative
+   * x, while the label still said "Zoom fit". So the caller must call resize() once after appending
+   * (main.ts does), and this observer keeps the fit correct as the column reflows.
+   *
+   * The observer is attached LAZILY on the first resize that has a parent, because at attach time
+   * there is no parent to observe. It watches the PARENT: fitScale() is defined in terms of it, and
+   * the canvas's own box is the OUTPUT of this calculation, so observing the canvas would be
+   * circular (and would loop). */
+  const ro = new ResizeObserver(() => {
+    if (zoomMode === 'fit') resize();
+  });
+  let observing = false;
+
   function resize(): void {
+    if (!observing && canvasEl.parentElement) {
+      ro.observe(canvasEl.parentElement);
+      observing = true;
+    }
     const s = currentScale();
     canvasEl.style.width = `${Math.round(PANEL_WIDTH * s)}px`;
     canvasEl.style.height = `${Math.round(PANEL_HEIGHT * s)}px`;
+    applyRendering(s);
     redraw();
   }
-
-  /* CSS scaling must not smooth the pixels, or the preview lies about crispness. */
-  canvasEl.style.imageRendering = 'pixelated';
-  resize();
 
   return {
     redraw,
@@ -306,6 +349,7 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
       return currentScale();
     },
     destroy() {
+      ro.disconnect();
       canvasEl.removeEventListener('pointerdown', onPointerDown);
       canvasEl.removeEventListener('pointermove', onPointerMove);
       canvasEl.removeEventListener('pointerup', onPointerUp);
