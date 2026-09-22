@@ -1290,6 +1290,23 @@ static esp_err_t h_secrets_put(httpd_req_t *req)
     const char *hau_s = (cJSON_IsString(hau) && hau->valuestring[0]) ? hau->valuestring : NULL;
     const char *hat_s = (cJSON_IsString(hat) && hat->valuestring[0]) ? hat->valuestring : NULL;
 
+    /* REJECT AN OVER-LONG VALUE rather than storing something the reader cannot hold. The store
+     * has no length limit of its own, so a value longer than its buffer would sit in NVS and read
+     * back as an empty string — the device would look unconfigured while holding the credential.
+     * Better a 413 naming the field than a save that appears to work. */
+    if (owm_s && strlen(owm_s) >= DEVENV_BUF_OWM_KEY) {
+        cJSON_Delete(root);
+        return api_send_err(req, "413 Payload Too Large", "owmKey is too long");
+    }
+    if (hau_s && strlen(hau_s) >= DEVENV_BUF_HA_URL) {
+        cJSON_Delete(root);
+        return api_send_err(req, "413 Payload Too Large", "haUrl is too long");
+    }
+    if (hat_s && strlen(hat_s) >= DEVENV_BUF_HA_TOKEN) {
+        cJSON_Delete(root);
+        return api_send_err(req, "413 Payload Too Large", "haToken is too long");
+    }
+
     /* Validate the HA URL HERE rather than storing a value the fetch will fail on. A bare host
      * with no scheme ("homeassistant.local:8123") is the common typo, and net_http would report
      * it as a generic request failure with nothing pointing at the URL. Requiring http:// or
@@ -1305,7 +1322,7 @@ static esp_err_t h_secrets_put(httpd_req_t *req)
      * reverse proxies 404 on that rather than normalising it — and the failure would look like a
      * bad token, not a malformed URL. The app strips it too; doing it here as well means a caller
      * that is not the app (curl, a script) cannot store a form the device mishandles. */
-    char ha_url_norm[192];
+    char ha_url_norm[DEVENV_BUF_HA_URL];
     if (hau_s) {
         snprintf(ha_url_norm, sizeof(ha_url_norm), "%s", hau_s);
         size_t L = strlen(ha_url_norm);
@@ -1341,18 +1358,18 @@ static esp_err_t h_secrets_put(httpd_req_t *req)
 static esp_err_t h_secrets_get(httpd_req_t *req)
 {
     nvs_handle_t h;
-    char url[192] = {0};
+    char url[DEVENV_BUF_HA_URL] = {0};
     int have_owm = 0, have_url = 0, have_token = 0;
 
     if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        char k[64] = {0};
+        char k[DEVENV_BUF_OWM_KEY] = {0};
         size_t kn = sizeof(k);
         have_owm = (nvs_get_str(h, DEVENV_KEY_OWM_KEY, k, &kn) == ESP_OK && k[0] != '\0');
 
         kn = sizeof(url);
         have_url = (nvs_get_str(h, DEVENV_KEY_HA_URL, url, &kn) == ESP_OK && url[0] != '\0');
 
-        char t[256] = {0};
+        char t[DEVENV_BUF_HA_TOKEN] = {0};
         size_t tn = sizeof(t);
         have_token = (nvs_get_str(h, DEVENV_KEY_HA_TOKEN, t, &tn) == ESP_OK && t[0] != '\0');
         nvs_close(h);

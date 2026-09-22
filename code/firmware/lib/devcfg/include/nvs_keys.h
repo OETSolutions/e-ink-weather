@@ -26,6 +26,18 @@
 #define DEVENV_KEY_HA_URL   "ha_url"
 #define DEVENV_KEY_HA_TOKEN "ha_token"
 
+/* The buffer each credential is held in, NUL included, in ONE place.
+ *
+ * WHY THEY ARE HERE AND NOT AT EACH SITE: these were three independent literals — the portal
+ * wrote the HA URL into a 192-byte field, the fetch path read it into a 128-byte one, and
+ * nvs_get_str's "buffer too small" error was discarded. A URL of 129..191 characters therefore
+ * stored "successfully", then failed to read, leaving an unconfigured-looking device with the
+ * value still in flash and nothing logged. That is the same silent-divergence class the rest of
+ * this header exists to prevent, so the sizes live beside the keys. */
+#define DEVENV_BUF_OWM_KEY  128
+#define DEVENV_BUF_HA_URL   192
+#define DEVENV_BUF_HA_TOKEN 256
+
 /* Location, stored as raw doubles (blob) rather than strings: the value is consumed as a
  * number to build the OWM query, and a string would need parsing at every fetch with a
  * locale-dependent result. */

@@ -337,7 +337,8 @@ static esp_err_t h_save(httpd_req_t *req)
     }
 
     char ssid[64] = {0}, pass[128] = {0};
-    char owm[128] = {0}, haurl[192] = {0}, hatoken[256] = {0};
+    char owm[DEVENV_BUF_OWM_KEY] = {0}, haurl[DEVENV_BUF_HA_URL] = {0};
+    char hatoken[DEVENV_BUF_HA_TOKEN] = {0};
     char lat_s[32] = {0}, lon_s[32] = {0};
 
     form_field(body, "ssid", ssid, sizeof(ssid));

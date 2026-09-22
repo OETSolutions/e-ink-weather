@@ -690,12 +690,13 @@ esp_err_t app_render_last_good(void)
     return ESP_OK;
 }
 
-/* The credentials every fetch needs, read once from NVS. */
+/* The credentials every fetch needs, read once from NVS. Sizes come from nvs_keys.h so the
+ * reader and the writers cannot disagree about how long a value may be. */
 typedef struct {
-    char   key[64];
+    char   key[DEVENV_BUF_OWM_KEY];
     double lat, lon;
-    char   ha_url[128];
-    char   ha_token[256];
+    char   ha_url[DEVENV_BUF_HA_URL];
+    char   ha_token[DEVENV_BUF_HA_TOKEN];
 } fetch_creds_t;
 
 static int read_creds(fetch_creds_t *c)
@@ -713,10 +714,21 @@ static int read_creds(fetch_creds_t *c)
     llen = sizeof(double);
     nvs_get_blob(h, DEVENV_KEY_LOC_LON, &c->lon, &llen);
     n = sizeof(c->ha_url);
-    nvs_get_str(h, DEVENV_KEY_HA_URL, c->ha_url, &n);
+    const esp_err_t e_url = nvs_get_str(h, DEVENV_KEY_HA_URL, c->ha_url, &n);
     n = sizeof(c->ha_token);
-    nvs_get_str(h, DEVENV_KEY_HA_TOKEN, c->ha_token, &n);
+    const esp_err_t e_tok = nvs_get_str(h, DEVENV_KEY_HA_TOKEN, c->ha_token, &n);
     nvs_close(h);
+
+    /* LOG A TRUNCATED/FILTERED READ rather than leaving a zeroed field that reads as "not
+     * configured". nvs_get_str returns ESP_ERR_NVS_INVALID_LENGTH when the stored value does not
+     * fit, and a caller that ignores it turns a stored credential into a silently absent one —
+     * the exact failure a mismatched buffer size caused. The buffer sizes are now shared, so this
+     * should not fire; it is here because the symptom is otherwise indistinguishable from an
+     * unconfigured device. */
+    if (e_url == ESP_ERR_NVS_INVALID_LENGTH)
+        ESP_LOGW(TAG, "stored HA url is longer than %d bytes; ignoring it", DEVENV_BUF_HA_URL);
+    if (e_tok == ESP_ERR_NVS_INVALID_LENGTH)
+        ESP_LOGW(TAG, "stored HA token is longer than %d bytes; ignoring it", DEVENV_BUF_HA_TOKEN);
     return 0;
 }
 
