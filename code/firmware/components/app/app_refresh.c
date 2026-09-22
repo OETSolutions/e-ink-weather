@@ -5,6 +5,7 @@
 #include "cfg_store.h"
 #include "cJSON.h"
 #include "datasrc.h"
+#include "devcfg.h"
 #include "epd.h"
 #include "fonts.h"
 #include "geo_ip.h"
@@ -718,6 +719,20 @@ static int read_creds(fetch_creds_t *c)
     n = sizeof(c->ha_token);
     const esp_err_t e_tok = nvs_get_str(h, DEVENV_KEY_HA_TOKEN, c->ha_token, &n);
     nvs_close(h);
+
+    /* NORMALISE THE URL ON READ, not only on write. fetch_ha() appends "/api/template", so a
+     * trailing slash here becomes a double slash — a 404 on some HA reverse proxies that reads
+     * like a bad token. PUT /api/secrets strips it, but the captive portal does not, and a device
+     * provisioned there could have one stored from before this rule existed. Normalising at the
+     * point of use makes every stored form work, including values already in flash that no write
+     * path will revisit. A URL that fails to normalise is left as-is: the fetch will fail and log,
+     * which is the pre-existing behaviour for a malformed address. */
+    if (c->ha_url[0]) {
+        char norm[DEVENV_BUF_HA_URL];
+        if (devcfg_normalize_ha_url(c->ha_url, norm, sizeof(norm)) == 0) {
+            snprintf(c->ha_url, sizeof(c->ha_url), "%s", norm);
+        }
+    }
 
     /* LOG A TRUNCATED/FILTERED READ rather than leaving a zeroed field that reads as "not
      * configured". nvs_get_str returns ESP_ERR_NVS_INVALID_LENGTH when the stored value does not
