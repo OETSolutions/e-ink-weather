@@ -120,10 +120,13 @@ static void test_schema_version_lookalike_string_value_is_not_the_key(void)
 {
     reset();
     cfg_store_t s = store();
-    /* The version is 1; the widget's id contains the key text. A naive strstr would read the
-     * "1" out of the id string and, depending on the digits, get the version wrong. */
-    const char *doc = "{\"schemaVersion\":1,\"pages\":[{\"name\":\"a\",\"widgets\":["
-                      "{\"id\":\"\\\"schemaVersion\\\":99\"}]}]}";
+    /* The generator's value IS the string `schemaVersion`, so its own quotes form a bare
+     * `"schemaVersion"` in the raw bytes — and it comes FIRST. This is the only way a VALID
+     * document can hold that literal outside a key (an unescaped quote mid-value would not be
+     * valid JSON), which is exactly why the guard must be tested with this shape. A naive strstr
+     * reads a version from here and gets it wrong; the scan must require a key. */
+    const char *doc = "{\"generator\":\"schemaVersion\",\"schemaVersion\":1,"
+                      "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":900,\"weight\":1}]}";
     TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, doc));
     TEST_ASSERT_EQUAL_INT(1, g_writes);
 

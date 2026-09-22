@@ -19,6 +19,29 @@ static const char *DEFAULT_JSON =
 
 const char *cfg_store_default_json(void) { return DEFAULT_JSON; }
 
+/* Find `"key"` in the text as a KEY (not a string VALUE that happens to contain the text), and
+ * return a pointer just past the closing quote. NULL when there is no such key.
+ *
+ * A key is preceded by `{` or `,` — ignoring whitespace — which is what distinguishes it from a
+ * value like `"generator":"schemaVersion"`, whose own quotes form a bare `"schemaVersion"` in the
+ * raw bytes and which a plain strstr finds FIRST. The search continues past such a match rather
+ * than giving up, because the real key may come later in the document. */
+static const char *find_key(const char *json, const char *key)
+{
+    char pat[48];
+    const int pn = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (pn <= 0 || (size_t)pn >= sizeof(pat)) return NULL;
+
+    const char *k = strstr(json, pat);
+    while (k) {
+        const char *p = k;
+        while (p > json && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n' || p[-1] == '\r')) p--;
+        if (p != json && (p[-1] == '{' || p[-1] == ',')) return k + pn;
+        k = strstr(k + 1, pat);
+    }
+    return NULL;
+}
+
 /* Pull a numeric schemaVersion out. A document without one cannot be migrated, so it is
  * refused rather than assumed to be the current version — guessing would silently accept a
  * future document as if it were v1 and store a layout the firmware cannot honour.
@@ -33,17 +56,9 @@ const char *cfg_store_default_json(void) { return DEFAULT_JSON; }
  * from an 8 KB string must not cost a whole parse. */
 static int read_schema_version(const char *json, int *out)
 {
-    const char *k = strstr(json, "\"schemaVersion\"");
+    const char *k = find_key(json, "schemaVersion");
     if (!k) return -1;
 
-    /* MUST BE A KEY, not a string VALUE that happens to read "schemaVersion" (a widget id or a
-     * label could contain that text). A key is preceded by `{` or `,` — ignoring whitespace —
-     * and followed by `:`; a value is preceded by `:` and followed by a quote or comma. */
-    const char *p = k;
-    while (p > json && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n' || p[-1] == '\r')) p--;
-    if (p == json || (p[-1] != '{' && p[-1] != ',')) return -1;
-
-    k += strlen("\"schemaVersion\"");
     while (*k == ' ' || *k == '\t' || *k == '\n' || *k == '\r') k++;
     if (*k != ':') return -1;
     k++;
