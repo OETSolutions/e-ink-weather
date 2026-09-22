@@ -55,3 +55,11 @@ void app_seed_wifi(const char *ssid, const char *pass);
  * overwrite an existing key or it would replace a real owner's whenever this image is flashed.
  * Only compiled in when secrets_build.h exists. */
 void app_seed_owm_key(const char *key);
+
+/* Bench-only: store the Home Assistant URL and token in NVS if none is stored.
+ *
+ * A URL without a token (or vice versa) is stored as neither — HA needs both, and half a
+ * credential pair would make fetch_ha() believe it could talk to HA and then fail at the
+ * request. Same never-overwrite rule as the other seeders. Only compiled in when
+ * secrets_build.h exists, and only writes when code/.env supplies BOTH values. */
+void app_seed_ha(const char *url, const char *token);

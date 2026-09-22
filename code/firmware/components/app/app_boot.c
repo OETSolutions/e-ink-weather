@@ -155,6 +155,59 @@ void app_seed_owm_key(const char *key)
     ESP_LOGI(TAG, "seed: %s OWM key", e == ESP_OK ? "wrote bench" : "failed to write");
 }
 
+/* Bench-only: seed the Home Assistant URL and token into NVS if none is stored.
+ *
+ * WHY THIS EXISTS: the generator that emits secrets_build.h read only WiFi and the OWM key
+ * from code/.env, so a bench device had NO Home Assistant credentials at all — every HA
+ * widget resolved to its "--" fallback and the config app reported "No Home Assistant URL
+ * configured", even though HA_URL and HA_TOKEN were sitting in .env the whole time. The
+ * device-side path was correct (read_creds() reads both keys, fetch_ha() refuses without
+ * them); nothing ever POPULATED the keys on a bench build, and there was no UI or endpoint
+ * to do it after the fact either. This closes that gap for the bench path; PUT /api/secrets
+ * covers a running device.
+ *
+ * Same never-overwrite contract as the other two seeders, and for the same reason: this must
+ * not replace a real owner's HA instance whenever a developer flashes their bench image. A
+ * partially-populated pair (URL with no token, or vice versa) is left ALONE rather than
+ * half-written — HA needs both, and a URL with no token would make fetch_ha() log the same
+ * "no url/token" warning that this function exists to remove. */
+void app_seed_ha(const char *url, const char *token)
+{
+    if (!url || !*url || !token || !*token) return;
+
+    esp_err_t ne = nvs_flash_init();
+    if (ne == ESP_ERR_NVS_NO_FREE_PAGES || ne == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        ne = nvs_flash_init();
+    }
+    if (ne != ESP_OK) return;
+
+    nvs_handle_t h;
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+
+    char existing[192] = {0};
+    size_t n = sizeof(existing);
+    if (nvs_get_str(h, DEVENV_KEY_HA_URL, existing, &n) == ESP_OK && existing[0] != '\0') {
+        ESP_LOGI(TAG, "seed: HA URL already present, leaving it alone");
+        nvs_close(h);
+        return;
+    }
+
+    /* The URL buffer here is deliberately larger than the seed's own copy: HA_URL in .env is
+     * a value the developer wrote, and NVS stores what it is given. A token is checked too, so
+     * a URL without one is not stored — half a credential pair is worse than none, because
+     * fetch_ha() would then look configured and fail at the request instead. */
+    if (token[0] == '\0') {
+        nvs_close(h);
+        return;
+    }
+    esp_err_t e = nvs_set_str(h, DEVENV_KEY_HA_URL, url);
+    if (e == ESP_OK) e = nvs_set_str(h, DEVENV_KEY_HA_TOKEN, token);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "seed: %s HA credentials", e == ESP_OK ? "wrote bench" : "failed to write");
+}
+
 /* Steps 4-6: connect if there are credentials, fetch, render, push.
  *
  * A separate function because the provisioning step has to sit AFTER it — there are no

@@ -35,6 +35,8 @@ static void app_task(void *arg)
      * app_seed_wifi), so a provisioned device is unaffected. */
     app_seed_wifi(NET_VERIFY_SSID, NET_VERIFY_PASS);
     app_seed_owm_key(NET_VERIFY_OWM_KEY);
+    /* Home Assistant is optional: an empty .env value compiles to "" and this no-ops. */
+    app_seed_ha(NET_VERIFY_HA_URL, NET_VERIFY_HA_TOKEN);
 #endif
     app_boot_run();
     /* app_boot_run() returns only on USB power, where the device must stay awake to serve
