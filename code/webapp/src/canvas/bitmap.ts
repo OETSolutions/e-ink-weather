@@ -32,8 +32,22 @@ export function createBitmap(): Bitmap {
  * Out-of-range coordinates are IGNORED rather than clamped, matching canvas_set_px(). That
  * matters: a glyph or widget partially off-panel must be clipped, not squashed against the
  * edge, which is what clamping would do.
- */
+ *
+ * COORDINATES ARE FLOORED, AND THAT IS LOAD-BEARING. The index is `y * pitch + (x >> 3)`, and a
+ * FRACTIONAL y makes that a non-integer — `b.data[1234.5]` is a property lookup that does not
+ * exist, so the store is silently DISCARDED. A widget whose geometry carried a fraction (the
+ * editor's resize maths divides a pointer delta by a fractional display scale) therefore drew
+ * NOTHING at all: the value vanished from the preview the moment a box was resized, with no error
+ * anywhere. Reported as "the values disappear depending on where you place them".
+ *
+ * Flooring matches what the DEVICE does — the firmware parses x/y/w/h with (int)valuedouble, which
+ * truncates toward zero and is identical to floor for the non-negative coordinates a box can have.
+ * So the preview and the glass now agree for a fractional box instead of the preview showing a
+ * hole where the panel shows a reading. `x >> 3` already truncates, which is why only y bit the
+ * caller: the same expression was half-protected by an operator that floors by nature. */
 export function setPx(b: Bitmap, x: number, y: number, black: boolean): void {
+  x = Math.floor(x);
+  y = Math.floor(y);
   if (x < 0 || y < 0 || x >= b.width || y >= b.height) return;
   const idx = y * b.pitch + (x >> 3);
   const mask = 0x80 >> (x & 7);
@@ -41,8 +55,14 @@ export function setPx(b: Bitmap, x: number, y: number, black: boolean): void {
   else b.data[idx]! |= mask;
 }
 
-/** Read one pixel. Returns true for black (a CLEAR bit), like canvas_get_px(). */
+/** Read one pixel. Returns true for black (a CLEAR bit), like canvas_get_px().
+ *
+ * Floored for the same reason as setPx: without it a fractional y indexes past the end of the
+ * typed array and reads `undefined`, so `b.data[idx] & mask` throws rather than reporting a
+ * pixel — a read that crashes on input a write quietly ignores. */
 export function getPx(b: Bitmap, x: number, y: number): boolean {
+  x = Math.floor(x);
+  y = Math.floor(y);
   if (x < 0 || y < 0 || x >= b.width || y >= b.height) return false;
   const idx = y * b.pitch + (x >> 3);
   const mask = 0x80 >> (x & 7);

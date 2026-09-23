@@ -94,13 +94,18 @@ static const char *TAG = "refresh";
 typedef struct {
     layout_widget_t widgets[LAYOUT_MAX_FIELDS];
     value_field_t   fields[LAYOUT_MAX_FIELDS];
-    char            values[LAYOUT_MAX_FIELDS][40];
+    char            values[LAYOUT_MAX_FIELDS][LAYOUT_VALUE_BUF];
     const char     *value_ptrs[LAYOUT_MAX_FIELDS];
-    /* The widget id and "was this a real reading" flag, parallel to values/fields, so
-     * GET /api/values (FR-27) can report which box each resolved string belongs to. The id is
-     * copied rather than pointed at: the widget array is overwritten by the next refresh. */
-    char            ids[LAYOUT_MAX_FIELDS][24];
+    /* The widget id, the RAW reading and whether the drawn string is that number's plain
+     * rendering, parallel to values/fields, so GET /api/values (FR-27) can report which box each
+     * resolved string belongs to AND let the editor re-format it locally after a format edit. The
+     * id is copied rather than pointed at: the widget array is overwritten by the next refresh.
+     * `readings`/`rendered_number` are only populated for widgets whose value drew the number —
+     * see value_format_widget_rendered(). */
+    char            ids[LAYOUT_MAX_FIELDS][API_VALUES_ID_LEN];
     int             has_value[LAYOUT_MAX_FIELDS];
+    int             rendered_number[LAYOUT_MAX_FIELDS];
+    double          readings[LAYOUT_MAX_FIELDS];
     int             n;              /* how many the page asked for */
     int             n_fields;       /* how many are actually stamped (dynamic only) */
 } page_render_t;
@@ -115,7 +120,7 @@ typedef struct {
  * NOTHING could be drawn. The drawable half is 1,640 bytes, which fits. */
 typedef struct {
     value_field_t fields[LAYOUT_MAX_FIELDS];
-    char          values[LAYOUT_MAX_FIELDS][40];
+    char          values[LAYOUT_MAX_FIELDS][LAYOUT_VALUE_BUF];
     const char   *value_ptrs[LAYOUT_MAX_FIELDS];
     int           n_fields;
 } frame_values_t;
@@ -420,8 +425,15 @@ static void build_fields(page_render_t *p, const value_sources_t *src,
 
         /* The buffer is per-field and the pointer array is parallel to `fields`, because
          * render_compose_stream() takes `const char *const *` and does not own the strings. */
-        p->has_value[nf] = value_format_widget(w, src, ids, n_ids, now, NULL,
-                                               p->values[nf], sizeof(p->values[nf]));
+        datasrc_value_t v;
+        p->has_value[nf] = value_format_widget_rendered(w, src, ids, n_ids, now, &v,
+                                                        &p->rendered_number[nf],
+                                                        p->values[nf], sizeof(p->values[nf]));
+        /* THE RAW READING, but only when the drawn text really is that number's plain rendering:
+         * the endpoint reports it so the editor can re-format after a format edit, and re-format
+         * would be wrong for an alert word, a text state or an icon code (see
+         * value_format_widget_rendered). */
+        p->readings[nf] = v.value;
         p->value_ptrs[nf] = p->values[nf];
         /* The widget's own id travels with the value, for GET /api/values (FR-27): the editor
          * previews the REAL fetched data by asking the device what it resolved, and without the
@@ -1542,15 +1554,18 @@ void app_refresh_tick(power_source_t source, int force_full)
                 page.n = layout_widgets_from_root(root, p, page.widgets, LAYOUT_MAX_FIELDS);
                 if (page.n < 0) page.n = 0;
                 build_fields(&page, &src, ha_ids, n_ha, now_unix);
-                api_record_values(page.ids, page.values, page.has_value, page.n_fields, p, page_total);
+                api_record_values(page.ids, page.values, page.has_value,
+                                  page.rendered_number, page.readings,
+                                  page.n_fields, p, page_total);
             }
 
             memset(&page, 0, sizeof(page));
             page.n = layout_widgets_from_root(root, page_index, page.widgets, LAYOUT_MAX_FIELDS);
             if (page.n < 0) page.n = 0;
             build_fields(&page, &src, ha_ids, n_ha, now_unix);
-            api_record_values(page.ids, page.values, page.has_value, page.n_fields,
-                              page_index, page_total);
+            api_record_values(page.ids, page.values, page.has_value,
+                              page.rendered_number, page.readings,
+                              page.n_fields, page_index, page_total);
             cJSON_Delete(root);
         }
     } else {

@@ -333,6 +333,57 @@ static void test_scan_of_a_null_root_is_all_zero(void)
     TEST_ASSERT_EQUAL_INT(0, ha);
 }
 
+/* A PREFIX LONGER THAN THE OLD 5-CHARACTER LIMIT SURVIVES INTACT.
+ *
+ * The affixes were char[6], so "layers " was cut to "layer" and the box drew "layer0" where the
+ * user had configured "layers " — reported from the bench exactly that way. The struct now holds
+ * 15 characters, and this pins both the value that caused the report and the exact boundary, since
+ * an off-by-one in a copy_str() capacity is invisible until a string sits right on it. */
+static void test_long_affixes_are_not_truncated(void)
+{
+    static const char *doc =
+        "{\"schemaVersion\":1,\"pages\":[{\"name\":\"P\",\"widgets\":["
+          "{\"id\":\"val2\",\"x\":40,\"y\":100,\"w\":300,\"h\":60,\"role\":\"dynamic\","
+           "\"binding\":{\"kind\":\"ha\",\"entityId\":\"sensor.cc1_current_layer\"},"
+           "\"format\":{\"decimals\":0,\"prefix\":\"layers \",\"suffix\":\" done\"}},"
+          "{\"id\":\"max\",\"x\":40,\"y\":200,\"w\":300,\"h\":60,\"role\":\"dynamic\","
+           "\"binding\":{\"kind\":\"owm-current\",\"owmField\":\"temp\"},"
+           "\"format\":{\"prefix\":\"123456789012345\",\"suffix\":\"abcdefghijklmno\"}}"
+        "]}]}";
+
+    layout_widget_t w[LAYOUT_MAX_FIELDS];
+    const int n = layout_widgets_parse(doc, 0, w, LAYOUT_MAX_FIELDS);
+    TEST_ASSERT_EQUAL_INT(2, n);
+
+    /* The reported case: prefix keeps its trailing space and its final 's'. */
+    TEST_ASSERT_EQUAL_STRING("layers ", w[0].format.prefix);
+    TEST_ASSERT_EQUAL_STRING(" done", w[0].format.suffix);
+
+    /* The boundary: exactly 15 characters fit, and the space for that 15th character plus the
+     * terminator is what the old char[6] did not have. */
+    TEST_ASSERT_EQUAL_STRING("123456789012345", w[1].format.prefix);
+    TEST_ASSERT_EQUAL_STRING("abcdefghijklmno", w[1].format.suffix);
+    TEST_ASSERT_EQUAL_INT(15, (int)strlen(w[1].format.prefix));
+}
+
+/* AN OVER-LONG AFFIX IS TRUNCATED, NOT AN OVERFLOW. A hand-edited document (or one from a newer
+ * app) can carry more than the struct holds; the parse must clip it and stay terminating rather
+ * than running past the array. */
+static void test_over_long_affixes_are_clipped_safely(void)
+{
+    static const char *doc =
+        "{\"schemaVersion\":1,\"pages\":[{\"name\":\"P\",\"widgets\":["
+          "{\"id\":\"w\",\"role\":\"dynamic\","
+           "\"binding\":{\"kind\":\"owm-current\",\"owmField\":\"temp\"},"
+           "\"format\":{\"prefix\":\"0123456789abcdefghijABCDEFGHIJ\"}}"
+        "]}]}";
+
+    layout_widget_t w[LAYOUT_MAX_FIELDS];
+    TEST_ASSERT_EQUAL_INT(1, layout_widgets_parse(doc, 0, w, LAYOUT_MAX_FIELDS));
+    TEST_ASSERT_EQUAL_INT((int)sizeof(w[0].format.prefix) - 1, (int)strlen(w[0].format.prefix));
+    TEST_ASSERT_EQUAL_MEMORY("0123456789abcde", w[0].format.prefix, 16);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -354,5 +405,7 @@ int main(void)
     RUN_TEST(test_scan_ignores_static_widgets);
     RUN_TEST(test_scan_bounds_the_ha_list);
     RUN_TEST(test_scan_of_a_null_root_is_all_zero);
+    RUN_TEST(test_long_affixes_are_not_truncated);
+    RUN_TEST(test_over_long_affixes_are_clipped_safely);
     return UNITY_END();
 }

@@ -18,7 +18,7 @@ import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
 import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-panel';
 import { searchEntities } from './data/ha';
-import { previewTextWithLive } from './data/format';
+import { previewTextWithLive, type LiveValue } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
 import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement';
@@ -87,7 +87,7 @@ function starterPage(index: number): Page {
  * (NFR-4: the preview must match the panel bit-for-bit, and it did not). `live` holds the values
  * the DEVICE last resolved, keyed by widget id (FR-27).
  */
-function previewValues(page: Page, probe: number, live: Record<string, string> = {}): Record<string, string> {
+function previewValues(page: Page, probe: number, live: Record<string, LiveValue> = {}): Record<string, string> {
   const out: Record<string, string> = {};
   for (const w of page.widgets) {
     if (w.role !== 'dynamic') continue;
@@ -295,7 +295,7 @@ async function mount(root: HTMLElement): Promise<void> {
   /* The device's last resolved values, keyed by widget id (FR-27). Empty until asked for, and
    * the preview falls back to placeholders until then — which is what the panel shows before its
    * own first fetch, so the two agree either way. */
-  let liveValues: Record<string, string> = {};
+  let liveValues: Record<string, LiveValue> = {};
   const editorState: EditorState = { page, values: previewValues(page, alertProbe, liveValues) };
 
   /* ---- DOM, built first ---- */

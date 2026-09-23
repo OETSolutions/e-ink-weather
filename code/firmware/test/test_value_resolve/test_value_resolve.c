@@ -433,6 +433,112 @@ static void test_daily_binding_to_a_nonsense_field_falls_back(void)
     TEST_ASSERT_EQUAL_STRING("--", buf);
 }
 
+/* ---- which branch drew the text: the flag GET /api/values reports (FR-27) ----
+ *
+ * THE EDITOR RE-FORMATS A READING LOCALLY after the user edits the decimals or affixes, so that a
+ * format edit shows up without a save and a repaint. It may do that ONLY when the drawn text really
+ * IS that reading's plain rendering — a firing alert shows a level word, a text reading shows a
+ * condition or a sensor state, an icon binding shows the OWM code, and a failed fetch shows the
+ * widget's fallback. Re-format in any of those and the editor draws a number over a box the panel
+ * paints a word in. The firmware is the only party that knows which branch ran, so it reports it —
+ * the editor could not infer it, since a fallback of "72.5" is indistinguishable from a reading.
+ */
+
+static void test_a_number_rendering_is_flagged_as_one(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TEMP;
+    w.format.decimals = 1;
+    value_sources_t src = { .owm_current = CURRENT };
+    char ids[1][48]; char buf[64];
+    int rendered = -1;
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget_rendered(&w, &src, ids, 0, 0, &v, &rendered, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(1, rendered);
+    /* The reading travels out with it, exactly as the panel drew it — 72.28 at one decimal. */
+    TEST_ASSERT_TRUE(v.value > 72.27 && v.value < 72.29);
+}
+
+static void test_a_text_reading_is_not_flagged_as_a_number(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_CONDITION;
+    value_sources_t src = { .owm_current = CURRENT };
+    char ids[1][48]; char buf[64];
+    int rendered = -1;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget_rendered(&w, &src, ids, 0, 0, NULL, &rendered, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(0, rendered);
+}
+
+/* An OWM icon binding carries the raw code ("03d"), which the renderer turns into a picture. There
+ * is no number behind it, so re-format would blank the icon. */
+static void test_an_icon_code_is_not_flagged_as_a_number(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_ICON;
+    value_sources_t src = { .owm_current = CURRENT };
+    char ids[1][48]; char buf[64];
+    int rendered = -1;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget_rendered(&w, &src, ids, 0, 0, NULL, &rendered, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("03d", buf);
+    TEST_ASSERT_EQUAL_INT(0, rendered);
+}
+
+/* A FIRING ALERT REPLACES THE READING WITH A WORD, so this is the case where a naive
+ * "value is finite, re-format it" would draw a temperature over the alarm. */
+static void test_an_alert_word_is_not_flagged_as_a_number(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TEMP;
+    w.n_rules = 1;
+    w.rules[0].op = ALERT_OP_GT;
+    w.rules[0].threshold = 60;
+    w.rules[0].level = ALERT_SEVERE;
+    value_sources_t src = { .owm_current = CURRENT };
+    char ids[1][48]; char buf[64];
+    int rendered = -1;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget_rendered(&w, &src, ids, 0, 0, NULL, &rendered, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("severe", buf);
+    TEST_ASSERT_EQUAL_INT(0, rendered);
+}
+
+/* A MISSING SOURCE SHOWS THE FALLBACK, which the user may have set to anything — including
+ * something that looks like a number. Re-format must therefore not run here either; the flag is
+ * what decides, not the shape of the string. */
+static void test_a_fallback_is_not_flagged_as_a_number(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TEMP;
+    strcpy(w.format.fallback, "72.5");
+    value_sources_t src = { .owm_current = NULL };   /* the fetch failed */
+    char ids[1][48]; char buf[64];
+    int rendered = -1;
+    TEST_ASSERT_EQUAL_INT(0, value_format_widget_rendered(&w, &src, ids, 0, 0, NULL, &rendered, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("72.5", buf);
+    TEST_ASSERT_EQUAL_INT(0, rendered);
+}
+
+/* The plain entry point must behave EXACTLY as before — it is the path the panel draws through,
+ * and the flag is a report about that path, not a change to it. */
+static void test_the_flag_does_not_change_what_is_drawn(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TEMP;
+    w.format.decimals = 1;
+    strcpy(w.format.suffix, "\xc2\xb0""F");
+    value_sources_t src = { .owm_current = CURRENT };
+    char a[64], b[64];
+    char ids[1][48];
+    int rendered = 0;
+    datasrc_value_t v1, v2;
+    const int r1 = value_format_widget(&w, &src, ids, 0, 0, &v1, a, sizeof(a));
+    const int r2 = value_format_widget_rendered(&w, &src, ids, 0, 0, &v2, &rendered, b, sizeof(b));
+    TEST_ASSERT_EQUAL_INT(r1, r2);
+    TEST_ASSERT_EQUAL_STRING(a, b);
+    TEST_ASSERT_EQUAL_INT(v1.status, v2.status);
+    TEST_ASSERT_TRUE(v1.value == v2.value);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -448,7 +554,6 @@ int main(void)
     RUN_TEST(test_alert_bar_says_so_when_the_product_cannot_alert);
     RUN_TEST(test_product_without_alerts_does_not_render_a_found_alert);
     RUN_TEST(test_degradation_message_fits_the_render_buffer);
-    RUN_TEST(test_degradation_message_fits_the_render_buffer);
     RUN_TEST(test_threshold_rule_replaces_the_reading);
     RUN_TEST(test_unavailable_reading_never_raises_an_alert);
     RUN_TEST(test_most_severe_rule_wins);
@@ -459,5 +564,11 @@ int main(void)
     RUN_TEST(test_scan_needs_ignores_static_widgets);
     RUN_TEST(test_scan_needs_reports_all_sources_and_max_day);
     RUN_TEST(test_daily_binding_to_a_nonsense_field_falls_back);
+    RUN_TEST(test_a_number_rendering_is_flagged_as_one);
+    RUN_TEST(test_a_text_reading_is_not_flagged_as_a_number);
+    RUN_TEST(test_an_icon_code_is_not_flagged_as_a_number);
+    RUN_TEST(test_an_alert_word_is_not_flagged_as_a_number);
+    RUN_TEST(test_a_fallback_is_not_flagged_as_a_number);
+    RUN_TEST(test_the_flag_does_not_change_what_is_drawn);
     return UNITY_END();
 }

@@ -1,6 +1,10 @@
 #pragma once
 
 #include "esp_err.h"
+/* For API_VALUES_ID_LEN / API_VALUES_TEXT_LEN, which dimension api_record_values' arrays. The
+ * caller and the store must agree on these, so the declaration names the macros rather than
+ * repeating their values. */
+#include "api_values.h"
 
 /* The device's own HTTP API (IF-4). Every endpoint is reachable on the LAN with no
  * authentication, which is a deliberate consequence of FR-31: the web app is served from
@@ -90,9 +94,26 @@ void api_record_page(int page);
  * the glass. The refresh path hands the result here; the HTTP handler only serialises it.
  *
  * `ids` and `texts` are parallel arrays of `count` entries, for page number `page`. The call is a
- * no-op for a count of 0, a count beyond the fixed cap, or a page index the store does not hold. */
-void api_record_values(const char (*ids)[24], const char (*texts)[40],
-                       const int *has_value, int count, int page, int page_count);
+ * no-op for a count of 0, a count beyond the fixed cap, or a page index the store does not hold.
+ *
+ * `values`/`rendered_number` carry the RAW reading alongside the formatted string, so GET
+ * /api/values can report it and the editor can re-format locally after a format edit — without them
+ * the box would keep showing the string the device formatted with the OLD prefix/decimals until a
+ * save and a repaint. `rendered_number[i]` must be 1 ONLY when texts[i] is the plain rendering of
+ * values[i]: the caller knows which branch value_format_widget() took, so it is the only party that
+ * can tell a number from an alert word, a text reading, an icon code or a fallback — and re-format
+ * in those cases would draw a number where the panel has a word. BOTH MAY BE NULL: a caller that has
+ * only strings records them and the endpoint reports rendered_number=0.
+ *
+ * THE DIMENSIONS ARE THE STORE'S OWN MACROS, not literals: this signature used to spell out [24]
+ * and [40], so growing either buffer in api_values.h left the declaration here — and the arrays
+ * callers actually hold — at the old size, which the compiler caught as an incompatible-pointer
+ * error. Naming the macros makes the two impossible to drift. */
+void api_record_values(const char (*ids)[API_VALUES_ID_LEN],
+                       const char (*texts)[API_VALUES_TEXT_LEN],
+                       const int *has_value,
+                       const int *rendered_number, const double *values,
+                       int count, int page, int page_count);
 
 /* Make sure the per-page value store can hold `page_count` pages, allocating it on first use.
  *

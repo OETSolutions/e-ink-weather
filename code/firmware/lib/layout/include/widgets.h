@@ -52,13 +52,53 @@ typedef struct {
 } binding_t;
 
 /* The text-formatting rules (mirrors webapp Format). Kept as fixed arrays rather than
- * pointers into the JSON: the document is freed long before the value is stamped. */
+ * pointers into the JSON: the document is freed long before the value is stamped.
+ *
+ * WHY THE AFFIXES ARE 16 BYTES, NOT 6. They were 6 — five characters plus the terminator — and a
+ * prefix like "layers " was silently cut to "layer", so the box drew "layer0" where the user had
+ * asked for "layers 0". The document carries no such limit, so the app happily stored the longer
+ * string and only the glass disagreed; there was no error anywhere. 15 characters covers the real
+ * cases ("layers ", "Current layer ", "Outdoor ", " mph", " (forecast)") with room to spare.
+ *
+ * THIS IS THE ONLY LIMIT, and the web app mirrors it (MAX_AFFIX in property-panel) so a field can
+ * never accept text the device would then trim — a control offering more than the device can store
+ * is the same defect as the truncation itself, just discovered later.
+ *
+ * The struct is embedded in layout_widget_t, which page_render_t holds 24 of, so every byte here
+ * costs 24 in .bss — DRAM the heap never gets (see the render notes). 16 is the size that covers
+ * the real cases without that multiplication turning into a heap problem. */
 typedef struct {
     int  decimals;              /* -1 = unset, use the default */
-    char prefix[6];
-    char suffix[6];
-    char fallback[6];
+    char prefix[16];
+    char suffix[16];
+    char fallback[8];
 } widget_format_t;
+
+/* HOW LONG A FORMATTED VALUE CAN BE, and why it is 48.
+ *
+ * A formatted value is prefix + the number + suffix, so the buffer that holds it must cover the
+ * worst case of all three. The affixes are 15 characters each, which leaves 16 for the numeric
+ * body: a sign, several integer digits, a point and up to six decimals (the format's own maximum)
+ * come to "-12345.123456" — 13, with a little room spare.
+ *
+ * WHY A SHARED CONSTANT RATHER THAN A 40 SPELLED OUT AT EACH DECLARATION: the value buffer is
+ * declared in several places (the live page, the previous-frame snapshot, the /api/values store)
+ * and was 40 in all of them — enough when the affixes were five characters, too small the moment
+ * they grew. A single constant, with the static assert below tying it to the struct, means the next
+ * change to the affix size is a compile error rather than a silently truncated reading.
+ *
+ * IT IS DELIBERATELY NOT SIZED FOR AN ABSURD MAGNITUDE. A double holding 1e30 prints 30 integer
+ * digits, which no affix budget can absorb; that case truncated before this change too and is not
+ * made worse. The bound that matters is the one an actual reading can reach, and the assert below
+ * makes the affix side of it impossible to get wrong. */
+#define LAYOUT_VALUE_BUF 48
+
+/* Compile-time proof that the value buffer can hold the worst case its own format allows. A
+ * mismatch here would show up as a value truncated mid-number on the glass — legible-but-wrong,
+ * the same failure class the affix size caused — so it is a build error, not a runtime check. */
+typedef char layout_value_buf_must_cover_affixes[
+    (LAYOUT_VALUE_BUF >= sizeof(((widget_format_t *)0)->prefix) +
+                         sizeof(((widget_format_t *)0)->suffix) + 16) ? 1 : -1];
 
 typedef struct {
     int             x, y, w, h;

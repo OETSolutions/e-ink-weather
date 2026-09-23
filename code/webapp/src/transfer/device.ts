@@ -124,6 +124,27 @@ export interface DeviceValue {
   id: string;
   text: string;
   has_value: boolean;
+  /**
+   * THE RAW READING BEHIND `text`, and whether `text` really is its plain rendering.
+   *
+   * Without these the editor can only echo `text`, which the device formatted with the STORED
+   * decimals/prefix/suffix — so editing one of those would leave the box showing the old formatting
+   * until the config was saved and the panel had redrawn. That is the reported "the layout editor
+   * doesn't show the updated values unless you first save and refresh".
+   *
+   * `rendered_number` GATES THE RE-FORMAT, and it is reported rather than inferred because it cannot
+   * be inferred: a firing alert replaces the reading with a level word, a text reading carries a
+   * condition or a sensor state, an icon binding carries the OWM code, and a failed fetch shows the
+   * widget's fallback — and a fallback of "72.5" is indistinguishable from a reading of 72.5. The
+   * device knows which branch it took, so it says so, and everything that is not `rendered_number: 1`
+   * is echoed verbatim (which is always correct, since `text` is what the panel drew).
+   *
+   * A NUMBER, NOT A BOOLEAN: the firmware serialises it as `1`/`0`, so a `=== true` test silently
+   * never matched — the raw reading was fetched, dropped, and the preview went on echoing the old
+   * formatting, which is the very symptom this field exists to fix. Test it for truthiness.
+   */
+  rendered_number?: number;
+  value?: number;
 }
 
 export interface DeviceValues {
@@ -134,6 +155,14 @@ export interface DeviceValues {
   page_count: number;
   resolved_at: number;
   values: DeviceValue[];
+}
+
+/** A reading the device resolved, as the editor needs it: the exact string it will draw plus,
+ *  when that string is a number's plain rendering, the number itself so the app can re-format it. */
+export interface LiveValue {
+  text: string;
+  /** Present only when the device reported `rendered_number`; `value` is then the raw reading. */
+  value?: number;
 }
 
 /**
@@ -156,13 +185,22 @@ export interface DeviceValues {
 export async function getValuesInfo(
   opts: DeviceOptions = {},
   page?: number,
-): Promise<{ page: number; drawnPage: number; pageCount: number; values: Record<string, string> } | null> {
+): Promise<{ page: number; drawnPage: number; pageCount: number; values: Record<string, LiveValue> } | null> {
   const q = page === undefined ? '' : `?page=${encodeURIComponent(String(page))}`;
   const res = await jsonCall<DeviceValues>(`/api/values${q}`, { method: 'GET', cache: 'no-store' }, opts);
   if (!res.ok) return null;
-  const values: Record<string, string> = {};
+  const values: Record<string, LiveValue> = {};
   for (const v of res.value.values ?? []) {
-    if (typeof v.id === 'string' && typeof v.text === 'string') values[v.id] = v.text;
+    if (typeof v.id === 'string' && typeof v.text === 'string') {
+      values[v.id] = { text: v.text };
+      /* Carry the number with it ONLY when the device says the text is that number's rendering. A
+       * numeric value without the flag would have the editor re-format an alert word or a sensor
+       * state into a number the panel never shows. The flag arrives as a NUMBER (the firmware
+       * writes 1/0), so it is tested for truthiness rather than against `true`. */
+      if (v.rendered_number && typeof v.value === 'number' && Number.isFinite(v.value)) {
+        values[v.id] = { text: v.text, value: v.value };
+      }
+    }
   }
   return {
     page: res.value.page ?? 0,

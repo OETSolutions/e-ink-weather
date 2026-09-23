@@ -69,6 +69,24 @@ int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
                         char (*ids)[48], int n_ids, long now_unix,
                         datasrc_value_t *out_value, char *buf, size_t cap);
 
+/* As value_format_widget(), plus `*out_rendered_number` set to 1 ONLY when `buf` is the plain
+ * rendering of `out_value->value` (prefix + the formatted number + suffix).
+ *
+ * WHY THIS EXISTS. GET /api/values reports the raw reading so the editor can re-format a value
+ * after the user edits its decimals or affixes — otherwise the box keeps showing the string the
+ * device formatted with the OLD format until a save and a repaint (reported as "the editor doesn't
+ * show the updated values until you first save and refresh"). But only this function knows whether
+ * the drawn text really is that number: a firing alert replaces it with a level word, a text reading
+ * carries a condition or a sensor state, an icon binding carries the OWM code, and a failed fetch
+ * shows the widget's fallback. Re-formatting the reading in any of those cases would draw a number
+ * where the panel has a word, so the firmware reports which branch it took instead of letting the
+ * editor infer it from the string — an inference that cannot be made, since a fallback of "72.5" is
+ * indistinguishable from a reading of 72.5. */
+int value_format_widget_rendered(const layout_widget_t *w, const value_sources_t *src,
+                                 char (*ids)[48], int n_ids, long now_unix,
+                                 datasrc_value_t *out_value, int *out_rendered_number,
+                                 char *buf, size_t cap);
+
 /* The alert level a widget's rules raise for `value`. Returns ALERT_NONE when the widget has no
  * rules or the value is unavailable — a missing reading must never raise an alarm, which is the
  * rule alerts_eval_all() already enforces and this simply forwards. */

@@ -70,6 +70,22 @@ export interface Format {
   fallback?: string;
 }
 
+/**
+ * The longest prefix or suffix the DEVICE can store, in characters.
+ *
+ * WHY THIS IS MIRRORED HERE AND NOT JUST IN THE FIRMWARE: the device keeps a format's affixes in
+ * fixed arrays, and they used to hold only five characters — so a prefix of "layers " was cut to
+ * "layer" on the glass while the app's own preview (which has no such limit) showed "layers 0".
+ * The two disagreed silently, and the user only saw it by reading the panel.
+ *
+ * Bounding the field to what the device can store removes the disagreement at the source: the
+ * user cannot type something that will be trimmed. It matches widget_format_t.prefix/.suffix in
+ * lib/layout/include/widgets.h — if that grows, this must grow with it.
+ */
+export const MAX_AFFIX = 15;
+
+/** The longest fallback the device can store. Matches widget_format_t.fallback. */
+export const MAX_FALLBACK = 7;
 export interface Widget {
   id: string;
   x: number;

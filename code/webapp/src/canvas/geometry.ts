@@ -50,7 +50,12 @@ export function applyResize(wd: Widget, zone: Zone, _start: {x:number;y:number},
     y = wd.y + (wd.h - nh);
     h = nh;
   }
-  return { ...wd, x, y, w, h };
+  /* FLOORED, like clampToPanel and snap. `dx`/`dy` are fractional (they come from a pointer delta
+   * divided by a fractional display scale), so a west or north resize — the two that compute a new
+   * ORIGIN by subtracting, rather than just a new size — produced a fractional x or y. clampToPanel
+   * floors it again on the editor's path, but this function is exported and host-tested on its own,
+   * so it must not hand a fraction to any other caller either. */
+  return { ...wd, x: Math.floor(x), y: Math.floor(y), w: Math.floor(w), h: Math.floor(h) };
 }
 
 export interface DragOpts {
@@ -125,8 +130,14 @@ export function clampToPanel(r: Rect): Rect {
   let { x, y, w, h } = r;
   if (w > PANEL_W) w = PANEL_W;
   if (h > PANEL_H) h = PANEL_H;
-  x = Math.min(Math.max(0, x), PANEL_W - w);
-  y = Math.min(Math.max(0, y), PANEL_H - h);
+  /* FLOORED TO WHOLE PIXELS, for the same reason snap() rounds: a fractional y makes the renderer
+   * discard the box entirely, so a resize that produced one looked like it had deleted the value.
+   * This is the last stop for geometry on its way into the model, so flooring here means every
+   * stored box is integral whatever path produced it. */
+  w = Math.max(1, Math.floor(w));
+  h = Math.max(1, Math.floor(h));
+  x = Math.floor(Math.min(Math.max(0, x), PANEL_W - w));
+  y = Math.floor(Math.min(Math.max(0, y), PANEL_H - h));
   return { x, y, w, h };
 }
 
@@ -164,6 +175,21 @@ export function applyRuleDrag(originY: number, dy: number, grid: number): number
   return Math.min(PANEL_H - 1, Math.max(0, snapped));
 }
 
+/**
+ * Snap a value to a guide or the grid, ALWAYS RETURNING AN INTEGER.
+ *
+ * THE ROUNDING AT THE END IS NOT COSMETIC. The pointer delta this is fed is computed from a
+ * fractional display scale (the panel is 920 px wide and the fit scale is rarely 1:1), so `value`
+ * arrives fractional — and a guide is only integral if every widget's stored geometry is. Returning
+ * a fraction here put a fractional y into the widget, and a fractional y made the renderer drop
+ * every pixel of that box (see setPx). The value would vanish from the preview as the user dragged,
+ * which is the reported "values disappear depending on where you place them".
+ *
+ * The geometry MODEL is therefore integral by construction: every path that produces a widget,
+ * rule or label position ends here or at clampToPanel, and both now floor/round. That keeps a
+ * saved document clean — the device truncates to int anyway, so a fraction in the document was
+ * never meaningful, only a source of preview/panel disagreement.
+ */
 export function snap(value: number, grid: number, guides: number[]): number {
   const tol = Math.max(2, grid / 2);
   let best = value;
@@ -172,7 +198,7 @@ export function snap(value: number, grid: number, guides: number[]): number {
     const d = Math.abs(value - g);
     if (d < bestD) { bestD = d; best = g; }
   }
-  if (bestD <= tol) return best;
+  if (bestD <= tol) return Math.round(best);
   return Math.round(value / grid) * grid;
 }
 
@@ -224,7 +250,11 @@ export function applyLabelDrag(
   const m = measure(origin.text, origin.font);
   const rawX = origin.x + dx;
   const rawY = origin.y + dy;
-  const x = Math.min(Math.max(0, snap(rawX, grid, [0, PANEL_W])), Math.max(0, PANEL_W - m.w));
-  const y = Math.min(Math.max(0, snap(rawY, grid, [0, PANEL_H])), Math.max(0, PANEL_H - m.h));
+  /* FLOORED, like clampToPanel: a fractional label position would drop the heading from the
+   * preview for the same reason a fractional box drops its value. snap() already rounds, but the
+   * `PANEL_W - m.w` bound it is clamped against is fractional whenever the measured width is, so
+   * the result is floored here as the last step. */
+  const x = Math.floor(Math.min(Math.max(0, snap(rawX, grid, [0, PANEL_W])), Math.max(0, PANEL_W - m.w)));
+  const y = Math.floor(Math.min(Math.max(0, snap(rawY, grid, [0, PANEL_H])), Math.max(0, PANEL_H - m.h)));
   return { ...origin, x, y };
 }

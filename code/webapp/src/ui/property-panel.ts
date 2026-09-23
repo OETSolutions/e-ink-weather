@@ -13,7 +13,7 @@
  */
 
 import {
-  MAX_ALERT_RULES_PER_WIDGET,
+  MAX_ALERT_RULES_PER_WIDGET, MAX_AFFIX, MAX_FALLBACK,
   type AlertLevel, type AlertOp, type AlertRule, type DataBinding, type DataSourceKind,
   type Label, type Page, type Rule, type Selection, type Widget,
 } from '../model/config';
@@ -192,9 +192,18 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     return i;
   }
 
-  function textInput(value: string, onInput: (s: string) => void): HTMLInputElement {
+  /** A text field. `maxLen` caps what the DEVICE can store, so a field can never accept text the
+   *  firmware would silently trim — see MAX_AFFIX in model/config.ts for the defect that caused
+   *  this to matter ("layers " drawn as "layer0"). The cap is on the input as well as in the
+   *  handler so the browser stops the user at the limit rather than letting them type a string
+   *  that is then quietly shortened. */
+  function textInput(value: string, onInput: (s: string) => void, maxLen?: number): HTMLInputElement {
     const i = el('input', { type: 'text', value }) as HTMLInputElement;
-    i.addEventListener('input', () => onInput(i.value));
+    if (maxLen !== undefined) {
+      i.maxLength = maxLen;
+      i.title = `up to ${maxLen} characters`;
+    }
+    i.addEventListener('input', () => onInput(maxLen !== undefined ? i.value.slice(0, maxLen) : i.value));
     return i;
   }
 
@@ -442,9 +451,9 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     };
     fset.append(
       field('Decimals', numberInput(fmt.decimals ?? 1, (n) => { commit({ format: { ...fmt, decimals: n } }); refreshFmtHint(); }, 1)),
-      field('Prefix', textInput(fmt.prefix ?? '', (s) => { commit({ format: { ...fmt, prefix: s } }); refreshFmtHint(); })),
-      field('Suffix', textInput(fmt.suffix ?? '', (s) => { commit({ format: { ...fmt, suffix: s } }); refreshFmtHint(); })),
-      field('When unavailable', textInput(fmt.fallback ?? '--', (s) => { commit({ format: { ...fmt, fallback: s } }); refreshFmtHint(); })),
+      field('Prefix', textInput(fmt.prefix ?? '', (s) => { commit({ format: { ...fmt, prefix: s } }); refreshFmtHint(); }, MAX_AFFIX)),
+      field('Suffix', textInput(fmt.suffix ?? '', (s) => { commit({ format: { ...fmt, suffix: s } }); refreshFmtHint(); }, MAX_AFFIX)),
+      field('When unavailable', textInput(fmt.fallback ?? '--', (s) => { commit({ format: { ...fmt, fallback: s } }); refreshFmtHint(); }, MAX_FALLBACK)),
       fmtHint,
     );
     host.append(fset);

@@ -76,8 +76,17 @@ int api_values_json(const api_values_t *v, char *out, size_t outlen)
         char esc_tx[API_VALUES_TEXT_LEN * 6 + 8];
         if (json_escape(it->id, esc_id, sizeof(esc_id)) < 0) return -1;
         if (json_escape(it->text, esc_tx, sizeof(esc_tx)) < 0) return -1;
-        APPEND("%s{\"id\":\"%s\",\"text\":\"%s\",\"has_value\":%d}",
-               i ? "," : "", esc_id, esc_tx, it->has_value ? 1 : 0);
+        /* THE RAW READING, emitted so the editor can re-format it after a format edit without
+         * waiting for a save and a device repaint. `rendered_number` gates it: it is 1 only when
+         * `text` is the plain rendering of `value`, so the editor re-formats exactly the boxes
+         * where a re-format is what the panel would do and echoes `text` everywhere else (a word,
+         * an icon code, a fallback). %.17g is the shortest form that round-trips an IEEE-754
+         * double EXACTLY — a shorter precision would let the editor's digits differ from the
+         * device's by an ULP, the same class of divergence this endpoint exists to remove. */
+        APPEND("%s{\"id\":\"%s\",\"text\":\"%s\",\"has_value\":%d,\"rendered_number\":%d,"
+               "\"value\":%.17g}",
+               i ? "," : "", esc_id, esc_tx, it->has_value ? 1 : 0,
+               it->rendered_number ? 1 : 0, it->rendered_number ? it->value : 0.0);
     }
 
     APPEND("]}");

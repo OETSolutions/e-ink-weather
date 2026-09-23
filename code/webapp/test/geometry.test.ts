@@ -233,3 +233,61 @@ describe('label drag', () => {
     expect(m.w).toBeGreaterThan(920);   /* documents the case this guards */
   });
 });
+
+/* FRACTIONAL COORDINATES MUST NEVER REACH THE MODEL.
+ *
+ * The pointer delta comes from a fractional display scale (the fit scale is rarely 1:1), so every
+ * value entering these helpers is fractional. A fractional y in a widget made the renderer DROP
+ * that box entirely — setPx indexes `y * pitch`, and a non-integer index silently discards the
+ * store — so the value disappeared from the preview as soon as a box was resized. Reported as
+ * "the values disappear depending on where you place them".
+ *
+ * These pin the model side; bitmap.test.ts pins the primitive. */
+describe('geometry produces whole pixels', () => {
+  const o = { grid: 8, guidesX: [] as number[], guidesY: [] as number[] };
+
+  it('rounds a fractional drag to an integer', () => {
+    const r = applyDrag(w({ x: 40, y: 64, w: 360, h: 120 }), { x: 0, y: 0 }, 12.5, 7.25, o);
+    expect(Number.isInteger(r.x)).toBe(true);
+    expect(Number.isInteger(r.y)).toBe(true);
+    expect(Number.isInteger(r.w)).toBe(true);
+    expect(Number.isInteger(r.h)).toBe(true);
+  });
+
+  it('keeps a resize integral, including a west/north edge drag', () => {
+    const west = applyResize(w({ x: 100, y: 100, w: 200, h: 100 }), 'w', { x: 0, y: 0 }, -12.5, 0,
+                            { grid: 8, minW: 20, minH: 20 });
+    expect(Number.isInteger(west.x)).toBe(true);
+    expect(Number.isInteger(west.w)).toBe(true);
+    const north = applyResize(w({ x: 100, y: 100, w: 200, h: 100 }), 'n', { x: 0, y: 0 }, 0, -7.5,
+                              { grid: 8, minW: 20, minH: 20 });
+    expect(Number.isInteger(north.y)).toBe(true);
+    expect(Number.isInteger(north.h)).toBe(true);
+  });
+
+  it('clamps to whole pixels', () => {
+    const r = clampToPanel({ x: 900.7, y: 660.3, w: 200.9, h: 100.4 });
+    for (const v of [r.x, r.y, r.w, r.h]) expect(Number.isInteger(v)).toBe(true);
+    expect(r.x + r.w).toBeLessThanOrEqual(920);
+    expect(r.y + r.h).toBeLessThanOrEqual(680);
+  });
+
+  it('snaps to an integer even when a guide is fractional', () => {
+    /* A guide comes from another widget's edge, which is why this can be fractional in the first
+     * place — snapping to it must not import the fraction. */
+    expect(Number.isInteger(snap(100.4, 8, [100.6]))).toBe(true);
+    expect(Number.isInteger(snap(103.3, 8, []))).toBe(true);
+  });
+
+  it('keeps a dragged label integral', () => {
+    const lab: Label = { x: 40, y: 32, text: 'NOW', font: 20 };
+    const m = (text: string): { w: number; h: number } => ({ w: text.length * 11.7, h: 20.3 });
+    const r = applyLabelDrag(lab, 12.5, 7.25, 8, m);
+    expect(Number.isInteger(r.x)).toBe(true);
+    expect(Number.isInteger(r.y)).toBe(true);
+  });
+
+  it('moves a rule to a whole pixel', () => {
+    expect(Number.isInteger(applyRuleDrag(140, 12.5, 8))).toBe(true);
+  });
+});

@@ -129,4 +129,60 @@ describe('preview with device-resolved values (FR-27)', () => {
   it('gives a static widget no text even with a device value', () => {
     expect(previewTextWithLive({ id: 'w1', role: 'static' }, NaN, { w1: '58.0°F' })).toBe('');
   });
+
+  /* ---- re-formatting a live reading locally (the "editor doesn't show updated values" fix) ----
+   *
+   * The device formats `text` with the STORED decimals/prefix/suffix, so echoing it means a format
+   * edit shows nothing until the config is saved and the panel has redrawn — the reported symptom.
+   * When the device also reports the raw reading and flags that `text` is that number's rendering,
+   * the app re-formats locally and the new format appears at once.
+   */
+  it('re-formats a live reading with the EDITED format, without waiting for a save', () => {
+    const w = dyn({ format: { decimals: 0, suffix: '°F' } });
+    /* The device drew "72.5°F" with the old format (1 decimal, no prefix); the user has since set 0
+     * decimals. The box must show the new formatting immediately. */
+    expect(previewTextWithLive(w, NaN, { w1: { text: '72.5°F', value: 72.5 } })).toBe('72°F');
+  });
+
+  it('applies an edited prefix and suffix to the live reading', () => {
+    const w = dyn({ format: { decimals: 1, prefix: 'layers ', suffix: ' units' } });
+    expect(previewTextWithLive(w, NaN, { w1: { text: '0.5', value: 0.5 } })).toBe('layers 0.5 units');
+  });
+
+  /* THE DIGITS MUST BE printf's, NOT toFixed's. 72.5 at zero decimals is an exact tie: printf
+   * rounds half-to-EVEN and draws "72", while toFixed rounds half-away-from-zero and gives "73".
+   * The preview would then contradict the glass for an ordinary weather reading — the exact
+   * preview-is-a-confident-lie failure NFR-4 exists to prevent. */
+  it('rounds a tie the way the device does (half-to-even, not toFixed)', () => {
+    const w = dyn({ format: { decimals: 0 } });
+    expect(previewTextWithLive(w, NaN, { w1: { text: '72.5', value: 72.5 } })).toBe('72');
+    expect(previewTextWithLive(w, NaN, { w1: { text: '73.5', value: 73.5 } })).toBe('74');
+  });
+
+  /* A TEXT READING IS ECHOED, NEVER RE-FORMATTED. The device reports no `value` for one (a
+   * condition word, a binary sensor's "on"/"off"), and re-format would put a number over a word the
+   * panel shows. Same for an icon code and for an alert word, which is exactly why the device
+   * reports WHICH branch it took rather than letting the app infer it from the string. */
+  it('echoes a text reading rather than inventing a number', () => {
+    const w = dyn({ format: { decimals: 0, suffix: '°F' } });
+    expect(previewTextWithLive(w, NaN, { w1: { text: 'Clouds' } })).toBe('Clouds');
+    expect(previewTextWithLive(w, NaN, { w1: { text: 'off' } })).toBe('off');
+  });
+
+  /* A LIVE VALUE THAT HAPPENS TO BE ZERO MUST STILL ROUND-TRIP: `value: 0` is a real reading (0 °F
+   * is plausible weather), so a re-format gated on truthiness instead of presence would drop it. */
+  it('re-formats a zero reading', () => {
+    const w = dyn({ format: { decimals: 1, suffix: '°F' } });
+    expect(previewTextWithLive(w, NaN, { w1: { text: '0.0°F', value: 0 } })).toBe('0.0°F');
+    const w2 = dyn({ format: { decimals: 0, prefix: '[' } });
+    expect(previewTextWithLive(w2, NaN, { w1: { text: '0.0', value: 0 } })).toBe('[0');
+  });
+
+  /* An OLDER DEVICE, or a test, that supplies only the string: echo it. The re-format is an
+   * improvement, never a requirement — a device that does not report the raw reading must keep
+   * working exactly as before. */
+  it('echoes a bare string from a device that reports no raw reading', () => {
+    const w = dyn({ format: { decimals: 0, suffix: '°F' } });
+    expect(previewTextWithLive(w, NaN, { w1: '58.0°F' })).toBe('58.0°F');
+  });
 });

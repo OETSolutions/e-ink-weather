@@ -136,7 +136,21 @@ static struct page_values_s {
     int  valid;
     char ids[API_VALUES_MAX][API_VALUES_ID_LEN];
     char texts[API_VALUES_MAX][API_VALUES_TEXT_LEN];
-    int  has_value[API_VALUES_MAX];
+    /* char, NOT int, for the three per-field flags: this struct is allocated per page and there are
+     * up to 8 pages, so a needless 3 bytes each costs 3 x 24 x 8 = 576 bytes of heap in the
+     * many-page case — on a part where the heap is the binding constraint (see the allocation note
+     * above). A flag only needs to be non-zero. */
+    unsigned char has_value[API_VALUES_MAX];
+    unsigned char rendered_number[API_VALUES_MAX];
+    /* The RAW reading, so the endpoint can report it and the editor can re-format after a format
+     * edit without waiting for a save (see api_value_t). Recorded only when the rendered string IS
+     * this number's plain rendering — the caller decides that from the branch value_format_widget()
+     * took, because only that function knows whether an alert word, a text reading, an icon code or
+     * a fallback was drawn instead. A DOUBLE, not a float: the editor reproduces the device's digits
+     * via printf's exact rounding rule, and a float would round-trip the value with a different
+     * precision than the device held — reintroducing, in a new place, the preview/panel divergence
+     * that rule exists to remove. A double is exact for this. */
+    double value[API_VALUES_MAX];
 } *s_values;
 static int s_values_pages;        /* how many entries s_values holds; 0 = none */
 static int s_values_pages_count;  /* the config's page count, as last reported to the API */
@@ -171,8 +185,11 @@ void api_values_forget(void)
     unlock();
 }
 
-void api_record_values(const char (*ids)[24], const char (*texts)[40],
-                       const int *has_value, int count, int page, int page_count)
+void api_record_values(const char (*ids)[API_VALUES_ID_LEN],
+                       const char (*texts)[API_VALUES_TEXT_LEN],
+                       const int *has_value,
+                       const int *rendered_number, const double *values,
+                       int count, int page, int page_count)
 {
     if (!ids || !texts || !has_value || count < 0) return;
 
@@ -186,6 +203,12 @@ void api_record_values(const char (*ids)[24], const char (*texts)[40],
         strncpy(pv->texts[i], texts[i], API_VALUES_TEXT_LEN - 1);
         pv->texts[i][API_VALUES_TEXT_LEN - 1] = '\0';
         pv->has_value[i] = has_value[i] ? 1 : 0;
+        /* The raw reading is OPTIONAL at the call site: a caller that has only strings records them
+         * and the endpoint reports rendered_number=0, so the editor echoes the string rather than
+         * formatting an invented 0.0 as if it were a real temperature. `values` is only dereferenced
+         * when `rendered_number` says the number is the thing that was drawn. */
+        pv->rendered_number[i] = (rendered_number && values && rendered_number[i]) ? 1 : 0;
+        pv->value[i] = pv->rendered_number[i] ? values[i] : 0.0;
     }
     pv->count = n;
     pv->resolved_at = (long)(esp_timer_get_time() / 1000000LL);
@@ -650,7 +673,22 @@ static esp_err_t h_status(httpd_req_t *req)
  * not drawn yet" is a real answer to it. A 404 would read as a missing endpoint. */
 static esp_err_t h_values(httpd_req_t *req)
 {
-    static char out[2048];
+    /* SIZED FROM THE FORMAT, NOT FROM A GUESS. This was a `static char out[2048]`, and a full page
+     * of 24 widgets had already outgrown it (~2.5 KB) before the raw reading was added — a page at
+     * the cap would have been answered 500 instead of with its values. It went unnoticed only
+     * because real pages bind far fewer widgets than the cap allows, so the failure was latent, not
+     * absent. See API_VALUES_JSON_MAX for why the bound is sized for plausible input.
+     *
+     * A heap block rather than a static one because a static array of this size lands in .bss, and
+     * .bss is DRAM the heap never gets (see feedback_bss_is_dram_not_free): ~3 KB of static here
+     * would shrink the largest free region, and the render path needs one region of 78,200 bytes to
+     * hold the static layer. Paying 3 KB of the heap for the duration of one request, instead of
+     * 3 KB of DRAM permanently, is the right side of that trade.
+     *
+     * Allocated BEFORE the lock: malloc can take a while when the heap is fragmented, and holding
+     * the values lock across it would stall the refresh task that publishes into the store. */
+    char *out = malloc(API_VALUES_JSON_MAX);
+    if (!out) return api_send_err(req, "500 Internal Server Error", "oom");
 
     api_value_t items[API_VALUES_MAX];
     api_values_t v;
@@ -683,6 +721,12 @@ static esp_err_t h_values(httpd_req_t *req)
             items[i].id = pv->ids[i];
             items[i].text = pv->texts[i];
             items[i].has_value = pv->has_value[i];
+            /* The raw reading travels with the string so the editor can re-format it locally, and
+             * `rendered_number` says whether that is what the panel did. The two are gated together:
+             * a number reported as rendered when the glass actually carries a word would have the
+             * editor draw a temperature over an alert. */
+            items[i].rendered_number = pv->rendered_number[i];
+            items[i].value = pv->value[i];
         }
     } else if (want < 0 || want >= pages) {
         /* The request is for a page this device does not have. Report page 0's values so the
@@ -698,11 +742,14 @@ static esp_err_t h_values(httpd_req_t *req)
     v.resolved_at = resolved_at;
     unlock();
 
-    const int len = api_values_json(&v, out, sizeof(out));
+    const int len = api_values_json(&v, out, API_VALUES_JSON_MAX);
     if (len < 0) {
+        free(out);
         return api_send_err(req, "500 Internal Server Error", "values buffer too small");
     }
-    return api_send_json(req, out, "200 OK");
+    const esp_err_t e = api_send_json(req, out, "200 OK");
+    free(out);
+    return e;
 }
 
 /* ------------------------------------------------------------------ GET/PUT /config -- */

@@ -188,10 +188,19 @@ alert_level_t value_widget_alert_level(const layout_widget_t *w, const datasrc_v
     return alerts_eval_all(w->rules, w->n_rules, v->value);
 }
 
-int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
-                        char (*ids)[48], int n_ids, long now_unix,
-                        datasrc_value_t *out_value, char *buf, size_t cap)
+/* The one implementation, so "what text does this widget draw" and "was that text the plain
+ * rendering of its reading" can never be answered by two diverging code paths.
+ *
+ * `out_number`, when non-NULL, is set to 1 ONLY on the branch that draws the formatted number
+ * itself — i.e. exactly when buf is prefix + "%.*f" + suffix. Every other branch that returns 1
+ * (an alert word, an icon code, a text reading) sets it to 0, because the editor re-formats a
+ * reading locally and would otherwise draw a number where the panel has a word. */
+static int format_widget_impl(const layout_widget_t *w, const value_sources_t *src,
+                              char (*ids)[48], int n_ids, long now_unix,
+                              datasrc_value_t *out_value, char *buf, size_t cap,
+                              int *out_number)
 {
+    if (out_number) *out_number = 0;
     if (!w || !buf || cap == 0) return 0;
     buf[0] = '\0';
 
@@ -252,5 +261,23 @@ int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
     char body[64];
     snprintf(body, sizeof(body), "%.*f", decimals, v.value);
     snprintf(buf, cap, "%s%s%s", w->format.prefix, body, w->format.suffix);
+    /* THE ONLY BRANCH THAT DRAWS THE NUMBER, which is what makes the out-param meaningful rather
+     * than a guess at the call site. */
+    if (out_number) *out_number = 1;
     return 1;
+}
+
+int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
+                        char (*ids)[48], int n_ids, long now_unix,
+                        datasrc_value_t *out_value, char *buf, size_t cap)
+{
+    return format_widget_impl(w, src, ids, n_ids, now_unix, out_value, buf, cap, NULL);
+}
+
+int value_format_widget_rendered(const layout_widget_t *w, const value_sources_t *src,
+                                 char (*ids)[48], int n_ids, long now_unix,
+                                 datasrc_value_t *out_value, int *out_rendered_number,
+                                 char *buf, size_t cap)
+{
+    return format_widget_impl(w, src, ids, n_ids, now_unix, out_value, buf, cap, out_rendered_number);
 }

@@ -1,0 +1,2564 @@
+[
+ {
+  "value": 0,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 0,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 0,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 0,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0000"
+ },
+ {
+  "value": 0,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00000"
+ },
+ {
+  "value": 0,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000000"
+ },
+ {
+  "value": 0,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-0"
+ },
+ {
+  "value": 0,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.0"
+ },
+ {
+  "value": 0,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.00"
+ },
+ {
+  "value": 0,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.000"
+ },
+ {
+  "value": 0,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.0000"
+ },
+ {
+  "value": 0,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.00000"
+ },
+ {
+  "value": 0,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.000000"
+ },
+ {
+  "value": 0.5,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.5,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.5"
+ },
+ {
+  "value": 0.5,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.50"
+ },
+ {
+  "value": 0.5,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.500"
+ },
+ {
+  "value": 0.5,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.5000"
+ },
+ {
+  "value": 0.5,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.50000"
+ },
+ {
+  "value": 0.5,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.500000"
+ },
+ {
+  "value": 1.5,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "2"
+ },
+ {
+  "value": 1.5,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "1.5"
+ },
+ {
+  "value": 1.5,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "1.50"
+ },
+ {
+  "value": 1.5,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "1.500"
+ },
+ {
+  "value": 1.5,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "1.5000"
+ },
+ {
+  "value": 1.5,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "1.50000"
+ },
+ {
+  "value": 1.5,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "1.500000"
+ },
+ {
+  "value": 2.5,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "2"
+ },
+ {
+  "value": 2.5,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "2.5"
+ },
+ {
+  "value": 2.5,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "2.50"
+ },
+ {
+  "value": 2.5,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "2.500"
+ },
+ {
+  "value": 2.5,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "2.5000"
+ },
+ {
+  "value": 2.5,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "2.50000"
+ },
+ {
+  "value": 2.5,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "2.500000"
+ },
+ {
+  "value": 3.5,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "4"
+ },
+ {
+  "value": 3.5,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "3.5"
+ },
+ {
+  "value": 3.5,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "3.50"
+ },
+ {
+  "value": 3.5,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "3.500"
+ },
+ {
+  "value": 3.5,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "3.5000"
+ },
+ {
+  "value": 3.5,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "3.50000"
+ },
+ {
+  "value": 3.5,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "3.500000"
+ },
+ {
+  "value": -0.5,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-0"
+ },
+ {
+  "value": -0.5,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.5"
+ },
+ {
+  "value": -0.5,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.50"
+ },
+ {
+  "value": -0.5,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.500"
+ },
+ {
+  "value": -0.5,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.5000"
+ },
+ {
+  "value": -0.5,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.50000"
+ },
+ {
+  "value": -0.5,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.500000"
+ },
+ {
+  "value": -1.5,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-2"
+ },
+ {
+  "value": -1.5,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-1.5"
+ },
+ {
+  "value": -1.5,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-1.50"
+ },
+ {
+  "value": -1.5,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-1.500"
+ },
+ {
+  "value": -1.5,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-1.5000"
+ },
+ {
+  "value": -1.5,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-1.50000"
+ },
+ {
+  "value": -1.5,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-1.500000"
+ },
+ {
+  "value": -2.5,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-2"
+ },
+ {
+  "value": -2.5,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-2.5"
+ },
+ {
+  "value": -2.5,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-2.50"
+ },
+ {
+  "value": -2.5,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-2.500"
+ },
+ {
+  "value": -2.5,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-2.5000"
+ },
+ {
+  "value": -2.5,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-2.50000"
+ },
+ {
+  "value": -2.5,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-2.500000"
+ },
+ {
+  "value": -72.5,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-72"
+ },
+ {
+  "value": -72.5,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-72.5"
+ },
+ {
+  "value": -72.5,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-72.50"
+ },
+ {
+  "value": -72.5,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-72.500"
+ },
+ {
+  "value": -72.5,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-72.5000"
+ },
+ {
+  "value": -72.5,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-72.50000"
+ },
+ {
+  "value": -72.5,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-72.500000"
+ },
+ {
+  "value": 72.5,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "72"
+ },
+ {
+  "value": 72.5,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "72.5"
+ },
+ {
+  "value": 72.5,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "72.50"
+ },
+ {
+  "value": 72.5,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "72.500"
+ },
+ {
+  "value": 72.5,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "72.5000"
+ },
+ {
+  "value": 72.5,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "72.50000"
+ },
+ {
+  "value": 72.5,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "72.500000"
+ },
+ {
+  "value": 0.05,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.05,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.1"
+ },
+ {
+  "value": 0.05,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.05"
+ },
+ {
+  "value": 0.05,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.050"
+ },
+ {
+  "value": 0.05,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0500"
+ },
+ {
+  "value": 0.05,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.05000"
+ },
+ {
+  "value": 0.05,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.050000"
+ },
+ {
+  "value": 0.15,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.15,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.1"
+ },
+ {
+  "value": 0.15,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.15"
+ },
+ {
+  "value": 0.15,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.150"
+ },
+ {
+  "value": 0.15,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.1500"
+ },
+ {
+  "value": 0.15,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.15000"
+ },
+ {
+  "value": 0.15,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.150000"
+ },
+ {
+  "value": 0.25,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.25,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.2"
+ },
+ {
+  "value": 0.25,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.25"
+ },
+ {
+  "value": 0.25,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.250"
+ },
+ {
+  "value": 0.25,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.2500"
+ },
+ {
+  "value": 0.25,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.25000"
+ },
+ {
+  "value": 0.25,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.250000"
+ },
+ {
+  "value": 0.35,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.35,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.3"
+ },
+ {
+  "value": 0.35,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.35"
+ },
+ {
+  "value": 0.35,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.350"
+ },
+ {
+  "value": 0.35,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.3500"
+ },
+ {
+  "value": 0.35,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.35000"
+ },
+ {
+  "value": 0.35,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.350000"
+ },
+ {
+  "value": -0.05,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-0"
+ },
+ {
+  "value": -0.05,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.1"
+ },
+ {
+  "value": -0.05,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.05"
+ },
+ {
+  "value": -0.05,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.050"
+ },
+ {
+  "value": -0.05,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.0500"
+ },
+ {
+  "value": -0.05,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.05000"
+ },
+ {
+  "value": -0.05,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.050000"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.001"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0005"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00050"
+ },
+ {
+  "value": 0.0005,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000500"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000000"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-0"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.0"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.00"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.000"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.0004"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.00040"
+ },
+ {
+  "value": -0.0004,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.000400"
+ },
+ {
+  "value": 68.44,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "68"
+ },
+ {
+  "value": 68.44,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "68.4"
+ },
+ {
+  "value": 68.44,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "68.44"
+ },
+ {
+  "value": 68.44,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "68.440"
+ },
+ {
+  "value": 68.44,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "68.4400"
+ },
+ {
+  "value": 68.44,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "68.44000"
+ },
+ {
+  "value": 68.44,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "68.440000"
+ },
+ {
+  "value": 68.45,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "68"
+ },
+ {
+  "value": 68.45,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "68.5"
+ },
+ {
+  "value": 68.45,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "68.45"
+ },
+ {
+  "value": 68.45,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "68.450"
+ },
+ {
+  "value": 68.45,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "68.4500"
+ },
+ {
+  "value": 68.45,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "68.45000"
+ },
+ {
+  "value": 68.45,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "68.450000"
+ },
+ {
+  "value": 68.55,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "69"
+ },
+ {
+  "value": 68.55,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "68.5"
+ },
+ {
+  "value": 68.55,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "68.55"
+ },
+ {
+  "value": 68.55,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "68.550"
+ },
+ {
+  "value": 68.55,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "68.5500"
+ },
+ {
+  "value": 68.55,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "68.55000"
+ },
+ {
+  "value": 68.55,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "68.550000"
+ },
+ {
+  "value": 72.55,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "73"
+ },
+ {
+  "value": 72.55,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "72.5"
+ },
+ {
+  "value": 72.55,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "72.55"
+ },
+ {
+  "value": 72.55,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "72.550"
+ },
+ {
+  "value": 72.55,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "72.5500"
+ },
+ {
+  "value": 72.55,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "72.55000"
+ },
+ {
+  "value": 72.55,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "72.550000"
+ },
+ {
+  "value": 72.65,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "73"
+ },
+ {
+  "value": 72.65,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "72.7"
+ },
+ {
+  "value": 72.65,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "72.65"
+ },
+ {
+  "value": 72.65,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "72.650"
+ },
+ {
+  "value": 72.65,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "72.6500"
+ },
+ {
+  "value": 72.65,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "72.65000"
+ },
+ {
+  "value": 72.65,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "72.650000"
+ },
+ {
+  "value": 12.345,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "12"
+ },
+ {
+  "value": 12.345,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "12.3"
+ },
+ {
+  "value": 12.345,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "12.35"
+ },
+ {
+  "value": 12.345,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "12.345"
+ },
+ {
+  "value": 12.345,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "12.3450"
+ },
+ {
+  "value": 12.345,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "12.34500"
+ },
+ {
+  "value": 12.345,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "12.345000"
+ },
+ {
+  "value": 99.995,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "100"
+ },
+ {
+  "value": 99.995,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "100.0"
+ },
+ {
+  "value": 99.995,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "100.00"
+ },
+ {
+  "value": 99.995,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "99.995"
+ },
+ {
+  "value": 99.995,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "99.9950"
+ },
+ {
+  "value": 99.995,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "99.99500"
+ },
+ {
+  "value": 99.995,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "99.995000"
+ },
+ {
+  "value": 100.005,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "100"
+ },
+ {
+  "value": 100.005,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "100.0"
+ },
+ {
+  "value": 100.005,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "100.00"
+ },
+ {
+  "value": 100.005,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "100.005"
+ },
+ {
+  "value": 100.005,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "100.0050"
+ },
+ {
+  "value": 100.005,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "100.00500"
+ },
+ {
+  "value": 100.005,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "100.005000"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "1235"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "1234.6"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "1234.57"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "1234.568"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "1234.5678"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "1234.56780"
+ },
+ {
+  "value": 1234.5678,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "1234.567800"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-12"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-12.3"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-12.35"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-12.346"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-12.3456"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-12.34560"
+ },
+ {
+  "value": -12.3456,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-12.345600"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "33"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "33.3"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "33.33"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "33.333"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "33.3333"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "33.33333"
+ },
+ {
+  "value": 33.333333,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "33.333333"
+ },
+ {
+  "value": 1.005,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "1"
+ },
+ {
+  "value": 1.005,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "1.0"
+ },
+ {
+  "value": 1.005,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "1.00"
+ },
+ {
+  "value": 1.005,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "1.005"
+ },
+ {
+  "value": 1.005,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "1.0050"
+ },
+ {
+  "value": 1.005,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "1.00500"
+ },
+ {
+  "value": 1.005,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "1.005000"
+ },
+ {
+  "value": 2.675,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "3"
+ },
+ {
+  "value": 2.675,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "2.7"
+ },
+ {
+  "value": 2.675,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "2.67"
+ },
+ {
+  "value": 2.675,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "2.675"
+ },
+ {
+  "value": 2.675,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "2.6750"
+ },
+ {
+  "value": 2.675,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "2.67500"
+ },
+ {
+  "value": 2.675,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "2.675000"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.3"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.30"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.300"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.3000"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.30000"
+ },
+ {
+  "value": 0.30000000000000004,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.300000"
+ },
+ {
+  "value": 0.01,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.01,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 0.01,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.01"
+ },
+ {
+  "value": 0.01,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.010"
+ },
+ {
+  "value": 0.01,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0100"
+ },
+ {
+  "value": 0.01,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.01000"
+ },
+ {
+  "value": 0.01,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.010000"
+ },
+ {
+  "value": 0.001,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.001,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 0.001,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 0.001,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.001"
+ },
+ {
+  "value": 0.001,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0010"
+ },
+ {
+  "value": 0.001,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00100"
+ },
+ {
+  "value": 0.001,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.001000"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0001"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00010"
+ },
+ {
+  "value": 0.0001,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000100"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0000"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00001"
+ },
+ {
+  "value": 1e-05,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000010"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0000"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00000"
+ },
+ {
+  "value": 1e-06,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000001"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.0"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.00"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.0000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.00000"
+ },
+ {
+  "value": 1e-07,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.000000"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-0"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.0"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.00"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.000"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.0000"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.00000"
+ },
+ {
+  "value": -1e-07,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.000000"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "1000000"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "1000000.0"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "1000000.00"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "1000000.000"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "999999.9999"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "999999.99990"
+ },
+ {
+  "value": 999999.9999,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "999999.999900"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "1"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "1.0"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "1.00"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "1.000"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "1.0000"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.99999"
+ },
+ {
+  "value": 0.99999,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.999990"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "2"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "2.0"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "2.00"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "2.000"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "2.0000"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "1.99999"
+ },
+ {
+  "value": 1.99999,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "1.999990"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "123457"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "123456.8"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "123456.79"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "123456.789"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "123456.7890"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "123456.78900"
+ },
+ {
+  "value": 123456.789,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "123456.789000"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "12346"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "12345.7"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "12345.68"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "12345.679"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "12345.6789"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "12345.67890"
+ },
+ {
+  "value": 12345.6789,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "12345.678900"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "98765"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "98765.4"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "98765.43"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "98765.432"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "98765.4321"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "98765.43210"
+ },
+ {
+  "value": 98765.4321,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "98765.432100"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.1"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.12"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.123"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.1235"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.12346"
+ },
+ {
+  "value": 0.123456,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.123456"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "1"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.7"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.65"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.654"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.6543"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.65432"
+ },
+ {
+  "value": 0.654321,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.654321"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-1"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-0.7"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-0.65"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-0.654"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-0.6543"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-0.65432"
+ },
+ {
+  "value": -0.654321,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-0.654321"
+ },
+ {
+  "value": 32,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "32"
+ },
+ {
+  "value": 32,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "32.0"
+ },
+ {
+  "value": 32,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "32.00"
+ },
+ {
+  "value": 32,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "32.000"
+ },
+ {
+  "value": 32,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "32.0000"
+ },
+ {
+  "value": 32,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "32.00000"
+ },
+ {
+  "value": 32,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "32.000000"
+ },
+ {
+  "value": 32.05,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "32"
+ },
+ {
+  "value": 32.05,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "32.0"
+ },
+ {
+  "value": 32.05,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "32.05"
+ },
+ {
+  "value": 32.05,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "32.050"
+ },
+ {
+  "value": 32.05,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "32.0500"
+ },
+ {
+  "value": 32.05,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "32.05000"
+ },
+ {
+  "value": 32.05,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "32.050000"
+ },
+ {
+  "value": 212,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "212"
+ },
+ {
+  "value": 212,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "212.0"
+ },
+ {
+  "value": 212,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "212.00"
+ },
+ {
+  "value": 212,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "212.000"
+ },
+ {
+  "value": 212,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "212.0000"
+ },
+ {
+  "value": 212,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "212.00000"
+ },
+ {
+  "value": 212,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "212.000000"
+ },
+ {
+  "value": 98.6,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "99"
+ },
+ {
+  "value": 98.6,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "98.6"
+ },
+ {
+  "value": 98.6,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "98.60"
+ },
+ {
+  "value": 98.6,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "98.600"
+ },
+ {
+  "value": 98.6,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "98.6000"
+ },
+ {
+  "value": 98.6,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "98.60000"
+ },
+ {
+  "value": 98.6,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "98.600000"
+ },
+ {
+  "value": 37,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "37"
+ },
+ {
+  "value": 37,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "37.0"
+ },
+ {
+  "value": 37,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "37.00"
+ },
+ {
+  "value": 37,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "37.000"
+ },
+ {
+  "value": 37,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "37.0000"
+ },
+ {
+  "value": 37,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "37.00000"
+ },
+ {
+  "value": 37,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "37.000000"
+ },
+ {
+  "value": -40,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-40"
+ },
+ {
+  "value": -40,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-40.0"
+ },
+ {
+  "value": -40,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-40.00"
+ },
+ {
+  "value": -40,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-40.000"
+ },
+ {
+  "value": -40,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-40.0000"
+ },
+ {
+  "value": -40,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-40.00000"
+ },
+ {
+  "value": -40,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-40.000000"
+ },
+ {
+  "value": -40.05,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-40"
+ },
+ {
+  "value": -40.05,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-40.0"
+ },
+ {
+  "value": -40.05,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-40.05"
+ },
+ {
+  "value": -40.05,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-40.050"
+ },
+ {
+  "value": -40.05,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-40.0500"
+ },
+ {
+  "value": -40.05,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-40.05000"
+ },
+ {
+  "value": -40.05,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-40.050000"
+ },
+ {
+  "value": -1,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-1"
+ },
+ {
+  "value": -1,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-1.0"
+ },
+ {
+  "value": -1,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-1.00"
+ },
+ {
+  "value": -1,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-1.000"
+ },
+ {
+  "value": -1,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-1.0000"
+ },
+ {
+  "value": -1,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-1.00000"
+ },
+ {
+  "value": -1,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-1.000000"
+ },
+ {
+  "value": -1.4,
+  "decimals": 0,
+  "negzero": 1,
+  "out": "-1"
+ },
+ {
+  "value": -1.4,
+  "decimals": 1,
+  "negzero": 1,
+  "out": "-1.4"
+ },
+ {
+  "value": -1.4,
+  "decimals": 2,
+  "negzero": 1,
+  "out": "-1.40"
+ },
+ {
+  "value": -1.4,
+  "decimals": 3,
+  "negzero": 1,
+  "out": "-1.400"
+ },
+ {
+  "value": -1.4,
+  "decimals": 4,
+  "negzero": 1,
+  "out": "-1.4000"
+ },
+ {
+  "value": -1.4,
+  "decimals": 5,
+  "negzero": 1,
+  "out": "-1.40000"
+ },
+ {
+  "value": -1.4,
+  "decimals": 6,
+  "negzero": 1,
+  "out": "-1.400000"
+ },
+ {
+  "value": 0.1,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.1,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.1"
+ },
+ {
+  "value": 0.1,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.10"
+ },
+ {
+  "value": 0.1,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.100"
+ },
+ {
+  "value": 0.1,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.1000"
+ },
+ {
+  "value": 0.1,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.10000"
+ },
+ {
+  "value": 0.1,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.100000"
+ },
+ {
+  "value": 0.2,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.2,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.2"
+ },
+ {
+  "value": 0.2,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.20"
+ },
+ {
+  "value": 0.2,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.200"
+ },
+ {
+  "value": 0.2,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.2000"
+ },
+ {
+  "value": 0.2,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.20000"
+ },
+ {
+  "value": 0.2,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.200000"
+ },
+ {
+  "value": 0.3,
+  "decimals": 0,
+  "negzero": 0,
+  "out": "0"
+ },
+ {
+  "value": 0.3,
+  "decimals": 1,
+  "negzero": 0,
+  "out": "0.3"
+ },
+ {
+  "value": 0.3,
+  "decimals": 2,
+  "negzero": 0,
+  "out": "0.30"
+ },
+ {
+  "value": 0.3,
+  "decimals": 3,
+  "negzero": 0,
+  "out": "0.300"
+ },
+ {
+  "value": 0.3,
+  "decimals": 4,
+  "negzero": 0,
+  "out": "0.3000"
+ },
+ {
+  "value": 0.3,
+  "decimals": 5,
+  "negzero": 0,
+  "out": "0.30000"
+ },
+ {
+  "value": 0.3,
+  "decimals": 6,
+  "negzero": 0,
+  "out": "0.300000"
+ }
+]
