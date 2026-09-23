@@ -211,10 +211,15 @@ int api_take_page(void)
     return was;
 }
 
-void api_clear_page(void)
+void api_clear_page(int page)
 {
     lock();
-    s_pending_page = -1;
+    /* CLEAR ONLY IF THE REQUEST IS STILL THE ONE THAT WAS HONOURED. A render takes seconds, and a
+     * second "show this page" arriving during it overwrites s_pending_page — clearing
+     * unconditionally would then DISCARD that newer request and leave the user's second click with
+     * no effect. Comparing against the honoured page leaves a newer request pending for the next
+     * tick, which is what the user asked for. */
+    if (s_pending_page == page) s_pending_page = -1;
     unlock();
 }
 

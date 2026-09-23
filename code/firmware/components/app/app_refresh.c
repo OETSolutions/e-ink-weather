@@ -1322,7 +1322,7 @@ void app_refresh_tick(power_source_t source, int force_full)
              * adds pages, a request that silently took effect then would be a page change nobody
              * asked for at that moment. When the config could NOT be parsed the request is kept,
              * because the page count is then a default and the request may still be valid. */
-            api_clear_page();
+            api_clear_page(page_want);
         }
     }
 
@@ -1702,8 +1702,9 @@ void app_refresh_tick(power_source_t source, int force_full)
     api_record_page(page_index);
     /* The frame is on the glass, so a page override that produced THIS frame has been honoured and
      * can be cleared. It is deliberately cleared here and not when it was read, so a tick that
-     * failed to draw (and returned early above) leaves the request pending for the retry. */
-    if (page_forced) api_clear_page();
+     * failed to draw (and returned early above) leaves the request pending for the retry. The
+     * honoured page is passed so a request that arrived mid-render survives. */
+    if (page_forced) api_clear_page(page_index);
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              actual_partial ? "partial" : "full",
              page_index, page.n_fields);

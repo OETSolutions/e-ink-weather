@@ -62,8 +62,9 @@ int api_take_full_refresh(void);
  * effect — they would then wait a rotation for the page they explicitly asked for. */
 void api_request_page(int page);
 int api_take_page(void);
-/* Clear a page request once a frame carrying it has been rendered. */
-void api_clear_page(void);
+/* Clear a page request once a frame carrying `page` has been rendered. Takes the page that was
+ * honoured so a NEWER request arriving mid-render is not discarded — see the definition. */
+void api_clear_page(int page);
 
 /* Record an error for /api/status's `errors` array, newest first (FR-33). Bounded ring, so
  * a device stuck in an error loop cannot grow this without limit. */
