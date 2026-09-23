@@ -87,16 +87,21 @@ describe('choosing a size that fits', () => {
 });
 
 describe('font size for a chosen box', () => {
-  it('never picks a face whose line height exceeds the box', () => {
+  it('never picks a face whose DRAWN line height exceeds the box', () => {
     /* THE BUG THIS PREVENTS: Add box used a fixed 64 px font, but the step-down can leave a
      * 72 px-tall gap — and the 64 px face's line height is 78, so its numeral is CLIPPED. The
      * user sees a chopped glyph in a box they did not choose the size of, which reads as a
-     * rendering fault. */
-    for (const h of [96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 20, 16]) {
+     * rendering fault.
+     *
+     * THE DRAWN HEIGHT, not the base: an upscaled face reports its BASE's line height and a
+     * block-scale factor, and draws at base * k. Checking the base figure would pass a 512 px
+     * face into a 200 px box — clipping the very glyph this rule exists to keep whole. */
+    for (const h of [620, 512, 310, 200, 156, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 20, 16]) {
       const px = fontSizeForBox(h);
       const face = FACES[FACE_PX.indexOf(px)]!;
+      const drawn = face.lineHeight * (face.upscale >= 1 ? face.upscale : 1);
       if (px > FACE_PX[0]!) {
-        expect(face.lineHeight, `box ${h} chose ${px}px whose line height is ${face.lineHeight}`)
+        expect(drawn, `box ${h} chose ${px}px whose drawn line height is ${drawn}`)
           .toBeLessThanOrEqual(h);
       }
     }
