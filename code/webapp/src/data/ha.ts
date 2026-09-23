@@ -130,3 +130,55 @@ export async function deviceHaConfig(): Promise<Partial<HaConfig>> {
     return {};
   }
 }
+
+/**
+ * Search the device's Home Assistant for entities, THROUGH the device (FR-23).
+ *
+ * WHY THIS REPLACES A BROWSER-SIDE /api/states CALL: Home Assistant sends no CORS headers, so
+ * the browser's own request is blocked before it leaves — verified against the bench instance,
+ * where even a valid token produced "blocked by CORS policy" and left the picker empty, which
+ * the user reads as "my HA has no entities". The display, by contrast, holds the HA URL and
+ * token and reaches HA on every refresh, so it can answer the search for a browser that cannot.
+ *
+ * The device validates the term strictly (it is interpolated into a server-side Jinja template),
+ * so a term outside HA's entity-id character set is refused there with an explanation.
+ */
+export async function searchEntities(
+  q: string,
+  timeoutMs = 12000,
+): Promise<{ ok: true; entities: { entityId: string; friendlyName?: string }[]; truncated: boolean }
+          | { ok: false; error: string }> {
+  const term = q.trim();
+  if (!term) return { ok: false, error: 'Type part of an entity id to search.' };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${API}/api/ha/entities?q=${encodeURIComponent(term)}`, {
+      cache: 'no-store', signal: ac.signal,
+    });
+    clearTimeout(timer);
+    const text = await r.text().catch(() => '');
+    if (!r.ok) {
+      let msg = text;
+      try { const j = JSON.parse(text) as { error?: string }; if (j.error) msg = j.error; } catch { /* raw */ }
+      return { ok: false, error: msg || `HTTP ${r.status}` };
+    }
+    const body = JSON.parse(text) as {
+      entities?: { entity_id?: string; friendly_name?: string }[];
+      truncated?: boolean;
+    };
+    const entities = (body.entities ?? [])
+      .filter((e) => typeof e.entity_id === 'string')
+      .map((e) => ({ entityId: e.entity_id as string, friendlyName: e.friendly_name }));
+    return { ok: true, entities, truncated: !!body.truncated };
+  } catch (e) {
+    clearTimeout(timer);
+    const msg = e instanceof Error ? e.message : 'request failed';
+    return {
+      ok: false,
+      error: /abort/i.test(msg)
+        ? `The display did not answer the search within ${timeoutMs / 1000}s`
+        : `Could not reach the display to search Home Assistant (${msg})`,
+    };
+  }
+}

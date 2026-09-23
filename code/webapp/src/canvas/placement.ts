@@ -8,7 +8,7 @@
  * lives in a host-tested function rather than in a DOM event handler.
  */
 
-import type { Widget } from '../model/config';
+import type { Rule, Widget } from '../model/config';
 import { PANEL_W, PANEL_H } from './geometry';
 import { FACES, FACE_PX } from './atlas-data';
 
@@ -20,9 +20,34 @@ export interface Box { x: number; y: number; w: number; h: number }
 const STEP = 40;
 
 /**
- * The first origin at which a `w`x`h` box fits without OVERLAPPING any existing box, or null
- * when the page has no room. `margin` keeps the box off the panel edge, where it would be hard
- * to grab and would sit under the bezel on the glass.
+ * Does a box at (x,y,w,h) cross a divider?
+ *
+ * A RULE IS A HORIZONTAL LINE, not a box, so a rectangle-overlap test is wrong: it would treat the
+ * rule's zero height as never colliding and place a value box straight across the line. That is
+ * exactly the "stray underline through a reading" the default layout's own notes call a bug, and it
+ * is what a new box landed on when placement ignored rules. The rule spans x=inset..PANEL_W-inset;
+ * the collision is a vertical crossing (the line's y within the box, plus thickness) AND a
+ * horizontal overlap of the two spans.
+ */
+function crossesRule(x: number, y: number, w: number, h: number, rules: Rule[]): boolean {
+  for (const r of rules) {
+    const lineTop = r.y;
+    const lineBot = r.y + Math.max(1, r.thickness);
+    /* A few pixels of clearance keep the box from touching the line, which would look like an
+     * accidental underline even without overlapping. */
+    if (lineTop - 4 < y + h && y < lineBot + 4) {
+      const rx0 = r.inset;
+      const rx1 = PANEL_W - r.inset;
+      if (x < rx1 && rx0 < x + w) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The first origin at which a `w`x`h` box fits without OVERLAPPING any existing box OR crossing a
+ * divider, or null when the page has no room. `margin` keeps the box off the panel edge, where it
+ * would be hard to grab and would sit under the bezel on the glass.
  *
  * OVERLAP, NOT EQUALITY: a box is rejected when it shares any pixels with an existing one, not
  * only when its origin matches. Two boxes at (40,40) and (48,48) overlap almost entirely and
@@ -37,12 +62,13 @@ export function freeSpot(
   w: number,
   h: number,
   margin = 40,
+  rules: Rule[] = [],
 ): { x: number; y: number } | null {
   for (let y = margin; y + h <= PANEL_H - margin; y += STEP) {
     for (let x = margin; x + w <= PANEL_W - margin; x += STEP) {
       const clash = existing.some((o) =>
         x < o.x + o.w && o.x < x + w && y < o.y + o.h && o.y < y + h);
-      if (!clash) return { x, y };
+      if (!clash && !crossesRule(x, y, w, h, rules)) return { x, y };
     }
   }
   return null;
@@ -94,9 +120,10 @@ export const BOX_SIZES: { w: number; h: number }[] = [
 export function findPlacement(
   existing: Pick<Widget, 'x' | 'y' | 'w' | 'h'>[],
   margin = 40,
+  rules: Rule[] = [],
 ): Box | null {
   for (const s of BOX_SIZES) {
-    const spot = freeSpot(existing, s.w, s.h, margin);
+    const spot = freeSpot(existing, s.w, s.h, margin, rules);
     if (spot) return { x: spot.x, y: spot.y, w: s.w, h: s.h };
   }
   return null;

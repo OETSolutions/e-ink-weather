@@ -5,6 +5,8 @@
 #include "api_values.h"
 #include "owm_counter.h"
 #include "net_wifi.h"
+#include "net_http.h"
+#include "ha.h"
 #include "cfg_store.h"
 #include "devcfg.h"
 #include "layout_model.h"
@@ -53,6 +55,9 @@ static int64_t  s_last_refresh_us;      /* 0 = never */
 static int      s_last_page;
 static int      s_have_last_page;
 static int      s_pending_full_refresh;
+/* A one-shot page override (FR-15). -1 = none, so page 0 is a real value and is not confused
+ * with "no override". */
+static int      s_pending_page = -1;
 static uint32_t s_free_heap_min;
 
 /* Task to notify when a refresh is requested (see api_set_refresh_task). */
@@ -181,6 +186,28 @@ int api_take_full_refresh(void)
     lock();
     const int was = s_pending_full_refresh;
     s_pending_full_refresh = 0;
+    unlock();
+    return was;
+}
+
+void api_request_page(int page)
+{
+    if (page < 0) return;
+    lock();
+    s_pending_page = page;
+    /* A page change is a different background, so it must be a FULL refresh and must not be
+     * downgraded by refresh_decide()'s partial budget. */
+    s_pending_full_refresh = 1;
+    void *t = s_refresh_task;
+    unlock();
+    if (t) xTaskNotifyGive((TaskHandle_t)t);
+}
+
+int api_take_page(void)
+{
+    lock();
+    const int was = s_pending_page;
+    s_pending_page = -1;
     unlock();
     return was;
 }
@@ -1046,6 +1073,123 @@ static esp_err_t h_auth_put(httpd_req_t *req)
     return h_auth_get(req);
 }
 
+/* ----------------------------------------------------- GET /api/ha/entities ---- */
+
+/* The HA entity search behind the config app's entity picker.
+ *
+ * WHY A DEVICE-SIDE PROXY AT ALL, instead of the browser asking HA directly: Home Assistant
+ * sends no CORS headers, so a browser fetch from the config app's origin is blocked before it
+ * is even sent — verified against the bench instance, where a valid token still produced
+ * "blocked by CORS policy" and an empty picker. The device, meanwhile, holds the HA URL and
+ * token and reaches HA every refresh. So the search runs HERE, with the credentials the device
+ * already has, and the app gets a list it could never fetch itself.
+ *
+ * IT USES THE TEMPLATE API, not /api/states: the template renders server-side and returns only
+ * matching ids, so the response is small enough for this part. /api/states on the bench instance
+ * was 1590 entities and would not fit in any buffer worth holding here.
+ *
+ * `?q=` is REQUIRED and strictly validated (api_query_token). The query is interpolated into the
+ * Jinja template, so an unvalidated term would be template injection — the same trust boundary
+ * ha_template_add_entity() guards for a single id. */
+#define HA_SEARCH_MAX   24          /* rows returned to the app */
+
+static esp_err_t h_ha_entities(httpd_req_t *req)
+{
+    char query[128];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return api_send_err(req, "400 Bad Request", "missing ?q=");
+    }
+    char q[64];
+    if (api_query_token(query, "q", q, sizeof(q)) != 0 || !ha_search_query_valid(q)) {
+        return api_send_err(req, "400 Bad Request",
+                            "q must be a lowercase entity-id fragment (a-z 0-9 _ . -)");
+    }
+
+    /* Read the credentials the device already holds. A missing URL/token is reported as such
+     * rather than as "no matches" — the picker can then say what to fix instead of implying the
+     * instance is empty. */
+    nvs_handle_t h;
+    char url[DEVENV_BUF_HA_URL] = {0};
+    char token[DEVENV_BUF_HA_TOKEN] = {0};
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return api_send_err(req, "409 Conflict", "no credentials stored");
+    }
+    size_t n = sizeof(url);
+    const int have_url = (nvs_get_str(h, DEVENV_KEY_HA_URL, url, &n) == ESP_OK && url[0] != '\0');
+    n = sizeof(token);
+    const int have_tok = (nvs_get_str(h, DEVENV_KEY_HA_TOKEN, token, &n) == ESP_OK && token[0] != '\0');
+    nvs_close(h);
+    if (!have_url || !have_tok) {
+        return api_send_err(req, "409 Conflict",
+                            "no Home Assistant url/token stored on the display");
+    }
+    /* Normalise for the same reason the refresh path does: a stored trailing slash would make
+     * "/api/template" a double slash and read as a bad request. */
+    char norm[DEVENV_BUF_HA_URL];
+    if (devcfg_normalize_ha_url(url, norm, sizeof(norm)) == 0) snprintf(url, sizeof(url), "%s", norm);
+
+    /* Build the search template. The query is single-quoted INSIDE a double-quoted JSON string,
+     * so it also cannot break the body. `states` is sorted for a stable list, capped so the reply
+     * is bounded, and the substring match keeps it small. */
+    char body[512];
+    const int bn = snprintf(body, sizeof(body),
+        "{\"template\":\"{%% set c = namespace(n=0) %%}"
+        "{%% for s in states | sort(attribute='entity_id') %%}"
+        "{%% if '%s' in s.entity_id and c.n < %d %%}"
+        "{{ s.entity_id }}|{{ s.name }}\\n"
+        "{%% set c.n = c.n + 1 %%}{%% endif %%}{%% endfor %%}\"}",
+        q, HA_SEARCH_MAX);
+    if (bn < 0 || (size_t)bn >= sizeof(body)) {
+        return api_send_err(req, "500 Internal Server Error", "search template overflow");
+    }
+
+    /* The response is at most HA_SEARCH_MAX rows of ~150 bytes. Heap, not `.bss`: a permanent
+     * static block is DRAM the heap never gets, and on this part the 78,200-byte render window
+     * is decided by the largest FREE block — a standing allocation that size can drop it below
+     * what the static layer needs. Freed on every path. */
+    char *resp = malloc(6144);
+    if (!resp) return api_send_err(req, "500 Internal Server Error", "oom");
+
+    char turl[DEVENV_BUF_HA_URL + 32];
+    snprintf(turl, sizeof(turl), "%s/api/template", url);
+    const esp_err_t hx = net_http_post_json(turl, token, body, resp, 6144);
+    if (hx != ESP_OK) {
+        free(resp);
+        return api_send_err(req, "502 Bad Gateway",
+                            "could not reach Home Assistant (check the url and token)");
+    }
+
+    ha_entity_t rows[HA_SEARCH_MAX];
+    int total = 0;
+    const int got = ha_parse_entity_list(resp, rows, HA_SEARCH_MAX, &total);
+    free(resp);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return api_send_err(req, "500 Internal Server Error", "oom");
+    cJSON *arr = cJSON_AddArrayToObject(root, "entities");
+    for (int i = 0; arr && i < got; i++) {
+        cJSON *o = cJSON_CreateObject();
+        if (!o) break;
+        cJSON_AddStringToObject(o, "entity_id", rows[i].id);
+        /* The friendly name is only added when it differs from the id, so the app can show it
+         * without a fallback of its own. */
+        if (rows[i].name[0] && strcmp(rows[i].name, rows[i].id) != 0) {
+            cJSON_AddStringToObject(o, "friendly_name", rows[i].name);
+        }
+        cJSON_AddItemToArray(arr, o);
+    }
+    /* Say whether the list was clipped, so a short list is not read as a complete one. */
+    cJSON_AddNumberToObject(root, "total", total);
+    cJSON_AddBoolToObject(root, "truncated", total > got);
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return api_send_err(req, "500 Internal Server Error", "oom");
+    const esp_err_t e = api_send_json(req, out, "200 OK");
+    free(out);
+    return e;
+}
+
 /* ------------------------------------------------------------- POST /api/bitmap ---- */
 
 /* One upload session at a time, owned by the server task. The chunk state machine itself is
@@ -1318,6 +1462,20 @@ static esp_err_t h_refresh(httpd_req_t *req)
     /* Optional bearer auth (FR-31). Gated because it makes the panel change. */
     if (api_auth_gate(req)) return ESP_OK;
 
+    /* `?page=N` asks for a SPECIFIC page (FR-15), which the layout editor uses so the page it is
+     * editing appears without waiting for that page's rotation slot. Absent, the ordinary
+     * on-demand full refresh is scheduled. An unparseable or out-of-range value is treated as
+     * absent rather than rejected: the request still means "refresh", and failing it would leave
+     * the user with a change on the device and nothing on the glass. */
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        uint32_t page = 0;
+        if (api_query_u32(query, "page", &page) == 0) {
+            api_request_page((int)page);
+            return api_send_json(req, "{\"status\":\"page refresh scheduled\"}", "202 Accepted");
+        }
+    }
+
     api_request_full_refresh();
     return api_send_json(req, "{\"status\":\"refresh scheduled\"}", "202 Accepted");
 }
@@ -1537,6 +1695,7 @@ esp_err_t api_start(void)
         { .uri = "/api/bitmap",   .method = HTTP_POST, .handler = h_bitmap },
         { .uri = "/api/artwork",  .method = HTTP_POST, .handler = h_artwork },
         { .uri = "/api/refresh",  .method = HTTP_POST, .handler = h_refresh },
+        { .uri = "/api/ha/entities", .method = HTTP_GET, .handler = h_ha_entities },
         { .uri = "/api/secrets",  .method = HTTP_GET,  .handler = h_secrets_get },
         { .uri = "/api/secrets",  .method = HTTP_PUT,  .handler = h_secrets_put },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },

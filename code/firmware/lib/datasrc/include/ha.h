@@ -27,6 +27,35 @@ datasrc_status_t ha_classify_state(const char *state, double *out_value);
  * the looser copy becomes the hole. */
 int ha_entity_id_valid(const char *entity_id);
 
+/* Validate an entity-id SEARCH substring, for the config UI's entity picker.
+ *
+ * THE SEARCH IS A TRUST BOUNDARY: the device runs it as a server-side Jinja template and
+ * interpolates the substring into the template text, so a single quote or a brace in the query
+ * would not be a bad request — it would be template injection. Requiring the entity-id
+ * character set (lowercase, digits, '_', '.') both admits every substring a real entity id can
+ * contain and leaves nothing Jinja or the JSON body meaningfully interprets. Capped well below
+ * any real id length. Returns 1 for a usable query. */
+int ha_search_query_valid(const char *q);
+
+/* One entity row from the picker's search response. */
+#define HA_ENTITY_ID_LEN   64
+#define HA_ENTITY_NAME_LEN 80
+
+typedef struct {
+    char id[HA_ENTITY_ID_LEN];
+    char name[HA_ENTITY_NAME_LEN];
+} ha_entity_t;
+
+/* Parse the picker's 'id|name' newline-separated template output into rows.
+ *
+ * WHY THE TEMPLATE RETURNS THIS SHAPE: the device asks HA to render the search server-side
+ * (one small request, the same reason fetch_ha() uses /api/template), so the reply is plain
+ * text rather than JSON. `out` receives at most `max` rows; `total` receives how many valid rows
+ * the template produced, so the caller can distinguish "nothing matched" from "the match list
+ * was clipped" instead of silently reporting a short list as complete. Returns the number of
+ * rows written (<= max). */
+int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total);
+
 /* Append one entity to the template being built (the '|' separator is inserted
  * automatically after the first). Start with buf[0]='\0' and len=0.
  * Returns the new length, or -1 if it would not fit.

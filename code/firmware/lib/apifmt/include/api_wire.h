@@ -55,3 +55,15 @@ int api_query_u32(const char *query, const char *key, uint32_t *out);
  * where the panel read "Globe" (OWM's name for 0,0) with nothing to indicate a problem. That
  * agreement is worth a test, and the HTTP handler it lives behind is not host-testable. */
 int api_location_is_set(double lat, double lon);
+
+/* Copy a plain string query parameter into `out` (NUL-terminated), rejecting anything that is
+ * not a conservative token: lowercase letters, digits, '_', '.'. Returns 0 on success and
+ * -1 when the key is absent, empty, over-long, or carries a character outside that set.
+ *
+ * WHY A STRICT WHITELIST RATHER THAN A GENERAL DECODER: the one caller is the Home Assistant
+ * entity-id search, and the term is interpolated into a Jinja template the device asks HA to
+ * render. A general decoder (or a "%" pass-through) would hand Jinja the exact characters that
+ * mean something to it — a quote, a brace, a backslash — turning the query into template
+ * injection. Entity ids only ever contain that set, so a term outside it cannot match one, and
+ * rejecting fails closed instead of sanitising. */
+int api_query_token(const char *query, const char *key, char *out, size_t outlen);

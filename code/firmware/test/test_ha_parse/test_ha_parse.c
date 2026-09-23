@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include "unity.h"
 #include "ha.h"
@@ -120,6 +121,100 @@ static void test_entity_id_validation_rejects_injection_and_junk(void)
                                                            "sensor.64b708cfe0fc_sensor_2"));
 }
 
+/* The picker's search term is interpolated into a Jinja template, so it is a trust boundary:
+ * anything Jinja would interpret must be rejected, not escaped. */
+static void test_search_query_rejects_injection_metacharacters(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, ha_search_query_valid("hallway"));
+    TEST_ASSERT_EQUAL_INT(1, ha_search_query_valid("upstairs_hallway_temperature"));
+    TEST_ASSERT_EQUAL_INT(1, ha_search_query_valid("sensor.64b708cfe0fc"));
+
+    /* Jinja/JSON metacharacters: a quote would close the string literal and let the rest be
+     * template code; braces delimit Jinja blocks; '%' opens a statement. */
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("'"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("x' or '1"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("{{ 7 }}"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("{% if true %}"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("a\"b"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("a&b"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("a=b"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("has space"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("Upper"));
+    /* '-' is outside HA's entity-id grammar, so it cannot match an id and is refused rather
+     * than passed through to a template that would treat it as literal text. */
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid("temp-2"));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid(""));
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid(NULL));
+
+    /* Over-long input is refused rather than truncated into a different match. */
+    char big[80];
+    memset(big, 'a', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+    TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid(big));
+}
+
+/* The picker's response is 'id|name' per line. The tail line has NO trailing newline (the
+ * template's last row), and that row must not be dropped — the same off-by-one the state
+ * parser was fixed for. */
+static void test_entity_list_parses_all_rows_including_the_last(void)
+{
+    const char *body =
+        "sensor.upstairs_hallway_temperature|Upstairs Hallway Temperature\n"
+        "sensor.upstairs_hallway_humidity|Upstairs Hallway Humidity\n"
+        "climate.upstairs_hallway|Upstairs Hallway";
+    ha_entity_t rows[8];
+    int total = -1;
+    const int n = ha_parse_entity_list(body, rows, 8, &total);
+    TEST_ASSERT_EQUAL_INT(3, n);
+    TEST_ASSERT_EQUAL_INT(3, total);
+    TEST_ASSERT_EQUAL_STRING("sensor.upstairs_hallway_temperature", rows[0].id);
+    TEST_ASSERT_EQUAL_STRING("Upstairs Hallway Temperature", rows[0].name);
+    TEST_ASSERT_EQUAL_STRING("climate.upstairs_hallway", rows[2].id);
+    TEST_ASSERT_EQUAL_STRING("Upstairs Hallway", rows[2].name);
+}
+
+/* A row with no '|' is still a usable id; the name falls back to the id. And junk rows that are
+ * not valid entity ids are filtered, so a stray token cannot appear in the picker. */
+static void test_entity_list_tolerates_missing_name_and_filters_junk(void)
+{
+    const char *body = "sensor.lonely\nnot an entity\nsensor.named|Friendly\n";
+    ha_entity_t rows[8];
+    int total = 0;
+    const int n = ha_parse_entity_list(body, rows, 8, &total);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_EQUAL_INT(2, total);      /* junk was not counted as a row */
+    TEST_ASSERT_EQUAL_STRING("sensor.lonely", rows[0].id);
+    TEST_ASSERT_EQUAL_STRING("sensor.lonely", rows[0].name);
+    TEST_ASSERT_EQUAL_STRING("sensor.named", rows[1].id);
+}
+
+/* When more rows match than the caller can hold, `total` still reports the real count so the
+ * app can say the list was clipped instead of presenting a short list as complete. */
+static void test_entity_list_reports_truncation(void)
+{
+    char body[512] = {0};
+    for (int i = 0; i < 10; i++) {
+        char line[48];
+        snprintf(line, sizeof(line), "sensor.e%d|N%d\n", i, i);
+        strcat(body, line);
+    }
+    ha_entity_t rows[3];
+    int total = 0;
+    const int n = ha_parse_entity_list(body, rows, 3, &total);
+    TEST_ASSERT_EQUAL_INT(3, n);
+    TEST_ASSERT_EQUAL_INT(10, total);
+}
+
+static void test_entity_list_empty_and_bad_args(void)
+{
+    ha_entity_t rows[4];
+    int total = -1;
+    TEST_ASSERT_EQUAL_INT(0, ha_parse_entity_list("", rows, 4, &total));
+    TEST_ASSERT_EQUAL_INT(0, total);
+    TEST_ASSERT_EQUAL_INT(0, ha_parse_entity_list(NULL, rows, 4, &total));
+    TEST_ASSERT_EQUAL_INT(0, ha_parse_entity_list("sensor.a", rows, 0, &total));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -133,5 +228,10 @@ int main(void)
     RUN_TEST(test_template_body_is_built_from_entities);
     RUN_TEST(test_template_overflow_is_refused);
     RUN_TEST(test_entity_id_validation_rejects_injection_and_junk);
+    RUN_TEST(test_search_query_rejects_injection_metacharacters);
+    RUN_TEST(test_entity_list_parses_all_rows_including_the_last);
+    RUN_TEST(test_entity_list_tolerates_missing_name_and_filters_junk);
+    RUN_TEST(test_entity_list_reports_truncation);
+    RUN_TEST(test_entity_list_empty_and_bad_args);
     return UNITY_END();
 }

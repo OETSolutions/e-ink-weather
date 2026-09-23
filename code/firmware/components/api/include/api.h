@@ -43,6 +43,21 @@ void api_set_refresh_task(void *task);
  * otherwise. Safe to call from a different task than api_request_full_refresh(). */
 int api_take_full_refresh(void);
 
+/* Ask for a SPECIFIC page to be drawn on the next refresh, overriding the rotation schedule
+ * for that one frame (FR-15). Returns -1 from api_take_page() when no override is pending.
+ *
+ * WHY THIS EXISTS: the device picks its page from uptime modulo the pages' refreshSeconds, so
+ * an edit to any page other than the one currently scheduled waits for its own rotation slot —
+ * fifteen minutes with the shipped intervals. The layout editor therefore could not make the
+ * page it is editing appear on the glass, and a value box the user just moved or added to a
+ * non-scheduled page looked like it had been ignored. A one-shot override lets the editor say
+ * "show me the page I am working on" and see it within a second.
+ *
+ * It also implies a FULL refresh: a different page means a different background, which a
+ * partial cannot diff against. */
+void api_request_page(int page);
+int api_take_page(void);
+
 /* Record an error for /api/status's `errors` array, newest first (FR-33). Bounded ring, so
  * a device stuck in an error loop cannot grow this without limit. */
 void api_note_error(const char *msg);

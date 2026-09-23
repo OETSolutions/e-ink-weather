@@ -103,6 +103,22 @@ export function requestRefresh(opts: DeviceOptions = {}): Promise<JsonResult<unk
   return jsonCall('/api/refresh', { method: 'POST' }, opts);
 }
 
+/**
+ * Ask the device to draw a SPECIFIC page now (FR-15).
+ *
+ * WHY THIS IS NEEDED: the device chooses its page from its own rotation schedule, so a page the
+ * user is editing may be up to a full rotation (fifteen minutes with the shipped intervals) away
+ * from being shown — and a value box they just moved onto it would look ignored. This makes the
+ * device show the edited page at once, which is also what lets the editor's value preview fill in
+ * without waiting for the scheduler.
+ *
+ * It implies a full refresh on the device: a different page is a different background, which the
+ * partial path cannot diff against.
+ */
+export function requestPage(page: number, opts: DeviceOptions = {}): Promise<JsonResult<unknown>> {
+  return jsonCall(`/api/refresh?page=${encodeURIComponent(String(page))}`, { method: 'POST' }, opts);
+}
+
 /** One widget's resolved value, as the device last drew it (FR-27). */
 export interface DeviceValue {
   id: string;

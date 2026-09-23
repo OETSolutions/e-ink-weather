@@ -1299,9 +1299,18 @@ void app_refresh_tick(power_source_t source, int force_full)
     }
 
     /* WHICH PAGE: the rotation schedule, from real elapsed time since boot. FR-15 wants the
-     * device to cycle pages on its own, and this is the only place that can happen. */
+     * device to cycle pages on its own, and this is the only place that can happen.
+     *
+     * AN EXPLICIT OVERRIDE WINS FOR ONE FRAME: the layout editor asks for the page it is editing
+     * so a change to a non-scheduled page shows within a second instead of after that page's
+     * rotation slot (fifteen minutes with the shipped intervals). api_take_page() clears the
+     * request, so the next tick returns to the schedule on its own. The override is clamped to a
+     * page this config actually has — a stale request from a deleted page must not index past
+     * the array. */
     const long elapsed_s = (long)(esp_timer_get_time() / 1000000LL);
-    const int page_index = layout_page_at(&cfg, elapsed_s);
+    int page_index = layout_page_at(&cfg, elapsed_s);
+    const int page_want = api_take_page();
+    if (page_want >= 0 && page_want < cfg.page_count) page_index = page_want;
 
     static page_render_t page;      /* static: ~4 KB of widgets, too big for the 3.5 KB stack */
     memset(&page, 0, sizeof(page));

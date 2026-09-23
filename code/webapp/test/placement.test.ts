@@ -114,3 +114,33 @@ describe('font size for a chosen box', () => {
     expect(fontSizeForBox(2)).toBe(16);
   });
 });
+
+describe('a new box avoids the dividers', () => {
+  it('does not place a box across a rule', () => {
+    /* A RULE IS A LINE, not a box. Treating it with the box-overlap test would let a value box
+     * land straight across the line — seen on the glass, where a new box's numeral sat on the
+     * divider and read as a stray underline through the reading. */
+    const rules = [{ y: 140, thickness: 2, inset: 40 }];
+    const spot = freeSpot([], 360, 96, 40, rules)!;
+    expect(spot).not.toBeNull();
+    /* The chosen box must not straddle y=140. */
+    const crosses = spot.y < 142 && 140 < spot.y + 96;
+    expect(crosses, `placed at y=${spot.y} across a rule at 140`).toBe(false);
+  });
+
+  it('steps past a rule to the next free band', () => {
+    /* With a box occupying the top band and a rule below it, the placement must skip both the
+     * box and the line rather than landing between them on the line itself. */
+    const existing = [box(40, 40, 840, 80)];
+    const rules = [{ y: 160, thickness: 2, inset: 40 }];
+    const spot = freeSpot(existing, 360, 96, 40, rules)!;
+    expect(spot.y).toBeGreaterThanOrEqual(162);
+  });
+
+  it('a rule inset only blocks its own span', () => {
+    /* A rule spans x=inset..PANEL_WIDTH-inset. A box entirely to the LEFT of a deeply inset rule
+     * (inset 400 on a 920-wide panel) does not cross it and may use the same y. */
+    const rules = [{ y: 140, thickness: 2, inset: 400 }];
+    expect(freeSpot([], 300, 40, 40, rules)).toEqual({ x: 40, y: 40 });
+  });
+});

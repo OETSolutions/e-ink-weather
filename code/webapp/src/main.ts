@@ -17,7 +17,7 @@ import { createMapPicker, type MapPickerHandle } from './ui/map-picker';
 import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
 import { createPropertyPanel, type PropertyPanelHandle } from './ui/property-panel';
-import { listEntities } from './data/ha';
+import { searchEntities } from './data/ha';
 import { previewTextWithLive } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
@@ -25,7 +25,7 @@ import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement
 import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, type AuthState } from './transfer/device';
+import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -64,8 +64,9 @@ function button(label: string, onClick: () => void): HTMLButtonElement {
  * dashboard the design was actually made for. A device that ALREADY has widgets keeps them —
  * overwriting a user's arrangement because they opened the app would be destructive.
  */
-function starterPage(): Page {
-  return defaultLayout().pages[0]!;
+function starterPage(index: number): Page {
+  const d = defaultLayout();
+  return d.pages[index] ?? d.pages[0]!;
 }
 
 /**
@@ -205,17 +206,28 @@ async function mount(root: HTMLElement): Promise<void> {
   const loaded = await loadConfig();
   let doc: Config = loaded ?? emptyConfig();
 
-  /* ---- the page being edited ---- */
-  /* `let`, not `const`: loading a file REPLACES the document, and the editor holds a reference
-   * to this page, so it must be repointable. */
-  let page: Page = doc.pages[0] ??
-    { id: 'main', name: 'Main', refreshSeconds: 900, weight: 1, widgets: [] };
+  /* ---- the page being edited ----
+   *
+   * WHY THERE IS A PAGE INDEX AND NOT JUST A PAGE REFERENCE: the device rotates its pages on
+   * its own schedule, so the page the glass is showing is frequently NOT the page the user means
+   * to edit. Editing is therefore addressed by index — the page selector and the value poll both
+   * compare THAT index against the device's own page, and the editor repoints when it changes.
+   *
+   * `page` is derived from this index rather than captured, so every reader (the panel, the layer
+   * rebuild, the value poll) sees the page actually being edited. A captured reference is the
+   * exact bug that made the preview show another page's layout. */
+  let pageIndex = 0;
+  function pageAt(i: number): Page {
+    return doc.pages[i] ?? doc.pages[0] ??
+      { id: 'main', name: 'Main', refreshSeconds: 900, weight: 1, widgets: [] };
+  }
+  let page: Page = pageAt(pageIndex);
   /* The device's OWN page objects carry no `widgets` key — it stores what it schedules, not
    * what it draws. An absent array is therefore the normal shape and must become an empty one
    * rather than being read as a length. */
   if (!Array.isArray(page.widgets)) page.widgets = [];
-  if (page.widgets.length === 0) page.widgets = starterPage().widgets;
-  ensurePageRules(page, doc.pages.indexOf(page));
+  if (page.widgets.length === 0) page.widgets = starterPage(pageIndex).widgets;
+  ensurePageRules(page, pageIndex);
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
   /* The device's last resolved values, keyed by widget id (FR-27). Empty until asked for, and
@@ -290,7 +302,7 @@ async function mount(root: HTMLElement): Promise<void> {
       status.classList.add('err');
       return;
     }
-    const spot = findPlacement(page.widgets);
+    const spot = findPlacement(page.widgets, 40, page.rules ?? []);
     if (!spot) {
       status.textContent = 'No free space left for another box. Remove one first.';
       status.classList.add('err');
@@ -333,6 +345,110 @@ async function mount(root: HTMLElement): Promise<void> {
   const addBoxBtn = button('Add box', addWidget);
   const addRuleBtn = button('Add divider', addRule);
 
+  /* ---- which page is being edited ----
+   *
+   * THE DEVICE ROTATES PAGES ON ITS OWN, so without this the editor was pinned to page 1
+   * (index 0) and the reported symptoms followed directly: the preview showed page 0's boxes
+   * while the glass showed page 1's ("the layout doesn't match"), the poll compared the device's
+   * page against a fixed 0 and never applied, so every reading stayed on its "--" placeholder,
+   * and a box added to page 0 waited up to a full rotation (15 min by default) to appear.
+   *
+   * The selector makes the edited page an explicit choice; the readout beneath it says which page
+   * the GLASS is on right now, so the mismatch is visible instead of mystifying. */
+  const pageSel = el('select', { id: 'editPage' }) as HTMLSelectElement;
+  const pageHint = el('p', { className: 'hint' });
+  /* -1 means "the device has not told us yet". Kept separate from 0 because page 0 is a real
+   * answer and must not be confused with "unknown". */
+  let devicePage = -1;
+
+  function buildPageOptions(): void {
+    pageSel.replaceChildren();
+    doc.pages.forEach((p, i) => {
+      pageSel.append(el('option', { value: String(i) }, `${i + 1}. ${p.name}`));
+    });
+    pageSel.value = String(pageIndex);
+  }
+
+  /** Say which page the display is showing, so the preview and the glass can be reconciled. */
+  function describePage(): void {
+    if (devicePage < 0) {
+      pageHint.classList.remove('warn');
+      pageHint.textContent = 'Checking which page the display is showing…';
+      return;
+    }
+    const devName = pageAt(devicePage).name;
+    if (devicePage === pageIndex) {
+      pageHint.classList.remove('warn');
+      pageHint.textContent = `The display is on this page (${devicePage + 1}. ${devName}).`;
+      return;
+    }
+    /* The placeholders are expected here, and saying so is the whole point: otherwise "--" reads
+     * as a broken fetch rather than "you are looking at a page the display is not on". */
+    pageHint.classList.add('warn');
+    pageHint.textContent =
+      `The display is showing page ${devicePage + 1} (${devName}), not the page you are editing. `
+      + 'It rotates on its own, so readings only fill in here while it is on the page you edit.';
+  }
+
+  /**
+   * Repoint the editor at another page.
+   *
+   * EVERY reader of the edited page is re-seeded here: the editor's state (whose `page` the canvas
+   * draws), the static layer (whose labels and rules differ per page), the inspector, and the value
+   * poll. Repointing some and not others is how the preview and the document drift apart. */
+  function switchPage(i: number): void {
+    if (i < 0 || i >= doc.pages.length || i === pageIndex) return;
+    pageIndex = i;
+    page = pageAt(i);
+    if (!Array.isArray(page.widgets)) page.widgets = [];
+    /* A page with no widgets at all is a page the user has never arranged — give it the shipped
+     * starter for THIS index rather than page 0's, so its layout is not another page's. */
+    if (page.widgets.length === 0) page.widgets = starterPage(i).widgets;
+    ensurePageRules(page, i);
+    /* Drop the previous page's readings. Ids can recur across pages, and a stale value under a
+     * reused id would be another page's number drawn as if it were this page's. */
+    liveValues = {};
+    editorState.page = page;
+    editorState.selection = undefined;
+    editorState.values = previewValues(page, alertProbe, liveValues);
+    editor.setLayer(rebuildEditedLayer());
+    panel.show(undefined, page);
+    editor.redraw();
+    describe(undefined);
+    pageSel.value = String(i);
+    describePage();
+    /* Ask again: the device may already be on this page, in which case the boxes fill in now; if
+     * it is not, the poll's own page guard keeps the placeholders honest. */
+    pollValues();
+  }
+  pageSel.addEventListener('change', () => switchPage(Number(pageSel.value)));
+
+  /**
+   * Ask the display to show the page being edited, now.
+   *
+   * WITHOUT THIS A CHANGE TO A NON-SCHEDULED PAGE WAS INVISIBLE: the device draws whichever page
+   * its rotation schedule picks, so a box moved onto a page that is not "next" showed up on the
+   * glass only when that page's slot came round — up to a full rotation later, which the user
+   * reasonably read as "my change did nothing". The device takes the page on its next tick and
+   * returns to its schedule afterwards, so this is a one-shot nudge, not a mode.
+   */
+  const showPageBtn = button('Show this page on the display', () => {
+    void (async () => {
+      const r = await requestPage(pageIndex);
+      if (!r.ok) {
+        status.textContent = `Could not ask the display to change page: ${r.error}`;
+        status.classList.add('err');
+        return;
+      }
+      status.classList.remove('err');
+      status.textContent =
+        `The display is switching to page ${pageIndex + 1} (${page.name}). Its readings fill in here once it has.`;
+      /* The poll's page guard would otherwise stop after it saw the old page; restart it so the
+       * boxes fill in as soon as the device reports the new one. */
+      pollValues();
+    })();
+  });
+
   /* ---- file save / load (FR-26) ---- */
   const saveFileBtn = button('Save to file', () => {
     downloadText(exportConfig(doc), configFilename());
@@ -351,14 +467,18 @@ async function mount(root: HTMLElement): Promise<void> {
          * keep showing the old layout while the document held the new one, and Save would then
          * write a mixture of the two. */
         doc = next;
-        page = doc.pages[0]!;
+        pageIndex = 0;
+        buildPageOptions();
+        liveValues = {};
+        page = pageAt(0);
         if (!Array.isArray(page.widgets)) page.widgets = [];
         /* SAME SEEDING AS MOUNT, via the same function. A loaded file that predates rules has no
          * `rules` key, and the layer still draws the art table's lines — so an empty array here
          * would show dividers that cannot be grabbed, exactly the state ensurePageRules() exists
          * to prevent. Two different behaviours for the same missing field is also how the
          * drawn set and the editable set drift apart in the first place. */
-        ensurePageRules(page, doc.pages.indexOf(page));
+        if (page.widgets.length === 0) page.widgets = starterPage(0).widgets;
+        ensurePageRules(page, 0);
         editorState.page = page;
         editorState.selection = undefined;
         editorState.values = previewValues(page, alertProbe, liveValues);
@@ -368,6 +488,8 @@ async function mount(root: HTMLElement): Promise<void> {
         panel.show(undefined, page);
         editor.redraw();
         describe(undefined);
+        describePage();
+        pollValues();
         status.textContent = `Loaded “${f.name}”. Review it, then Save to device.`;
         status.classList.remove('err');
       } catch (e) {
@@ -475,19 +597,15 @@ async function mount(root: HTMLElement): Promise<void> {
     }
     /* Clear the secret fields on success so a later Save cannot re-send them, then re-read the
      * device's state so the badges reflect what is actually stored. */
-    const enteredToken = haTokenInput.value.trim();
     owmKeyInput.value = '';
     haTokenInput.value = '';
     credStatus.classList.remove('err');
     credStatus.textContent = 'Saved. The display is refreshing with the new credentials.';
     const after = await getSecrets();
     describeSecrets(after.ok ? after.value : null);
-
-    /* Refresh the entity picker with the token just entered. loadEntities() reads the field,
-     * which was cleared a line above — so without this the list would stay empty right after the
-     * user supplied the one thing it was missing, and they would conclude the token was wrong. */
-    const base = haUrlInput.value.trim();
-    if (base && enteredToken) await loadEntities(base, enteredToken);
+    /* The picker searched through the device, which now holds the token, so clear any
+     * "enter a token" note and let the next keystroke search. */
+    panel.setEntities([]);
   }
 
   /* ---- optional API auth (FR-31) ---- */
@@ -560,16 +678,21 @@ async function mount(root: HTMLElement): Promise<void> {
 
   /* ---- wiring ---- */
   let editor: EditorHandle;
+  /* The panel is built before searchEntitiesDebounced() is declared (everything here is built,
+   * then wired, then appended), so the panel's search callback reads this slot rather than closing
+   * over a function that does not exist yet. */
+  let entitySearch: (q: string) => void = () => {};
 
-  /* Rebuild just the page being edited, from its CURRENT rules. The label table is keyed by
-   * page index, so this asks for the page's own art rather than assuming page 0 — a device with
-   * two pages would otherwise edit page 1 with page 0's labels. */
+  /* Rebuild just the page being edited, from its CURRENT rules. Indexed by the page being
+   * edited — not a fixed 0, and not `indexOf(page)`, which is -1 for a page synthesized for a
+   * device document that carried no such entry. */
   function rebuildEditedLayer(): Uint8Array {
-    return buildPageLayer(page, doc.pages.indexOf(page));
+    return buildPageLayer(page, pageIndex);
   }
 
   const panel: PropertyPanelHandle = createPropertyPanel({
     host: panelHost,
+    onEntitySearch: (q) => entitySearch(q),
     onChange: () => {
       /* A format or alert change alters the preview text, so refresh it — otherwise the panel
        * would edit a widget while the canvas kept painting the old value. */
@@ -667,10 +790,10 @@ async function mount(root: HTMLElement): Promise<void> {
    * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
    * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
    * other page's numbers into this page's boxes the moment the scheduler moved. */
-  const editedPageIndex = (): number => {
-    const i = doc.pages.indexOf(page);
-    return i < 0 ? 0 : i;
-  };
+  /* The page being edited, as an index. The device serves the page it is currently showing and
+   * rotates on its own, so the poll compares its answer against THIS index and only applies a
+   * match — applying whatever came back would stamp the other page's numbers into these boxes. */
+  const editedPageIndex = (): number => pageIndex;
   let valuesTimer = 0;
   function pollValues(): void {
     if (valuesTimer) window.clearInterval(valuesTimer);
@@ -679,7 +802,11 @@ async function mount(root: HTMLElement): Promise<void> {
       tries++;
       if (tries > 30) { window.clearInterval(valuesTimer); valuesTimer = 0; return; }
       void getValuesInfo({ baseUrl: API }).then((info) => {
-        if (!info || info.page !== editedPageIndex()) return;
+        if (!info) return;
+        /* Record the device's page on EVERY answer, even a non-matching one, so the selector's
+         * readout can tell the user which page the glass is showing. */
+        if (info.page !== devicePage) { devicePage = info.page; describePage(); }
+        if (info.page !== editedPageIndex()) return;
         if (Object.keys(info.values).length === 0) return;   /* nothing drawn yet; try again */
         liveValues = info.values;
         editorState.values = previewValues(editorState.page, alertProbe, liveValues);
@@ -701,10 +828,16 @@ async function mount(root: HTMLElement): Promise<void> {
 
   async function doSave(): Promise<void> {
     const p = picker.getPosition();
+    /* WRITE THE EDITED PAGE BACK BY INDEX, not as `[page, ...slice(1)]`. That construction
+     * assumed the edited page was always index 0, so with the selector on another page it
+     * replaced page 1 with page 2's edits and duplicated the rest — saving a layout nobody had
+     * ever seen. Indexing the same array the selector came from cannot drift that way. */
+    const pages = doc.pages.slice();
+    if (pages[pageIndex]) pages[pageIndex] = page;
     doc = {
       ...doc,
       location: { ...doc.location, latitude: p.lat, longitude: p.lon, zipCode: zipInput.value },
-      pages: [page, ...doc.pages.slice(1)],
+      pages,
     };
     /* The button carries its own state. A message at the top of the page is easy to miss when
      * the user is looking at the button they just pressed, and "did it save?" is the one
@@ -729,6 +862,12 @@ async function mount(root: HTMLElement): Promise<void> {
       setBtn('saved');
       setTimeout(() => setBtn('idle'), 2500);
       status.classList.remove('err', 'busy');
+      /* MAKE THE SAVED PAGE THE ONE ON THE GLASS. The config PUT schedules a refresh, but the
+       * device picks the page from its rotation schedule — so saving an edit to a page whose slot
+       * is not next drew a DIFFERENT page and the user's change appeared to be lost. Asking for
+       * the edited page makes the save visibly take effect. Best-effort: a device that refuses the
+       * nudge has still stored the config, so this is not reported as a save failure. */
+      void requestPage(pageIndex);
       /* A widget the user just added has no resolved value until the device has seen this
        * config, so restart the poll to fill its box in rather than leaving the placeholder. */
       pollValues();
@@ -784,6 +923,10 @@ async function mount(root: HTMLElement): Promise<void> {
     el('p', { className: 'sub' },
        'Drag a value box to move it, or drag its edge to resize. Drag a divider to move the ' +
        'line. This is the real 1-bit output the panel will show.'),
+    el('div', { className: 'fields' },
+       el('div', {}, el('label', { htmlFor: 'editPage' }, 'Editing page'), pageSel)),
+    pageHint,
+    el('div', { className: 'actions' }, showPageBtn),
     el('div', { className: 'toolbar' },
        zoomOut, zoomIn, zoomFit, bitBadge, zoomLabel),
     el('div', { className: 'actions' }, addBoxBtn, addRuleBtn),
@@ -824,6 +967,8 @@ async function mount(root: HTMLElement): Promise<void> {
 
   describe(undefined);
   panel.show(undefined, page);
+  buildPageOptions();
+  describePage();
   picker.invalidate();
 
   /* The canvas is in the document NOW, so this is the first moment "fit" can be measured against
@@ -847,58 +992,46 @@ async function mount(root: HTMLElement): Promise<void> {
     else describeAuth();
   })();
 
-  /* Read the credential flags AND the stored HA URL. The URL fills the field so the entity
-   * picker below can query HA without the user retyping an address the device already has — the
-   * same reason the location is injected into GET /api/config rather than left to the user. */
+  /* Read the credential flags AND the stored HA URL. The URL fills the field so a save does not
+   * blank it; the entity picker itself searches THROUGH the device (see below). */
   void (async () => {
     const r = await getSecrets();
     describeSecrets(r.ok ? r.value : null);
-    loadEntities(r.ok ? r.value.haUrl : '');
+    if (r.ok && !r.value.haToken) {
+      panel.setEntities([], 'Enter the Home Assistant token above (and Save) so the display can '
+        + 'search Home Assistant for entities.');
+    }
   })();
 
-  /* The HA entity list is fetched once, asynchronously. A failure is not fatal and is explained
-   * in the panel rather than shown as an empty picker — "no entities" would read as "your Home
-   * Assistant is empty", which is the worst possible message.
+  /* ---- Home Assistant entity search, through the DISPLAY (FR-23) ----
    *
-   * THE TOKEN COMES FROM THE FORM, NOT THE DEVICE. The device holds the HA token but will not
-   * hand it back (see /api/secrets), and listing entities needs an authenticated request — so
-   * the picker can only populate once the user has typed a token into the field above. Without
-   * one the panel keeps its "type the entity id by hand" escape, which is a working path rather
-   * than a dead end. */
-  /* `tokenOverride` is for the caller that has just received a token and cleared the field — the
-   * save path — so the list can be fetched with a credential the form no longer holds. */
-  async function loadEntities(base: string, tokenOverride?: string): Promise<void> {
-    if (!base) {
-      panel.setEntities([], 'No Home Assistant URL configured, so type the entity id by hand.');
+   * WHY NOT FROM THE BROWSER: Home Assistant sends no CORS headers, so a browser fetch of
+   * /api/states is blocked before it is sent — verified on the bench, where a valid token still
+   * produced "blocked by CORS policy" and an empty picker, which reads as "your HA has no
+   * entities". The display holds the HA URL and token and reaches HA on every refresh, so the
+   * search runs there and the app only asks for a term.
+   *
+   * DEBOUNCED: the search fires per keystroke, and each one is a TLS request from a part with no
+   * PSRAM. 250 ms coalesces a burst of typing into one request without feeling laggy. */
+  let entitySearchTimer = 0;
+  function searchEntitiesDebounced(q: string): void {
+    if (entitySearchTimer) window.clearTimeout(entitySearchTimer);
+    if (q.trim().length < 2) {
+      /* Below two characters the match set is the whole instance; not worth a request. */
+      panel.setEntityOptions([]);
       return;
     }
-    const token = tokenOverride ?? haTokenInput.value.trim();
-    /* WITHOUT A TOKEN, DO NOT CALL HA AT ALL. The request would be unauthenticated and, because HA
-     * sends no CORS headers by default, would fail as a console error on every page load — noise
-     * that reads as "this app is broken" and hides the real message, which is simply that the token
-     * has not been entered yet. The device can supply no token either (it will not return one), so
-     * the honest state is: not listed, here is how to list it. */
-    if (!token) {
-      panel.setEntities([], 'Enter the Home Assistant token above to load the entity list, or '
-        + 'type the entity id by hand.');
-      return;
-    }
-    const res = await listEntities({ baseUrl: base, token });
-    if (res.ok) {
-      panel.setEntities(
-        res.entities.map((e) => ({ entityId: e.entityId, friendlyName: e.friendlyName })),
-      );
-    } else {
-      panel.setEntities([], `Could not list Home Assistant entities: ${res.error}`);
-    }
+    entitySearchTimer = window.setTimeout(() => {
+      void searchEntities(q).then((res) => {
+        /* Report a failure IN PLACE, without a re-render (which would drop focus), so a missing
+         * or wrong token is explained where the user is typing rather than in an empty dropdown. */
+        panel.setEntityOptions(res.ok ? res.entities : [], res.ok ? undefined : res.error);
+      });
+    }, 250);
   }
-
-  /* Re-list when the token is provided, so the picker fills in as soon as the user pastes it —
-   * without this the list would stay empty until a reload even after the token was entered. */
-  haTokenInput.addEventListener('change', () => {
-    const base = haUrlInput.value.trim();
-    if (base && haTokenInput.value.trim()) void loadEntities(base);
-  });
+  /* The panel was created earlier, so its search callback reads this slot rather than closing
+   * over a function declared below it. */
+  entitySearch = searchEntitiesDebounced;
 }
 
 const root = document.getElementById('app');

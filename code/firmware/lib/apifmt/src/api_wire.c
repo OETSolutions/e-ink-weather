@@ -67,3 +67,51 @@ int api_location_is_set(double lat, double lon)
     if (lat == 0.0 && lon == 0.0) return 0;
     return 1;
 }
+
+/* The characters an entity-id search term may contain: exactly HA's entity-id set. Everything
+ * Jinja would interpret to change the template (quotes, braces, backslash, '%', whitespace,
+ * '&', '=') is outside this set and is therefore rejected, which is the whole point — see the
+ * header note. The set MATCHES ha_entity_id_valid(), so a term this accepts is one that can
+ * only ever match a real entity id. */
+static int token_char_ok(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+}
+
+int api_query_token(const char *query, const char *key, char *out, size_t outlen)
+{
+    if (!query || !key || !out || outlen == 0 || key[0] == '\0') return -1;
+    out[0] = '\0';
+
+    const size_t klen = strlen(key);
+    const char *p = query;
+
+    for (;;) {
+        while (*p == '?' || *p == '&') p++;
+        if (*p == '\0') return -1;
+
+        const char *kstart = p;
+        while (*p && *p != '=' && *p != '&') p++;
+        const size_t this_klen = (size_t)(p - kstart);
+
+        if (*p != '=') {                       /* a flag, not a value */
+            while (*p && *p != '&') p++;
+            continue;
+        }
+        p++;                                   /* past '=' */
+
+        const char *vstart = p;
+        while (*p && *p != '&') p++;
+        const size_t vlen = (size_t)(p - vstart);
+
+        if (this_klen == klen && key_matches(kstart, key, klen)) {
+            if (vlen == 0 || vlen >= outlen) return -1;
+            for (size_t i = 0; i < vlen; i++) {
+                if (!token_char_ok(vstart[i])) return -1;
+            }
+            memcpy(out, vstart, vlen);
+            out[vlen] = '\0';
+            return 0;
+        }
+    }
+}

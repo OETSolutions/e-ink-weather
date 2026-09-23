@@ -37,6 +37,10 @@ export interface PropertyPanelOptions {
   entities?: { entityId: string; friendlyName?: string }[];
   /** Reports what an entity id looks like, so a typo is caught as it is typed. */
   onValidateEntity?: (id: string) => void;
+  /** Ask for entities matching `q`. The list cannot be preloaded: Home Assistant sends no CORS
+   *  headers, so the browser cannot fetch it, and the device-side search returns a bounded subset
+   *  for a term rather than the whole instance. The shell debounces and calls back with results. */
+  onEntitySearch?: (q: string) => void;
   /** True when the HA entity list could not be fetched, so offer free text instead. */
   entitiesUnavailable?: string;
 }
@@ -46,6 +50,10 @@ export interface PropertyPanelHandle {
   show(sel: Selection | undefined, page: Page): void;
   /** Replace the entity list after an async fetch completes. */
   setEntities(list: { entityId: string; friendlyName?: string }[], unavailable?: string): void;
+  /** Replace ONLY the picker's options, WITHOUT re-rendering. This is what a search-as-you-type
+   *  result needs: a full re-render would replace the input the user is typing in and drop focus
+   *  after one keystroke (see the geometry note in render()). */
+  setEntityOptions(list: { entityId: string; friendlyName?: string }[], note?: string): void;
 }
 
 /** A button with a real listener. `onClick` in a props object does NOT work: Object.assign
@@ -87,6 +95,11 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
   let current: Widget | undefined;
   let currentSel: Selection | undefined;
   let currentPage: Page | undefined;
+  /* The live HA datalist, when an HA-bound widget is selected. Held so a search result can be
+   * dropped into it without re-rendering — see setEntityOptions(). */
+  let haDatalist: HTMLDataListElement | null = null;
+  /* The line beside the entity field that a search updates in place. */
+  let haNote: HTMLElement | null = null;
 
   /** Assign then notify — see the note at the top of the file. */
   function commit(patch: Partial<Widget>): void {
@@ -162,6 +175,10 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
 
   function render(): void {
     host.replaceChildren();
+    /* The previous datalist is gone with the children, so drop the stale handle: leaving it set
+     * would have a search result appended to a detached node. */
+    haDatalist = null;
+    haNote = null;
 
     if (currentSel?.kind === 'rule') {
       const r = currentPage?.rules?.[currentSel.index];
@@ -265,17 +282,31 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
       idc.addEventListener('input', () => {
         commit({ binding: { kind: 'ha', entityId: idc.value } });
         opts.onValidateEntity?.(idc.value);
+        /* A SEARCH PER KEYSTROKE, not one fetch at load. Home Assistant sends no CORS headers so
+         * the browser cannot list entities itself, and the device-side search needs a term — so
+         * the picker can only fill in as the user types. The shell debounces this. */
+        opts.onEntitySearch?.(idc.value);
       });
+      /* Held so setEntityOptions() can refill the dropdown WITHOUT re-rendering (which would
+       * replace idc mid-typing and drop focus). */
+      haDatalist = list;
       bset.append(field('Entity id', idc));
       /* The datalist must be in the document for the picker to work, and appended AFTER the
        * input that references it by id. */
       bset.append(list);
+      /* A line the SEARCH can update in place — see setEntityOptions(). It reports how many
+       * matches came back, or why the search failed, at the field the user is typing in, without
+       * a re-render that would drop focus. */
+      haNote = el('p', { className: 'hint' });
+      haNote.textContent = 'Type part of the entity id — matching entities load from the display.';
+      bset.append(haNote);
       /* Say WHY there is no dropdown when the fetch failed, rather than showing an empty one —
        * an empty picker reads as "your HA has no entities". */
       if (entitiesUnavailable) {
         bset.append(el('p', { className: 'hint warn' }, entitiesUnavailable));
       } else if (entities.length === 0) {
-        bset.append(el('p', { className: 'hint' }, 'Type the entity id; the list will load if Home Assistant is reachable.'));
+        bset.append(el('p', { className: 'hint' },
+          'Type part of the entity id — matching entities load from the display as you type.'));
       }
     } else if (binding.kind === 'owm-daily') {
       bset.append(
@@ -411,6 +442,28 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
       entities = list;
       entitiesUnavailable = unavailable;
       render();
+    },
+    setEntityOptions(list, note) {
+      /* NO render() — see the interface note. Only refill the dropdown that is already on screen,
+       * so the input keeps focus and the typed text. A missing datalist (no HA widget selected)
+       * makes this a no-op rather than an error: a search can land after the user clicked away. */
+      entities = list;
+      if (haDatalist) {
+        haDatalist.replaceChildren();
+        for (const e of list) {
+          haDatalist.append(el('option', { value: e.entityId }, e.friendlyName ?? e.entityId));
+        }
+      }
+      if (!haNote) return;
+      if (note) {
+        haNote.textContent = note;
+        haNote.classList.add('warn');
+      } else {
+        haNote.textContent = list.length
+          ? `${list.length} matching ${list.length === 1 ? 'entity' : 'entities'} — pick one from the list.`
+          : 'No entities matched. Check the spelling, or type the full id.';
+        haNote.classList.remove('warn');
+      }
     },
   };
 }

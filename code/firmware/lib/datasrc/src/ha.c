@@ -22,6 +22,27 @@ int ha_entity_id_valid(const char *id)
     return 1;
 }
 
+/* Is `q` a safe entity-id SEARCH substring?
+ *
+ * THIS IS A TRUST BOUNDARY, not a tidiness check. The search runs server-side as a Jinja
+ * template, and the substring is interpolated into it, so an unvalidated `q` is template
+ * injection: a single quote would close the string literal and let the rest be Jinja. The
+ * entity-id grammar is exactly the safe set (lowercase, digits, '_', '.'), so requiring it both
+ * admits every substring a real entity id can contain and leaves no character that means
+ * anything to Jinja or to the JSON body the request is carried in. */
+int ha_search_query_valid(const char *q)
+{
+    if (!q || !*q) return 0;
+    size_t n = 0;
+    for (const char *p = q; *p; p++, n++) {
+        if (n >= 48) return 0;               /* longer than any object_id worth matching */
+        const char c = *p;
+        const int ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
 datasrc_status_t ha_classify_state(const char *state, double *out_value)
 {
     if (!state) return DATASRC_ERR_UNAVAILABLE;
@@ -99,4 +120,48 @@ int ha_template_add_entity(char *buf, int buflen, int len, const char *entity_id
     len += k;
     buf[len] = '\0';
     return len;
+}
+
+int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total)
+{
+    if (total) *total = 0;
+    if (!body || !out || max <= 0) return 0;
+
+    int n = 0;
+    int seen = 0;
+    const char *p = body;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        const size_t linelen = nl ? (size_t)(nl - p) : strlen(p);
+
+        /* 'id|name' — the separators the template emits. A line with no '|' still carries a
+         * usable id, so the name falls back to the id rather than dropping the row. */
+        const char *bar = memchr(p, '|', linelen);
+        const size_t idlen = bar ? (size_t)(bar - p) : linelen;
+        const char *name = bar ? bar + 1 : p;
+        const size_t namelen = bar ? linelen - idlen - 1 : linelen;
+
+        if (idlen > 0 && idlen < HA_ENTITY_ID_LEN) {
+            char id[HA_ENTITY_ID_LEN];
+            memcpy(id, p, idlen);
+            id[idlen] = '\0';
+            /* Filter to real entity ids: the template matches on a substring, and HA's own
+             * response formatting can leave a stray token. `seen` counts every row the template
+             * produced, so the caller can tell "no matches" from "all matches were clipped". */
+            if (ha_entity_id_valid(id)) {
+                seen++;
+                if (n < max) {
+                    snprintf(out[n].id, sizeof(out[n].id), "%s", id);
+                    size_t k = namelen < sizeof(out[n].name) - 1 ? namelen : sizeof(out[n].name) - 1;
+                    memcpy(out[n].name, name, k);
+                    out[n].name[k] = '\0';
+                    n++;
+                }
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (total) *total = seen;
+    return n;
 }

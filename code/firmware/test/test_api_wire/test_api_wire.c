@@ -204,6 +204,40 @@ static void test_nan_is_not_a_location(void)
     TEST_ASSERT_EQUAL_INT(0, api_location_is_set(10.0, nan_v));
 }
 
+/* The entity-search token is interpolated into a Jinja template, so the whitelist is the
+ * security boundary. */
+static void test_token_query_accepts_an_entity_fragment(void)
+{
+    char out[32];
+    TEST_ASSERT_EQUAL_INT(0, api_query_token("q=upstairs_hallway", "q", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("upstairs_hallway", out);
+    TEST_ASSERT_EQUAL_INT(0, api_query_token("?q=sensor.64b708cfe0fc", "q", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("sensor.64b708cfe0fc", out);
+    /* Found among other parameters, and only the value is copied. */
+    TEST_ASSERT_EQUAL_INT(0, api_query_token("a=1&q=temp2&b=3", "q", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("temp2", out);
+}
+
+/* Every byte that means something to Jinja (or to JSON framing) must be refused, not escaped:
+ * a quote would end the string literal and let the rest be template code. */
+static void test_token_query_rejects_injection_and_encoded_input(void)
+{
+    char out[32];
+    const char *bad[] = {
+        "q='", "q=x'%20or%20'1", "q=%7B%7B7%7D%7D",
+        "q=a b", "q=", "other=1", NULL,
+    };
+    for (int i = 0; bad[i]; i++) {
+        /* "%20"/"%7B" are literal here: no percent-decoding, so they carry '%' and are refused. */
+        TEST_ASSERT_EQUAL_INT_MESSAGE(-1, api_query_token(bad[i], "q", out, sizeof(out)), bad[i]);
+    }
+    /* Over-long values are refused, not truncated into a different match. */
+    TEST_ASSERT_EQUAL_INT(-1, api_query_token("q=aaaaaaaaaa", "q", out, 5));
+    /* A short destination must not be overrun. */
+    TEST_ASSERT_EQUAL_INT(0, api_query_token("q=abc", "q", out, 4));
+    TEST_ASSERT_EQUAL_STRING("abc", out);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -228,5 +262,7 @@ int main(void)
     RUN_TEST(test_out_of_range_is_rejected);
     RUN_TEST(test_the_bounds_are_legal);
     RUN_TEST(test_nan_is_not_a_location);
+    RUN_TEST(test_token_query_accepts_an_entity_fragment);
+    RUN_TEST(test_token_query_rejects_injection_and_encoded_input);
     return UNITY_END();
 }
