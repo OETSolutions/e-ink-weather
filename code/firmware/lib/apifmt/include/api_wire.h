@@ -67,3 +67,49 @@ int api_location_is_set(double lat, double lon);
  * injection. Entity ids only ever contain that set, so a term outside it cannot match one, and
  * rejecting fails closed instead of sanitising. */
 int api_query_token(const char *query, const char *key, char *out, size_t outlen);
+
+
+/* Send the config with the device's stored location spliced into it, WITHOUT allocating.
+ *
+ * WHY SLICES AND NOT AN EDITED COPY. The GET path has to hand back the device's stored location
+ * rather than whatever the document happens to carry, and the obvious ways to do that both need a
+ * second buffer of roughly the document's size:
+ *
+ *   - cJSON_Parse + swap + cJSON_Print wants ~4x the document in ONE piece of DRAM.
+ *   - Editing the text in a copy wants ~1x, plus the copy the store already handed us.
+ *
+ * This part has 320 KB with no PSRAM, and the render path pins free heap at ~2 KB for about two
+ * seconds while it holds the panel's static layer. During that window NO second buffer of any real
+ * size can exist, so both approaches fail there — measured on the bench in the real flow (a save,
+ * then reloading the editor): the endpoint answered with the document's own (0, 0), the app's "no
+ * pin placed yet" sentinel, on 9 of 100 loads. Waiting the window out narrows that but cannot close
+ * it, because the window outlasts the app's own request deadline.
+ *
+ * So this describes the answer as a list of spans instead: pieces OF THE CALLER'S EXISTING BUFFER,
+ * plus two short numbers formatted onto the caller's STACK. Nothing is allocated, so there is no
+ * window in which it can fail.
+ *
+ * Fills `out` with the spans in the order they must be sent and returns how many there are (1..5),
+ * or -1 when there is nothing to splice and the caller should send `json` unchanged — a document
+ * with no location object anywhere to insert into, or a result that will not fit the caller's
+ * slices.
+ *
+ * `num_buf` holds the two formatted numbers; the spans point into it, so it must outlive them.
+ * `api_slice_num_buf_len()` is the size it needs.
+ *
+ * Pure and host-tested (NFR-6): a textual edit fails by producing a corrupt document rather than an
+ * obvious error, and the numbers must format EXACTLY as cJSON would or a spliced document would
+ * differ byte-for-byte from one that went through a tree. */
+typedef struct {
+    const char *p;
+    size_t      len;
+} api_slice_t;
+
+/* Bytes `num_buf` must have: two doubles at cJSON's worst-case 17-significant-digit width. */
+#define API_SLICE_NUM_BUF_LEN 128
+/* The most spans a splice can produce: head, number, middle, number, tail. */
+#define API_SLICE_MAX 5
+
+int api_location_slices(const char *json, double lat, double lon,
+                        char *num_buf, size_t num_buf_len,
+                        api_slice_t *out, int max_out);

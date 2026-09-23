@@ -238,6 +238,142 @@ static void test_token_query_rejects_injection_and_encoded_input(void)
     TEST_ASSERT_EQUAL_STRING("abc", out);
 }
 
+
+
+/* ------------------------------------------------------------- api_location_slices --- */
+
+static char g_num[API_SLICE_NUM_BUF_LEN];
+
+/* Concatenate the slices — what the HTTP client would receive after chunked reassembly. */
+static const char *join(const char *json, double lat, double lon)
+{
+    static char buf[1024];
+    api_slice_t sl[API_SLICE_MAX];
+    const int n = api_location_slices(json, lat, lon, g_num, sizeof(g_num), sl, API_SLICE_MAX);
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, json);
+    size_t w = 0;
+    for (int i = 0; i < n; i++) {
+        TEST_ASSERT_TRUE(w + sl[i].len < sizeof(buf));
+        memcpy(buf + w, sl[i].p, sl[i].len);
+        w += sl[i].len;
+    }
+    buf[w] = '\0';
+    return buf;
+}
+
+static void test_slices_replace_both_numbers(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"latitude\":41.5,\"longitude\":-111.25,\"zipCode\":\"\"}}",
+        join("{\"location\":{\"latitude\":0,\"longitude\":0,\"zipCode\":\"\"}}", 41.5, -111.25));
+}
+
+static void test_slices_keep_the_rest_of_the_document(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"schemaVersion\":1,\"location\":{\"latitude\":1.25,\"longitude\":2.5},"
+        "\"pages\":[{\"name\":\"main\"}]}",
+        join("{\"schemaVersion\":1,\"location\":{\"latitude\":0,\"longitude\":0},"
+             "\"pages\":[{\"name\":\"main\"}]}", 1.25, 2.5));
+}
+
+/* longitude-before-latitude must work: the code must not assume the app's field order. */
+static void test_slices_handle_reversed_field_order(void)
+{
+    TEST_ASSERT_EQUAL_STRING("{\"location\":{\"longitude\":4.5,\"latitude\":3.5}}",
+        join("{\"location\":{\"longitude\":0,\"latitude\":0}}", 3.5, 4.5));
+}
+
+/* A nested object/array between the two numbers must be copied through untouched. */
+static void test_slices_skip_nested_structures(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"meta\":{\"a\":[1,2,3]},\"latitude\":7.5,\"longitude\":8.5},\"z\":9}",
+        join("{\"location\":{\"meta\":{\"a\":[1,2,3]},\"latitude\":0,\"longitude\":0},\"z\":9}",
+             7.5, 8.5));
+}
+
+/* A string containing braces must not confuse the depth counting. */
+static void test_slices_ignore_braces_inside_strings(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"note\":\"}{ not real }\",\"latitude\":1.5,\"longitude\":2.5}}",
+        join("{\"location\":{\"note\":\"}{ not real }\",\"latitude\":0,\"longitude\":0}}", 1.5, 2.5));
+}
+
+/* The default document has NO location: one is inserted rather than the call failing. */
+static void test_slices_insert_a_missing_location(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"latitude\":5.5,\"longitude\":6.5},\"schemaVersion\":1,\"pages\":[]}",
+        join("{\"schemaVersion\":1,\"pages\":[]}", 5.5, 6.5));
+}
+
+/* A same-named key NESTED deeper must not be mistaken for the top-level location. */
+static void test_slices_only_edit_the_top_level_location(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"latitude\":1.5,\"longitude\":2.5},"
+        "\"meta\":{\"location\":{\"latitude\":9,\"longitude\":9}}}",
+        join("{\"location\":{\"latitude\":0,\"longitude\":0},"
+             "\"meta\":{\"location\":{\"latitude\":9,\"longitude\":9}}}", 1.5, 2.5));
+}
+
+/* A value that round-trips through 15 significant digits prints short, exactly as cJSON does. */
+static void test_slices_use_the_short_form_when_it_round_trips(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"latitude\":45.6789012,\"longitude\":-123.456789}}",
+        join("{\"location\":{\"latitude\":0,\"longitude\":0}}", 45.6789012, -123.456789));
+}
+
+/* And one that does NOT round-trip prints 17 digits, again matching cJSON. The app re-reads these
+ * numbers, and a document spliced differently from one that went through a tree would show the pin
+ * a fraction off. */
+static void test_slices_match_cjson_precision(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"location\":{\"latitude\":41.827139015592429,\"longitude\":-111.807861328125}}",
+        join("{\"location\":{\"latitude\":0,\"longitude\":0}}",
+             41.82713901559243, -111.807861328125));
+}
+
+static void test_slices_reject_a_document_with_nothing_to_insert_into(void)
+{
+    api_slice_t sl[API_SLICE_MAX];
+    TEST_ASSERT_EQUAL_INT(-1,
+        api_location_slices("not json at all", 1, 2, g_num, sizeof(g_num), sl, API_SLICE_MAX));
+}
+
+static void test_slices_reject_bad_arguments(void)
+{
+    api_slice_t sl[API_SLICE_MAX];
+    TEST_ASSERT_EQUAL_INT(-1, api_location_slices(NULL, 1, 2, g_num, sizeof(g_num), sl, API_SLICE_MAX));
+    TEST_ASSERT_EQUAL_INT(-1, api_location_slices("{\"location\":{}}", 1, 2, NULL, 10, sl, API_SLICE_MAX));
+    TEST_ASSERT_EQUAL_INT(-1, api_location_slices("{\"location\":{}}", 1, 2, g_num, sizeof(g_num), sl, 0));
+}
+
+/* Too small a number buffer must fail rather than truncate a coordinate. */
+static void test_slices_reject_a_too_small_number_buffer(void)
+{
+    char tiny[16];
+    api_slice_t sl[API_SLICE_MAX];
+    TEST_ASSERT_EQUAL_INT(-1,
+        api_location_slices("{\"location\":{\"latitude\":0,\"longitude\":0}}", 1.5, 2.5, tiny, sizeof(tiny), sl, API_SLICE_MAX));
+}
+
+static void test_slices_handle_a_real_shipped_document(void)
+{
+    const char *in = "{\"schemaVersion\":1,\"generator\":\"eink-weather-webapp\","
+                     "\"updateSeconds\":900,\"location\":{\"latitude\":0,\"longitude\":0,\"zipCode\":\"\"},"
+                     "\"owmProduct\":\"auto\",\"ha\":{\"mode\":\"rest\"},\"pages\":[{\"name\":\"main\"}]}";
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"schemaVersion\":1,\"generator\":\"eink-weather-webapp\","
+        "\"updateSeconds\":900,\"location\":{\"latitude\":45.6789012,\"longitude\":-123.456789,\"zipCode\":\"\"},"
+        "\"owmProduct\":\"auto\",\"ha\":{\"mode\":\"rest\"},\"pages\":[{\"name\":\"main\"}]}",
+        join(in, 45.6789012, -123.456789));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -264,5 +400,18 @@ int main(void)
     RUN_TEST(test_nan_is_not_a_location);
     RUN_TEST(test_token_query_accepts_an_entity_fragment);
     RUN_TEST(test_token_query_rejects_injection_and_encoded_input);
+    RUN_TEST(test_slices_replace_both_numbers);
+    RUN_TEST(test_slices_keep_the_rest_of_the_document);
+    RUN_TEST(test_slices_handle_reversed_field_order);
+    RUN_TEST(test_slices_skip_nested_structures);
+    RUN_TEST(test_slices_ignore_braces_inside_strings);
+    RUN_TEST(test_slices_insert_a_missing_location);
+    RUN_TEST(test_slices_only_edit_the_top_level_location);
+    RUN_TEST(test_slices_use_the_short_form_when_it_round_trips);
+    RUN_TEST(test_slices_match_cjson_precision);
+    RUN_TEST(test_slices_reject_a_document_with_nothing_to_insert_into);
+    RUN_TEST(test_slices_reject_bad_arguments);
+    RUN_TEST(test_slices_reject_a_too_small_number_buffer);
+    RUN_TEST(test_slices_handle_a_real_shipped_document);
     return UNITY_END();
 }

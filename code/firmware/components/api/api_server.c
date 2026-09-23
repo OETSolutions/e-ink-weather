@@ -98,6 +98,18 @@ static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
  * lands inside the render window's transient fragmentation, so both need the same retry. */
 static char *alloc_body_retry(size_t len);
 
+/* How often the parse wait re-checks the heap. Defined here because h_config_put and the body
+ * readers below it both use it, and the constant block they share sits far below them. */
+#define CONFIG_PUT_POLL_MS      50
+
+/* The config GET's retry budget, for reading the stored document and for the splice that follows.
+ * SHORTER than the PUT's 6 s on purpose: this is the web app's LOAD path and the app aborts it
+ * after LOAD_TIMEOUT_MS (5 s), so a longer wait would ready an answer for a socket already gone.
+ * The render window lasts ~2 s, so 3 s clears it with room to send inside the client's deadline. */
+#define CONFIG_GET_WAIT_MS      3000
+/* Defined far below with the other parse-wait constants, but the body readers above them call it. */
+static int wait_for_parse_room(size_t doc_len, size_t extra, int budget_ms);
+
 void api_reset_cycle_counters(void)
 {
     lock();
@@ -828,66 +840,107 @@ static void note_config_location(const char *json)
     cJSON_Delete(root);
 }
 
-/* Put the stored location back into the returned document.
- *
- * WHY THE RESPONSE AND NOT THE STORE: the NVS blobs are the source of truth — the device
- * writes them itself from the public IP (geo_ip.c) when the user has not chosen a position.
- * Echoing only what was stored as a document would show a blank or stale location in the app
- * on a device that knows exactly where it is, and the map would then open on 0,0. Injecting
- * the real value here means every reader — the map picker, the fields, save-to-file — sees
- * the same coordinates the firmware will fetch with. */
-static void inject_stored_location(cJSON *root)
+/* Read the stored location. Returns 1 and fills lat/lon, or 0 when nothing is stored — the
+ * "nothing chosen and nothing guessed" case, which is a normal first-boot state. */
+static int read_stored_location(double *lat, double *lon)
 {
     nvs_handle_t h;
-    double lat = 0, lon = 0;
-    size_t llen = sizeof(lat);
-    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
-    const esp_err_t e = nvs_get_blob(h, DEVENV_KEY_LOC_LAT, &lat, &llen);
-    llen = sizeof(lon);
-    const esp_err_t e2 = nvs_get_blob(h, DEVENV_KEY_LOC_LON, &lon, &llen);
+    size_t llen = sizeof(*lat);
+    if (nvs_open(DEVENV_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 0;
+    const esp_err_t e = nvs_get_blob(h, DEVENV_KEY_LOC_LAT, lat, &llen);
+    llen = sizeof(*lon);
+    const esp_err_t e2 = nvs_get_blob(h, DEVENV_KEY_LOC_LON, lon, &llen);
     nvs_close(h);
-    if (e != ESP_OK || e2 != ESP_OK) return;   /* nothing chosen and nothing guessed */
-
-    cJSON *loc = cJSON_GetObjectItemCaseSensitive(root, "location");
-    if (!cJSON_IsObject(loc)) {
-        loc = cJSON_AddObjectToObject(root, "location");
-        if (!loc) return;
-    }
-    /* cJSON_AddNumberToObject replaces an existing member, so this both fills a missing
-     * location and corrects a stale one. */
-    cJSON_DeleteItemFromObjectCaseSensitive(loc, "latitude");
-    cJSON_DeleteItemFromObjectCaseSensitive(loc, "longitude");
-    cJSON_AddNumberToObject(loc, "latitude", lat);
-    cJSON_AddNumberToObject(loc, "longitude", lon);
+    /* Both keys, or neither: a half-written pair is not a position. */
+    return e == ESP_OK && e2 == ESP_OK && api_location_is_set(*lat, *lon);
 }
 
-/* Send a config document with the device's real location merged in. Falls back to sending the
- * document unchanged if it will not parse or the merge cannot be serialised — a GET that
- * returns the user's layout is far more useful than an error, and the location is the one
- * field the device is authoritative about. */
+/* Send the config with the device's stored location spliced into it.
+ *
+ * NOTHING IS ALLOCATED HERE, and that is the fix rather than an optimisation. The render path pins
+ * free heap at ~2 KB for about two seconds while it holds the panel's static layer — the log shows
+ * "largest 1728" at the deepest point — so during that window NO second buffer of any useful size
+ * can exist. Both obvious ways to merge the location need one (a cJSON tree wants ~4x the document,
+ * an edited copy wants ~1x), and both therefore failed there: measured on the bench in the REAL
+ * flow (a save, then reloading the editor), this endpoint answered with the document's own (0, 0) —
+ * the app's "no pin placed yet" sentinel — on 9 of 100 loads, while the panel went on showing the
+ * city the device had resolved from its public IP. Waiting the window out narrowed that (23/48,
+ * then 4/40, then 6/96, then 3/168, then 1/100) but cannot close it, because the window outlasts the
+ * app's own load deadline (LOAD_TIMEOUT_MS, 5 s).
+ *
+ * api_location_slices() describes the answer as spans of the buffer we ALREADY hold, plus two
+ * numbers formatted onto this stack frame, so there is no allocation and no window in which to
+ * lose. The response is then sent chunked, which esp_http_server supports precisely so a body need
+ * not be materialised in one piece.
+ *
+ * A document that cannot be spliced — no location object to fill, or a shape the slices do not
+ * cover — is sent as it stands. That is the pre-existing fallback, kept for the one case it is
+ * genuinely right for (a corrupt or hand-written document); it is no longer the path a healthy
+ * device takes, and it says so in the log. */
 static esp_err_t api_send_config_json(httpd_req_t *req, const char *json)
 {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) return api_send_json(req, json, "200 OK");
+    double lat = 0, lon = 0;
+    if (!read_stored_location(&lat, &lon)) {
+        /* Nothing stored: there is nothing to splice, and the document is all we have. */
+        return api_send_json(req, json, "200 OK");
+    }
 
-    inject_stored_location(root);
+    char num_buf[API_SLICE_NUM_BUF_LEN];
+    api_slice_t slices[API_SLICE_MAX];
+    const int n = api_location_slices(json, lat, lon, num_buf, sizeof(num_buf),
+                                      slices, API_SLICE_MAX);
+    if (n < 1) {
+        ESP_LOGW(TAG, "could not splice the location into the config; sending it as stored");
+        api_note_error("api: config sent without location");
+        return api_send_json(req, json, "200 OK");
+    }
 
-    char *out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!out) return api_send_json(req, json, "200 OK");
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    const esp_err_t e = api_send_json(req, out, "200 OK");
-    free(out);
-    return e;
+    esp_err_t e = ESP_OK;
+    for (int i = 0; i < n; i++) {
+        /* Zero-length spans are legal and skipping them keeps the chunked body tidy. */
+        if (slices[i].len == 0) continue;
+        e = httpd_resp_send_chunk(req, slices[i].p, (ssize_t)slices[i].len);
+        if (e != ESP_OK) break;
+    }
+    /* The terminating empty chunk, sent even after a failure so the client sees a finished body
+     * rather than a hung socket. */
+    const esp_err_t end = httpd_resp_send_chunk(req, NULL, 0);
+    return e != ESP_OK ? e : end;
 }
 
 static esp_err_t h_config_get(httpd_req_t *req)
 {
+    /* RETRY THE READ THROUGH THE RENDER WINDOW, and do NOT let its failure mean "unconfigured".
+     *
+     * cfg_store_get() sizes its buffer from the stored document and mallocs that — the same ~5.4 KB
+     * block the splice below needs — so it fails in the same window, for the same reason. The old
+     * code treated ANY failure as "never configured" and answered with the built-in default
+     * document: the user's entire layout, silently replaced by a 124-byte stub ON A 200. That was
+     * pre-existing and reproducible in the real flow (a save, then reloading the editor), and it is
+     * worse than the missing location this function was being fixed for, because it loses the
+     * layout rather than one field.
+     *
+     * The document is worth waiting a moment for, so this retries rather than guessing. Only if the
+     * window outlasts the budget does it fall back to the default — and then it says so, so the
+     * substitution can never again be mistaken for the stored document. */
     char *json = NULL;
-    if (cfg_store_get(cfg_store_nvs(), &json) != 0) {
-        /* Distinguish "never configured" from "corrupt": the former is a normal first-boot
-         * state and is a 200 with the default document, so the web app can always load
-         * something editable. */
+    const int64_t deadline = esp_timer_get_time() + (int64_t)CONFIG_GET_WAIT_MS * 1000;
+    for (;;) {
+        if (cfg_store_get(cfg_store_nvs(), &json) == 0 && json) break;
+        if (esp_timer_get_time() >= deadline) break;
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_PUT_POLL_MS));
+    }
+    if (!json) {
+        /* Distinguish "never configured" from "could not read it": the former is a normal
+         * first-boot state and is a 200 with the default document, so the web app can always load
+         * something editable. This path is now reached only when the read genuinely would not fit,
+         * which the log records rather than hiding. */
+        ESP_LOGW(TAG, "could not read the stored config within the window; sending the default");
+        api_note_error("api: config read fell back to the default");
         json = strdup(cfg_store_default_json());
     }
     if (!json) return api_send_err(req, "500 Internal Server Error", "oom");
@@ -999,7 +1052,6 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
  * SAFE TO WAIT: nothing has been read from the socket yet on the body path, and on the store path
  * the body is held in our own buffer, so the document is intact when the wait ends. */
 #define CONFIG_PUT_WAIT_MS      6000
-#define CONFIG_PUT_POLL_MS      50
 /* HOW MUCH FREE DRAM A DOCUMENT'S PARSE ACTUALLY NEEDS, AND A BOUNDED WAIT FOR IT.
  *
  * MEASURED, NOT GUESSED — by pushing a size ladder of otherwise-identical documents at an idle
@@ -1021,18 +1073,29 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
  *
  * THE MODEL ONLY DECIDES HOW LONG TO WAIT, NEVER WHETHER TO TRY. Returning 0 skips the rest of the
  * wait but still makes the attempt, so a document that fits for a reason the model does not capture is
- * never refused on the model's say-so — a wrong estimate costs latency, not correctness. */
+ * never refused on the model's say-so — a wrong estimate costs latency, not correctness.
+ *
+ * THE GATE IS ON TOTAL FREE HEAP, which is what a cJSON tree of many small nodes needs. It is NOT a
+ * sufficient condition on this part — the document and its printed form each need one CONTIGUOUS
+ * block, and the heap is one region the render path splits, so the total can read sufficient while
+ * nothing large enough exists (measured: "free 31704, largest 7168"). That total-versus-contiguous
+ * trap is why the config GET no longer builds a tree at all: it splices the location into the text
+ * with no second buffer, so it does not depend on this wait being satisfiable — see
+ * api_send_config_json for the measurements.
+ *
+ * `extra` IS THE MEMORY THE CALLER WILL NEED ON TOP OF THE TREE: its own request body, which it
+ * allocated before calling. `budget_ms` is a parameter because the PUT may wait longer than a GET,
+ * whose client gives up sooner. */
 #define CONFIG_TREE_BASE        2048
 #define CONFIG_TREE_FACTOR      4
 
 /* How long to wait for the render window to clear. A refresh pins free DRAM near its 26 KB floor for
  * ~2 s (measured), so 6 s is a comfortable margin — and well inside the web app's request timeout. */
 #define CONFIG_PUT_WAIT_MS      6000
-#define CONFIG_PUT_POLL_MS      50
 
 /* Wait, bounded, for the free DRAM a parse needs — for a document of `doc_len` whose body buffer
- * will still be held when the parse runs. `already_allocated` is nonzero when that buffer is ALREADY
- * on the heap, so its size must not be required a second time.
+ * will still be held when the parse runs. `extra` is the caller's own already-allocated buffer, so
+ * its size is added to the tree this wait is really about.
  *
  * Returns 1 as soon as the heap is big enough, which is the NORMAL case: at idle this part has ~41 KB
  * free and the shipped 6.9 KB document needs ~31 KB, so the wait returns without sleeping at all. It
@@ -1046,13 +1109,13 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
  *
  * Returning 0 is NOT itself a failure: the caller still makes its attempt, so a document that fits
  * for a reason this model does not capture is never refused on the model's say-so. */
-static int wait_for_parse_room(size_t doc_len, int already_allocated)
+static int wait_for_parse_room(size_t doc_len, size_t extra, int budget_ms)
 {
     const size_t tree = CONFIG_TREE_BASE + doc_len * CONFIG_TREE_FACTOR;
-    const size_t need = already_allocated ? tree : tree + doc_len;
+    const size_t need = tree + extra;
     for (int waited = 0; ; waited += CONFIG_PUT_POLL_MS) {
         if (esp_get_free_heap_size() >= need) return 1;
-        if (waited >= CONFIG_PUT_WAIT_MS) return 0;
+        if (waited >= budget_ms) return 0;
         vTaskDelay(pdMS_TO_TICKS(CONFIG_PUT_POLL_MS));
     }
 }
@@ -1075,7 +1138,7 @@ static char *alloc_body_retry(size_t len)
     /* The same render window that starves the parser also refuses this allocation, so wait for it
      * to clear before the first attempt rather than spending the retries inside the window. The body
      * is not allocated yet, so the requirement includes its own size. */
-    wait_for_parse_room(len, 0);
+    wait_for_parse_room(len, len, CONFIG_PUT_WAIT_MS);
     char *p = malloc(len);
     for (int i = 0; i < 40 && !p; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
@@ -1151,7 +1214,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
      * document was reported as invalid. A GENUINELY bad document still fails every attempt, so none
      * of this can admit something invalid. */
     api_values_forget();
-    wait_for_parse_room((size_t)n, 1);
+    wait_for_parse_room((size_t)n, 0, CONFIG_PUT_WAIT_MS);
     int store_rc = cfg_store_put(cfg_store_nvs(), body);
     for (int i = 0; i < 40 && store_rc != 0; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
