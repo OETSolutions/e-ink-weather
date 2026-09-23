@@ -66,7 +66,11 @@ static inline void golden_build_static_layer(uint8_t *fb)
 
     for (int i = 0; i < GOLDEN_LABEL_COUNT; i++) {
         const static_label_t *l = &GOLDEN_LABELS[i];
-        value_field_t f = { .x = l->x, .y = l->y, .w = 500, .h = 40,
+        /* A LABEL'S BOX IS THE REST OF THE PANEL. It clips glyphs and nothing else, and a
+         * fixed box smaller than a large face's line height cut a big heading off — the
+         * web app sizes it the same way (buildStaticLayer), so the two cannot diverge. */
+        value_field_t f = { .x = l->x, .y = l->y,
+                            .w = EPD_WIDTH - l->x, .h = EPD_HEIGHT - l->y,
                             .align_h = 'L', .align_v = 'T', .font_id = l->font_id };
         const char *v[1] = { l->text };
         render_compose(&c, fb, &f, v, 1);

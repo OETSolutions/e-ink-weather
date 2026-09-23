@@ -324,11 +324,20 @@ export function drawText(
  * Build the static layer: white, with labels and rules. Mirrors golden_build_static_layer()
  * from the firmware's tools/golden/default_layout.h — deliberately, because the golden test
  * compares this exact image against the device's.
+ *
+ * A LABEL'S CLIP BOX IS THE REST OF THE PANEL, not a fixed 500x40. A label is ONE LINE of text
+ * with no width or height of its own (see model/config.ts), and its pen origin is its (x, y); the
+ * box exists only to CLIP the glyphs. A fixed 500x40 box was silently too small the moment the
+ * font ladder grew past the 40 px face (line height 49): a heading set at 48 px or larger was cut
+ * off at 40 px tall, and any heading wider than 500 px lost its tail — the reported "resizing
+ * header text above 40 cuts off". Sizing the box from the label's own origin to the panel edge
+ * gives the origin the renderer needs while never clipping a glyph the panel could show; the
+ * canvas still bounds ink to the panel, which is the only clip a label should ever hit.
  */
 export function buildStaticLayer(labels: StaticLabel[], rules: StaticRule[]): Bitmap {
   const b = createBitmap();
   for (const l of labels) {
-    drawText(b, l.x, l.y, l.text, faceIdForPx(l.font));
+    drawText(b, l.x, l.y, l.text, faceIdForPx(l.font), b.width - l.x, b.height - l.y);
   }
   for (const r of rules) {
     for (let t = 0; t < r.thickness; t++) {

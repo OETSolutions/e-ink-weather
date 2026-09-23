@@ -259,6 +259,33 @@ describe('upscaled faces are exact block scales (FR-4a)', () => {
   }
 });
 
+/* A HEADING ("label") IS NOT CLIPPED BY A FIXED BOX. Reported defect: "Resizing header text boxes
+ * above 40 cut off and don't fit text." Labels are baked into the static layer through the same
+ * drawField path, with a clip box that was hardcoded 500x40 — too small the moment the ladder grew
+ * past the 40 px face (line height 49). A heading set at 48 px or larger lost its lower half, and a
+ * wide heading lost its tail past x+500. The box is now the rest of the panel, so a heading is
+ * clipped only by the panel edge. */
+describe('headings are not clipped by a fixed box (reported defect)', () => {
+  const inkIn = (b: ReturnType<typeof buildStaticLayer>, x0: number, y0: number, x1: number, y1: number) => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (getPx(b, x, y)) n++;
+    return n;
+  };
+
+  it('draws a large heading below the old 40 px cut', () => {
+    for (const px of [40, 48, 64, 96, 128]) {
+      const b = buildStaticLayer([{ x: 40, y: 20, text: 'OUTDOOR', font: px }], []);
+      expect(inkIn(b, 40, 40, 400, 100), `a ${px}px heading lost ink below row 40`).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps the tail of a heading wider than the old 500 px box', () => {
+    const b = buildStaticLayer([{ x: 40, y: 20, text: 'HALLWAY TEMPERATURE NOW', font: 48 }], []);
+    /* The old box ended at x = 40 + 500 = 540; ink past 560 proves the text is no longer cut. */
+    expect(inkIn(b, 560, 20, 900, 100)).toBeGreaterThan(0);
+  });
+});
+
 function blank(): Uint8Array {
   return new Uint8Array(FB_BYTES).fill(0xff);
 }
