@@ -28,6 +28,15 @@ export interface Face {
   lineHeight: number;
   glyphs: Glyph[];
   bits: Uint8Array;
+  /**
+   * The block-scale factor: 1 for a rasterised face, k >= 2 for one drawn as a k x k
+   * block scale of `upscaleFromPx`. Mirrors the firmware's atlas_face_t.upscale; the
+   * web renderer applies it exactly as the device does (NFR-4). The metrics above are
+   * the BASE's, unscaled, so a glyph's w/h matches the bitmap the face points at.
+   */
+  upscale: number;
+  /** The px size of the face this one scales, or this face's own size when upscale is 1. */
+  upscaleFromPx: number;
 }
 
 const A16_GLYPHS: Glyph[] = [
@@ -149,6 +158,8 @@ const A16_B64 =
   'AwP44MDAwMDAwMB4zMDAeAQGzHhgYPhgYGBgYGAgOMLCwsLCwsJuOoKCxkRsbCg4EIQgjiDOYEpgSkB5QHHAMYAxgMZEaDgw' +
   'OGxEhoLCxkRsKCg4EBAg4P4MDBgQMGDA/hgwICAgIGDAYCAgICAwGICAgICAgICAgICAgICAgICAgIDAYCAgICAgGDAgICAg' +
   'YMBxWc9w2IjIcA==';
+
+const A16_BITS = b64decode(A16_B64);
 
 const A20_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 6, bx: 0, by: 0 },
@@ -279,6 +290,8 @@ const A20_B64 =
   'UDhwGHAYcMGAYwAiADYAHAAcABwANgBjAGMAwYDAwMGAwYBhAGMAIwA2ADYAHAAcAAwACAAYAHAAYAD/gH8AAwAGAAwAHAAY' +
   'ADAAYAD/AP+ADBwQEBAQEDBg4DAwEBAQEBwMgICAgICAgICAgICAgICAgICAgICAgICA4OAwMDAwMDAcDBgwMDAwMPDgIAD4' +
   'wM+AhwAQfEbGxnw4';
+
+const A20_BITS = b64decode(A20_B64);
 
 const A24_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 7, bx: 0, by: 0 },
@@ -417,6 +430,8 @@ const A24_B64 =
   'ADmAMcBgwOBgwHDAYGBgYOBwwDDAMYA5gBmAGwAPAA4ADgAGAAwADAB4AHAAf+B/wAHAAYADAAcADgAMABgAOABwAH/g/+Ae' +
   'HDgwMDAwMDDg4DAwMDAwMDAYHg7AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA8HgYGBgYGBgcDgccGBgYGBgYOPDgOCD+' +
   'MMfgwcA4fMaCgsb+OA==';
+
+const A24_BITS = b64decode(A24_B64);
 
 const A32_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 8, bx: 0, by: 0 },
@@ -587,6 +602,8 @@ const A32_B64 =
   'DwAOAA4ADgAOAA4AHgA+APwA8AD8AD4AHgAOAA4ADgAOAA4ADwAPAA+AB+AH4AHg8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw' +
   '8PDw8PDw8PDw8PDw8PDw8AD4APwAPgAeAB4AHgAeAB4AHgAeAB4AD4AHwAPAD8APAB4AHgAeAB4AHgAeAB4AHgB8APwA+ADg' +
   'ADwAfwf/j/f/4f7g/gB4HwB/gH/A8cDg4ODg4OD7wH/AP4AeAA==';
+
+const A32_BITS = b64decode(A32_B64);
 
 const A40_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 10, bx: 0, by: 0 },
@@ -786,6 +803,8 @@ const A40_B64 =
   '+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4AP4A/wD/AB+AD4APgA+AD4APgA+AD4APgA+AB8AH4AP4APgA' +
   '+AP4B+AHwA+AD4APgA+AD4APgA+AD4APgB+A/wD/AP4A8AAfgAA/wHh/8Ph/+fD4//Dwf/DwH+AAD4AHwB/gP/B/+Hx4eDzw' +
   'PPA8eDx8eH/4P/Af4AfA';
+
+const A40_BITS = b64decode(A40_B64);
 
 const A48_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 12, bx: 0, by: 0 },
@@ -1027,6 +1046,8 @@ const A48_B64 =
   '+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+PAA/gD/AP+A/4A/wA/AD8AHwAfAB8AHwAfA' +
   'B8AHwAfAB+AH4Af4A/8B/wB/AH8B/wP/B/gH4AfgB8AHwAfAB8AHwAfAB8AHwA/AD8A/wP+A/4D/AP4A8AAPwAAAH+APgD/4' +
   'HwB//B8A//4/APx//wD4P/4A+A/+APgH/AAAAfAAB+Af+D/8f/5//vw/+B/wD/AP8A/4H/w/f/5//j/8H/gH4A==';
+
+const A48_BITS = b64decode(A48_B64);
 
 const A64_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 16, bx: 0, by: 0 },
@@ -1370,6 +1391,8 @@ const A64_B64 =
   'AAH+AAH+AAH+AAH+AAH+AAH+AAP+AAP8AAf8AH/8AP/4AP/4AP/wAP/gAP+AAPwAAADgAAAAB/wAH4AP/wA/gB//gD+AP//A' +
   'P4B//+A/gH//+P+Af4///wD/A///AP4B//4A/gD//gD+AH/8APwAP/gAAAAHwAAB/AAH/wAP/8Af/+A//+B///B/B/j+A/j8' +
   'Afj8APj8APz8APz8APj8Afj+A/h/B/h///A//+Af/+AP/4AH/wAB/AA=';
+
+const A64_BITS = b64decode(A64_B64);
 
 const A80_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 20, bx: 0, by: 0 },
@@ -1837,6 +1860,8 @@ const A80_B64 =
   'AAAD/8AAf4AH//AAf8AP//gAf4Af//4Af4A///8A/4A///+A/4B////j/4B/4f///wB/wH///wB/gD///wD/gB///gD/gAf/' +
   '/AD/gAP/+AB/AAD/4AAAAAA/gAAAP4AAAf/wAAP/+AAP//wAH//+AD///wA///+Af+D/gH+Af8D/AD/A/wAf4P4AH+D+AA/g' +
   '/gAP4P4AD+D+AB/g/wAf4P8AP8B/gH/Af+D/wD///4A///8AH//+AA///AAH//gAAf/wAAA/gAA=';
+
+const A80_BITS = b64decode(A80_B64);
 
 const A96_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 24, bx: 0, by: 0 },
@@ -2456,6 +2481,8 @@ const A96_B64 =
   '///8AP/AAP//+AD/gAB///AA/4AAH//gAAAAAA//gAAAAAAB/gAAAA/wAAB//gAB//+AA///wAf//+AP///wH///+D////w/' +
   '///8f/gf/n/gB/7/wAP//8AD//+AAf//gAH//wAA//8AAP//AAD//4AB//+AAf//wAH//8AD/3/gB/5/+B/+P////D////wf' +
   '///4D///8Af//+AD///AAf//gAB//gAAD/AA';
+
+const A96_BITS = b64decode(A96_B64);
 
 const A128_GLYPHS: Glyph[] = [
   { off: 0, w: 0, h: 0, advance: 32, bx: 0, by: 0 },
@@ -3463,6 +3490,8 @@ const A128_B64 =
   'A//A//wAB//Af/4AD//Af/8AH/+AP//Af/+AP/////8AH/////8AH/////4AD/////4AB/////wAA/////gAAf////AAAP//' +
   '/+AAAD///4AAAB///gAAAAf/+AAAAAB/wAAA';
 
+const A128_BITS = b64decode(A128_B64);
+
 /** Decode a base64 string to bytes without a DOM or Buffer dependency. */
 function b64decode(s: string): Uint8Array {
   const B = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -3488,7 +3517,9 @@ export const A16: Face = {
   descent: 4,
   lineHeight: 20,
   glyphs: A16_GLYPHS,
-  bits: b64decode(A16_B64),
+  bits: A16_BITS,
+  upscale: 1,
+  upscaleFromPx: 16,
 };
 
 export const A20: Face = {
@@ -3501,7 +3532,9 @@ export const A20: Face = {
   descent: 5,
   lineHeight: 25,
   glyphs: A20_GLYPHS,
-  bits: b64decode(A20_B64),
+  bits: A20_BITS,
+  upscale: 1,
+  upscaleFromPx: 20,
 };
 
 export const A24: Face = {
@@ -3514,7 +3547,9 @@ export const A24: Face = {
   descent: 6,
   lineHeight: 30,
   glyphs: A24_GLYPHS,
-  bits: b64decode(A24_B64),
+  bits: A24_BITS,
+  upscale: 1,
+  upscaleFromPx: 24,
 };
 
 export const A32: Face = {
@@ -3527,7 +3562,9 @@ export const A32: Face = {
   descent: 8,
   lineHeight: 39,
   glyphs: A32_GLYPHS,
-  bits: b64decode(A32_B64),
+  bits: A32_BITS,
+  upscale: 1,
+  upscaleFromPx: 32,
 };
 
 export const A40: Face = {
@@ -3540,7 +3577,9 @@ export const A40: Face = {
   descent: 10,
   lineHeight: 49,
   glyphs: A40_GLYPHS,
-  bits: b64decode(A40_B64),
+  bits: A40_BITS,
+  upscale: 1,
+  upscaleFromPx: 40,
 };
 
 export const A48: Face = {
@@ -3553,7 +3592,9 @@ export const A48: Face = {
   descent: 12,
   lineHeight: 59,
   glyphs: A48_GLYPHS,
-  bits: b64decode(A48_B64),
+  bits: A48_BITS,
+  upscale: 1,
+  upscaleFromPx: 48,
 };
 
 export const A64: Face = {
@@ -3566,7 +3607,9 @@ export const A64: Face = {
   descent: 16,
   lineHeight: 78,
   glyphs: A64_GLYPHS,
-  bits: b64decode(A64_B64),
+  bits: A64_BITS,
+  upscale: 1,
+  upscaleFromPx: 64,
 };
 
 export const A80: Face = {
@@ -3579,7 +3622,9 @@ export const A80: Face = {
   descent: 20,
   lineHeight: 98,
   glyphs: A80_GLYPHS,
-  bits: b64decode(A80_B64),
+  bits: A80_BITS,
+  upscale: 1,
+  upscaleFromPx: 80,
 };
 
 export const A96: Face = {
@@ -3592,7 +3637,9 @@ export const A96: Face = {
   descent: 24,
   lineHeight: 117,
   glyphs: A96_GLYPHS,
-  bits: b64decode(A96_B64),
+  bits: A96_BITS,
+  upscale: 1,
+  upscaleFromPx: 96,
 };
 
 export const A128: Face = {
@@ -3605,7 +3652,99 @@ export const A128: Face = {
   descent: 31,
   lineHeight: 155,
   glyphs: A128_GLYPHS,
-  bits: b64decode(A128_B64),
+  bits: A128_BITS,
+  upscale: 1,
+  upscaleFromPx: 128,
+};
+
+export const A160: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 26228, w: 27, h: 27, advance: 37, bx: 5, by: -58 }],
+  ]),
+  px: 160,
+  ascent: 78,
+  descent: 20,
+  lineHeight: 98,
+  glyphs: A80_GLYPHS,
+  bits: A80_BITS,
+  upscale: 2,
+  upscaleFromPx: 80,
+};
+
+export const A192: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 37119, w: 32, h: 33, advance: 44, bx: 6, by: -71 }],
+  ]),
+  px: 192,
+  ascent: 93,
+  descent: 24,
+  lineHeight: 117,
+  glyphs: A96_GLYPHS,
+  bits: A96_BITS,
+  upscale: 2,
+  upscaleFromPx: 96,
+};
+
+export const A256: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 64851, w: 43, h: 44, advance: 59, bx: 8, by: -94 }],
+  ]),
+  px: 256,
+  ascent: 124,
+  descent: 31,
+  lineHeight: 155,
+  glyphs: A128_GLYPHS,
+  bits: A128_BITS,
+  upscale: 2,
+  upscaleFromPx: 128,
+};
+
+export const A320: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 26228, w: 27, h: 27, advance: 37, bx: 5, by: -58 }],
+  ]),
+  px: 320,
+  ascent: 78,
+  descent: 20,
+  lineHeight: 98,
+  glyphs: A80_GLYPHS,
+  bits: A80_BITS,
+  upscale: 4,
+  upscaleFromPx: 80,
+};
+
+export const A384: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 64851, w: 43, h: 44, advance: 59, bx: 8, by: -94 }],
+  ]),
+  px: 384,
+  ascent: 124,
+  descent: 31,
+  lineHeight: 155,
+  glyphs: A128_GLYPHS,
+  bits: A128_BITS,
+  upscale: 3,
+  upscaleFromPx: 128,
+};
+
+export const A512: Face = {
+  firstChar: 32,
+  extra: new Map<number, Glyph>([
+    [176, { off: 64851, w: 43, h: 44, advance: 59, bx: 8, by: -94 }],
+  ]),
+  px: 512,
+  ascent: 124,
+  descent: 31,
+  lineHeight: 155,
+  glyphs: A128_GLYPHS,
+  bits: A128_BITS,
+  upscale: 4,
+  upscaleFromPx: 128,
 };
 
 /** Face ids: the INDEX into FACES, matching the firmware's font_id_t. */
@@ -3619,11 +3758,17 @@ export const FONT_64 = 6;
 export const FONT_80 = 7;
 export const FONT_96 = 8;
 export const FONT_128 = 9;
+export const FONT_160 = 10;
+export const FONT_192 = 11;
+export const FONT_256 = 12;
+export const FONT_320 = 13;
+export const FONT_384 = 14;
+export const FONT_512 = 15;
 
-export const FACES: Face[] = [A16, A20, A24, A32, A40, A48, A64, A80, A96, A128];
+export const FACES: Face[] = [A16, A20, A24, A32, A40, A48, A64, A80, A96, A128, A160, A192, A256, A320, A384, A512];
 
 /** The pixel sizes the panel can actually draw, ascending. */
-export const FACE_PX: number[] = [16, 20, 24, 32, 40, 48, 64, 80, 96, 128];
+export const FACE_PX: number[] = [16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512];
 
 /** The 20px face, by role (mirrors the firmware's FONT_BODY). */
 export const FONT_BODY = FONT_20;

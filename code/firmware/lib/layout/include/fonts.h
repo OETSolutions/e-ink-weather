@@ -90,6 +90,21 @@ int font_descent(font_id_t font);
  * Returns 0 for an out-of-range id. */
 int font_px(font_id_t font);
 
+/* THE BLOCK-SCALE FACTOR of a face: 1 for a rasterised face, k >= 2 for one drawn as a k x k
+ * block scale of another (see the generator for why sizes above 128 px are upscaled rather than
+ * rasterised). Every metric accessor above already returns values MULTIPLIED by this factor, so
+ * a caller lays text out and places glyphs in the face's own pixel space and never needs k —
+ * with ONE exception: a glyph's bitmap is the BASE face's, so the bytes for a scaled glyph cover
+ * (w / k) x (h / k) native pixels, and a blitter must divide by k to walk them. That is the only
+ * caller of this function. Returns 1 for an out-of-range id, so a scaled blit degrades to the
+ * unscaled path rather than dividing by zero. */
+int font_scale(font_id_t font);
+
+/* The size in px of the face an upscaled face is built from, or the face's own size when it is
+ * rasterised. The web app uses it to find the base glyph set it must reuse (NFR-4: the preview
+ * and the panel must scale identically). */
+int font_upscale_of_px(font_id_t font);
+
 /* THE NEAREST LADDER FACE to a requested pixel size. This is the ONE place a free-form size is
  * resolved into a real face, on the device; the web app has its own copy of the rule and the
  * golden test keeps the two honest.

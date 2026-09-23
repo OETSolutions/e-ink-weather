@@ -8,7 +8,7 @@ import {
   fontAdvance,
   type ValueField,
 } from '../src/canvas/render';
-import { BODY, VALUE, FONT_BODY, FONT_VALUE } from '../src/canvas/atlas-data';
+import { BODY, VALUE, FONT_BODY, FONT_VALUE, FACES, FACE_PX } from '../src/canvas/atlas-data';
 import { faceIdForPx } from '../src/canvas/face';
 
 describe('1-bit bitmap (HW-6)', () => {
@@ -199,6 +199,64 @@ describe('the degree sign (U+00B0)', () => {
   it('still refuses a character that genuinely has no glyph', () => {
     expect(fontMeasure(FONT_VALUE, '68.4\u20ac')).toBeNull();  /* euro sign: not in the atlas */
   });
+});
+
+/* THE UPSCALED FACES (sizes above 128 px). They are k x k BLOCK SCALES of a rasterised face, so
+ * text at 256 px must render as the 128 px text expanded, each pixel to a 2 x 2 block. The
+ * firmware pins the same property in test_render_golden.c; keeping both means a divergence
+ * between the preview and the panel is caught on whichever side drifts (NFR-4). */
+describe('upscaled faces are exact block scales (FR-4a)', () => {
+  const cases: { px: number; base: number; k: number }[] = [
+    { px: 160, base: 80, k: 2 },
+    { px: 192, base: 96, k: 2 },
+    { px: 256, base: 128, k: 2 },
+    { px: 320, base: 80, k: 4 },
+    { px: 384, base: 128, k: 3 },
+    { px: 512, base: 128, k: 4 },
+  ];
+
+  it('reaches 512, and every upscaled size is base * k', () => {
+    expect(FACE_PX[FACE_PX.length - 1]).toBe(512);
+    for (const { px, base, k } of cases) {
+      const id = faceIdForPx(px);
+      expect(FACES[id]!.px).toBe(px);
+      expect(FACES[id]!.upscale).toBe(k);
+      expect(FACES[id]!.upscaleFromPx).toBe(base);
+      expect(FACES[id]!.px).toBe(FACES[id]!.upscaleFromPx * FACES[id]!.upscale);
+    }
+  });
+
+  it('scales the reported measurements by k, not the base', () => {
+    const base = fontMeasure(faceIdForPx(128), 'Hg')!;
+    const up = fontMeasure(faceIdForPx(256), 'Hg')!;
+    expect(up.w).toBe(base.w * 2);
+    expect(up.h).toBe(base.h * 2);
+    expect(fontAdvance(faceIdForPx(512), '8')).toBe(fontAdvance(faceIdForPx(128), '8') * 4);
+  });
+
+  for (const { px, base, k } of cases) {
+    it(`draws ${px}px as ${base}px scaled ${k}x, pixel for pixel`, () => {
+      const ox = 20, oy = 20, w = 860, h = 600;
+      const mk = (pxSize: number): ValueField =>
+        ({ x: ox, y: oy, w, h, alignH: 'L', alignV: 'T', fontId: faceIdForPx(pxSize) });
+      const up = renderPage(blank(), [mk(px)], ['Hg']);
+      const baseBmp = renderPage(blank(), [mk(base)], ['Hg']);
+
+      /* The block expansion is anchored at the BOX origin: the box geometry is unscaled, so an
+       * up-pixel at (x,y) corresponds to the base pixel at (ox + (x-ox)/k, oy + (y-oy)/k). */
+      let mismatches = 0;
+      for (let y = oy; y < oy + h && mismatches === 0; y++) {
+        for (let x = ox; x < ox + w; x++) {
+          const upInk = getPx(up, x, y);
+          const baseInk = getPx(baseBmp, ox + Math.floor((x - ox) / k), oy + Math.floor((y - oy) / k));
+          if (upInk !== baseInk) { mismatches++; break; }
+        }
+      }
+      expect(mismatches).toBe(0);
+      /* It drew something \u2014 a no-op renderer would trivially match a blank base. */
+      expect(up.data.some((v) => v !== 0xff)).toBe(true);
+    });
+  }
 });
 
 function blank(): Uint8Array {

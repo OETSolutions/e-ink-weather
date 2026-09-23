@@ -151,6 +151,62 @@ static void test_the_ladder_is_strictly_ascending(void)
     TEST_ASSERT_EQUAL_INT(64, font_px(FONT_VALUE));
 }
 
+/* THE UPSCALED FACES. Sizes above 128 px are drawn as a k x k BLOCK SCALE of a rasterised face
+ * rather than rasterised themselves (a 512 px bitmap is ~890 KB and cannot fit the app slot).
+ * The properties that make that correct are pinned here:
+ *   - the size is exactly base * k, so a request for that size draws the size asked for;
+ *   - the metrics fonts.c reports are the BASE's, so a glyph's w/h matches the base bitmap the
+ *     returned pointer addresses (the renderer multiplies by font_scale);
+ *   - the base is a real ladder face, and reuses its bitmap. */
+static void test_upscaled_faces_are_block_scales_of_a_base(void)
+{
+    /* Every face above 128 must carry a factor >= 2 and point at its true base. */
+    int saw_upscaled = 0;
+    for (int f = 0; f < FONT_COUNT; f++) {
+        const int px = font_px((font_id_t)f);
+        const int k = font_scale((font_id_t)f);
+        const int base = font_upscale_of_px((font_id_t)f);
+        if (px <= 128) {
+            TEST_ASSERT_EQUAL_INT(1, k);        /* rasterised: no scaling */
+            TEST_ASSERT_EQUAL_INT(px, base);
+            continue;
+        }
+        saw_upscaled++;
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(2, k);
+        TEST_ASSERT_EQUAL_INT(px, base * k);    /* the size really is base * k */
+        /* The base must be a face on the ladder, and its metrics must be what this face
+         * reports — the whole reuse property. */
+        const font_id_t bf = font_face_for_px((double)base);
+        TEST_ASSERT_EQUAL_INT(base, font_px(bf));
+        TEST_ASSERT_EQUAL_INT(font_ascent(bf), font_ascent((font_id_t)f));
+        TEST_ASSERT_EQUAL_INT(font_line_height(bf), font_line_height((font_id_t)f));
+        /* And the glyph bitmap is the base's, byte for byte. */
+        const uint8_t *ub = NULL, *bb = NULL;
+        int uw = 0, uh = 0, bw = 0, bh = 0;
+        TEST_ASSERT_EQUAL_INT(0, font_glyph((font_id_t)f, '8', &ub, &uw, &uh));
+        TEST_ASSERT_EQUAL_INT(0, font_glyph(bf, '8', &bb, &bw, &bh));
+        TEST_ASSERT_EQUAL_PTR(bb, ub);
+        TEST_ASSERT_EQUAL_INT(bw, uw);
+        TEST_ASSERT_EQUAL_INT(bh, uh);
+    }
+    TEST_ASSERT_GREATER_THAN_INT(0, saw_upscaled);   /* the ladder really gained the sizes */
+
+    /* The specific sizes the requirement asks for are reachable, each an exact block scale. */
+    TEST_ASSERT_EQUAL_INT(256, font_px(font_face_for_px(256.0)));
+    TEST_ASSERT_EQUAL_INT(512, font_px(font_face_for_px(512.0)));
+    TEST_ASSERT_EQUAL_INT(4, font_scale(font_face_for_px(512.0)));
+}
+
+/* font_scale must never report 0 or a negative — the renderer multiplies by it, so a 0 would
+ * collapse every glyph to nothing and a negative would mirror the text. It reports 1 for an
+ * out-of-range id, so a bad id degrades to the unscaled path. */
+static void test_font_scale_is_never_degenerate(void)
+{
+    for (int f = -1; f <= FONT_COUNT; f++) {
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(1, font_scale((font_id_t)f));
+    }
+}
+
 /* Nearest-by-ratio, with ties to the SMALLER face. This is the rule the web app mirrors in
  * faceIdForPx; a divergence here is a preview that lies about the panel. */
 static void test_nearest_face_selection(void)
@@ -166,8 +222,9 @@ static void test_nearest_face_selection(void)
     TEST_ASSERT_EQUAL_INT(48, font_px(font_face_for_px(52.0)));
     /* Just past the midpoint by ratio, it flips to the larger face. */
     TEST_ASSERT_EQUAL_INT(64, font_px(font_face_for_px(56.0)));
-    /* Above the top of the ladder it clamps to the largest face, not past the end. */
-    TEST_ASSERT_EQUAL_INT(128, font_px(font_face_for_px(1000.0)));
+    /* Above the top of the ladder it clamps to the largest face, not past the end. The ladder
+     * now tops at 512 (an upscaled 128 x 4), so 1000 clamps there. */
+    TEST_ASSERT_EQUAL_INT(512, font_px(font_face_for_px(1000.0)));
     /* Below the bottom it clamps to the smallest. */
     TEST_ASSERT_EQUAL_INT(16, font_px(font_face_for_px(1.0)));
     /* Nonsense input does not index out of bounds or return a bogus face. */
@@ -356,6 +413,8 @@ int main(void)
     RUN_TEST(test_glyph_bitmaps_are_not_empty_and_have_ink);
     RUN_TEST(test_metrics_are_self_consistent);
     RUN_TEST(test_the_ladder_is_strictly_ascending);
+    RUN_TEST(test_upscaled_faces_are_block_scales_of_a_base);
+    RUN_TEST(test_font_scale_is_never_degenerate);
     RUN_TEST(test_nearest_face_selection);
     RUN_TEST(test_bearings_fit_the_int8_field);
     RUN_TEST(test_glyphs_are_packed_contiguously);

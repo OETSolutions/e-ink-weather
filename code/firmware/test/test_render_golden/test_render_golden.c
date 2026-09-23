@@ -422,6 +422,71 @@ static void test_band_rejects_bad_arguments(void)
     free(band);
 }
 
+/* THE DEFINING PROPERTY OF AN UPSCALED FACE: rendering text at 256 px must be exactly the 128 px
+ * render expanded, each pixel to a 2 x 2 block. That is what "a k x k block scale" MEANS, and it
+ * is the one assertion that catches a scaling factor applied to some metrics and not others —
+ * which would otherwise show up only as misaligned glyphs on the glass.
+ *
+ * THE ORIGIN IS THE BOX, NOT THE PANEL. The pen starts at the box's top-left in BOTH renders
+ * (the box geometry is unscaled), so the block expansion is anchored there: an up-pixel at
+ * (x, y) corresponds to the base pixel at (ox + (x-ox)/k, oy + (y-oy)/k). Anchoring at the panel
+ * corner instead would demand the text also scale its BOX, which it must not — the box is the
+ * user's layout, not part of the glyph.
+ *
+ * A large box is used so the whole string lands without clipping: a clipped glyph would break the
+ * block-for-block correspondence at the box edge for a reason that is not this bug. */
+static void test_an_upscaled_face_draws_a_block_scale(void)
+{
+    struct { int px, base, k; } cases[] = {
+        { 160, 80,  2 },
+        { 192, 96,  2 },
+        { 256, 128, 2 },
+        { 320, 80,  4 },
+        { 384, 128, 3 },
+        { 512, 128, 4 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const int up_px = cases[i].px, base_px = cases[i].base, k = cases[i].k;
+
+        const int ox = 20, oy = 20, bw = 860, bh = 600;
+        value_field_t f_up = { .x = ox, .y = oy, .w = bw, .h = bh,
+                               .align_h = 'L', .align_v = 'T',
+                               .font_id = font_face_for_px((double)up_px) };
+        value_field_t f_base = f_up;
+        f_base.font_id = font_face_for_px((double)base_px);
+        TEST_ASSERT_EQUAL_INT(up_px, font_px((font_id_t)f_up.font_id));
+        TEST_ASSERT_EQUAL_INT(base_px, font_px((font_id_t)f_base.font_id));
+
+        const char *values[1] = { "Hg" };
+        canvas_t cu, cb;
+        canvas_init(&cu, fb);
+        uint8_t *fb_base = malloc(EPD_FB_BYTES);
+        TEST_ASSERT_NOT_NULL(fb_base);
+        canvas_init(&cb, fb_base);
+
+        TEST_ASSERT_EQUAL_INT(0, render_compose(&cu, static_layer, &f_up, values, 1));
+        TEST_ASSERT_EQUAL_INT(0, render_compose(&cb, static_layer, &f_base, values, 1));
+
+        /* Every pixel of the upscaled render must equal its base pixel: ink if that base pixel
+         * is ink, white otherwise. Checked over the whole box. */
+        int mismatches = 0;
+        for (int y = oy; y < oy + bh && mismatches == 0; y++) {
+            for (int x = ox; x < ox + bw; x++) {
+                const int up_ink = !px(fb, x, y);
+                const int base_ink = !px(fb_base, ox + (x - ox) / k, oy + (y - oy) / k);
+                if (up_ink != base_ink) { mismatches++; break; }
+            }
+        }
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, mismatches,
+            "an upscaled face is not an exact k x k block scale of its base");
+
+        /* And it did draw SOMETHING — a no-op renderer would trivially match a blank base. */
+        TEST_ASSERT_GREATER_THAN_INT(0, ink_in(fb, ox, oy, ox + bw, oy + bh));
+
+        free(fb_base);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -440,6 +505,7 @@ int main(void)
     RUN_TEST(test_a_band_matches_the_whole_frame_render);
     RUN_TEST(test_a_band_with_no_fields_is_pure_static_layer);
     RUN_TEST(test_band_rejects_bad_arguments);
+    RUN_TEST(test_an_upscaled_face_draws_a_block_scale);
     RUN_TEST(test_golden_image_of_default_layout);
     return UNITY_END();
 }

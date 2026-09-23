@@ -9,7 +9,7 @@
 #define ATLAS_FIRST_CHAR  32
 #define ATLAS_LAST_CHAR   126
 #define ATLAS_GLYPH_COUNT 95
-#define ATLAS_FACE_COUNT  10
+#define ATLAS_FACE_COUNT  16
 
 /* The ladder, ascending, as an X-macro so the enum and the table are built from ONE
  * list. A size added here appears in font_id_t and in ATLAS_FACES automatically, and
@@ -25,6 +25,12 @@
     X(80) \
     X(96) \
     X(128) \
+    X(160) \
+    X(192) \
+    X(256) \
+    X(320) \
+    X(384) \
+    X(512) \
     /* end */
 
 /* One glyph's metrics. IDENTICAL for every face — the faces differ in their
@@ -33,12 +39,20 @@
 typedef struct { uint32_t off; uint8_t w, h; uint8_t advance; int8_t bx, by; } atlas_glyph_t;
 typedef struct { uint32_t codepoint; uint32_t off; uint8_t w, h; uint8_t advance; int8_t bx, by; } atlas_extra_t;
 
-/* One rasterised size. `extra` is NULL when the face has no non-ASCII glyphs. */
+/* One rasterised size. `extra` is NULL when the face has no non-ASCII glyphs.
+ *
+ * `upscale` is 1 for a rasterised face and k for a face drawn as a k x k BLOCK SCALE
+ * of another one (see the generator). An upscaled face points its `glyphs`/`bits`/
+ * `extra` at its BASE face's arrays and stores only the factor; ascent, descent and
+ * line_height are already multiplied by it, and the accessors scale the per-glyph
+ * metrics. `upscale_of` is the base size in px, for the web app to resolve the reuse. */
 typedef struct {
     int px, ascent, descent, line_height;
     const atlas_glyph_t *glyphs;
     const uint8_t       *bits;
     const atlas_extra_t *extra;
     int extra_count;
+    int upscale;        /* 1, or k for a k x k block scale of `upscale_of` */
+    int upscale_of;     /* the base size in px; equal to px when upscale == 1 */
 } atlas_face_t;
 

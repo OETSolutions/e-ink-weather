@@ -71,13 +71,24 @@ function glyphFor(face: Face, cp: number): Glyph | undefined {
   return face.extra.get(cp);
 }
 
-/** Advance width in pixels. Returns 0 for a character with no glyph, like font_advance(). */
+/**
+ * The block-scale factor of a face: 1 for a rasterised face, k >= 2 for an upscaled one. Mirrors
+ * font_scale() in the firmware's fonts.c. Every glyph and metric the face reports must be
+ * multiplied by this before it is drawn or laid out, or the pen and the ink would disagree; the
+ * value is 1 for the whole rasterised ladder, so this is the identity there.
+ */
+function faceScale(face: Face): number {
+  return face.upscale >= 1 ? face.upscale : 1;
+}
+
+/** Advance width in pixels, in the face's DRAWN space (so scaled for an upscaled face).
+ *  Returns 0 for a character with no glyph, like font_advance(). */
 export function fontAdvance(fontId: number, ch: string): number {
   const face = FACES[fontId];
   if (!face) return 0;
   const cps = codepoints(ch);
   if (cps.length === 0) return 0;
-  return glyphFor(face, cps[0]!)?.advance ?? 0;
+  return (glyphFor(face, cps[0]!)?.advance ?? 0) * faceScale(face);
 }
 
 /**
@@ -89,19 +100,25 @@ export function fontAdvance(fontId: number, ch: string): number {
  * characters happen to be in it, so a temperature would shift vertically as its digits
  * changed between refreshes.
  *
+ * ALL METRICS ARE IN THE FACE'S DRAWN PIXELS, already multiplied by its block-scale factor.
+ * fonts.c reports the BASE metrics (so a glyph's w/h matches the bitmap it points at) and the
+ * firmware renderer scales them; this mirrors that exactly, so the preview and the panel agree.
+ * The factor is 1 for every rasterised face, so this is the identity for all of them.
+ *
  * Returns null when a character has no glyph, matching font_measure()'s failure. The caller
  * then draws nothing rather than guessing a width.
  */
 export function fontMeasure(fontId: number, s: string): { w: number; h: number } | null {
   const face = FACES[fontId];
   if (!face) return null;
+  const k = faceScale(face);
   let w = 0;
   for (const cp of codepoints(s)) {
     const g = glyphFor(face, cp);
     if (!g) return null;   /* no glyph: fail rather than guess a width, like font_measure() */
     w += g.advance;
   }
-  return { w, h: face.lineHeight };
+  return { w: w * k, h: face.lineHeight * k };
 }
 
 /** Horizontal offset of the text within its box. Unrecognised align falls back to 'L'. */
@@ -123,6 +140,12 @@ function offsetV(a: string, boxH: number, lineH: number): number {
  *
  * CLIPPING TO THE BOX, not just to the panel, is what stops an over-long reading from
  * scribbling across the surrounding layout — a field that overflows is truncated.
+ *
+ * AN UPSCALED FACE DRAWS EACH SOURCE PIXEL AS A k x k BLOCK. `g.w`/`g.h` describe the BASE
+ * bitmap (every metric from atlas-data is in base pixels — see faceScale), and each set source
+ * bit is painted across the whole k x k block. Exact for 1 bpp, and the same technique the
+ * firmware uses, so the preview cannot disagree with the panel (NFR-4). The block is clipped per
+ * DESTINATION pixel, so a scaled glyph that overflows its box is truncated cleanly.
  */
 function blitGlyphClipped(
   dst: Bitmap,
@@ -130,6 +153,7 @@ function blitGlyphClipped(
   gy: number,
   face: Face,
   g: Glyph,
+  k: number,
   f: ValueField,
 ): void {
   if (g.w === 0 || g.h === 0) return; /* blank glyph (space): nothing to draw */
@@ -140,8 +164,6 @@ function blitGlyphClipped(
   const y1 = f.y + f.h;
 
   for (let sy = 0; sy < g.h; sy++) {
-    const dy = gy + sy;
-    if (dy < y0 || dy >= y1) continue;
     const row = g.off + sy * pitch;
     for (let sx = 0; sx < g.w; sx++) {
       const byte = face.bits[row + (sx >> 3)];
@@ -149,9 +171,17 @@ function blitGlyphClipped(
       /* Atlas bit SET means ink; a clear bit is background and must be skipped, or the glyph
        * box would punch a white rectangle through the static layer beneath it. */
       if ((byte & (0x80 >> (sx & 7))) === 0) continue;
-      const dx = gx + sx;
-      if (dx < x0 || dx >= x1) continue;
-      setPx(dst, dx, dy, true);
+      const bx = gx + sx * k;
+      const by = gy + sy * k;
+      for (let dy = 0; dy < k; dy++) {
+        const py = by + dy;
+        if (py < y0 || py >= y1) continue;
+        for (let dx = 0; dx < k; dx++) {
+          const px = bx + dx;
+          if (px < x0 || px >= x1) continue;
+          setPx(dst, px, py, true);
+        }
+      }
     }
   }
 }
@@ -211,18 +241,22 @@ function drawField(dst: Bitmap, f: ValueField, s: string | undefined): void {
   const m = fontMeasure(f.fontId, s);
   if (!m) return; /* a character with no glyph: draw nothing, do not guess */
 
+  /* The block-scale factor. fontMeasure already applied it to the width and line height; the
+   * baseline, bearings and advances below apply it here, so pen and ink stay in step. */
+  const k = faceScale(face);
+
   /* The pen origin is the top-left of the LINE box; glyph ink is then placed relative to the
    * BASELINE via each glyph's bearing. Placing by ink box alone would float a '.' at the top
    * of the line. */
   let penX = f.x + offsetH(f.alignH, f.w, m.w);
   const penY = f.y + offsetV(f.alignV, f.h, m.h);
-  const baseline = penY + face.ascent;
+  const baseline = penY + face.ascent * k;
 
   for (const cp of codepoints(s)) {
     const g = glyphFor(face, cp);
     if (!g) break;
-    blitGlyphClipped(dst, penX + g.bx, baseline + g.by, face, g, f);
-    penX += g.advance;
+    blitGlyphClipped(dst, penX + g.bx * k, baseline + g.by * k, face, g, k, f);
+    penX += g.advance * k;
   }
 }
 

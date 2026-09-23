@@ -17,7 +17,7 @@ own type names — adding a size meant editing the C glue too, so it never happe
 every face into ONE header with ONE struct shape makes the ladder data-driven: the C side is
 a table lookup with no per-face code, and a size is added by putting a number in --ladder.
 
-WHY THE LADDER STOPS AT 128 px. Three independent limits agree on it:
+WHY THE RASTERISED LADDER STOPS AT 128 px. Three independent limits agree on it:
 
   1. THE int8_t y BEARING. `atlas_glyph_t.by` is one signed byte. The deepest ink is about
      -(px - descent), so a face past ~128 px would push a bearing below -128, where it WRAPS
@@ -31,6 +31,22 @@ WHY THE LADDER STOPS AT 128 px. Three independent limits agree on it:
      the 160 KiB budget), leaving ~147 KB and ~37 KiB of headroom respectively.
   3. THE USEFUL RANGE. The 96 -> 128 step is 1.33x, the same ratio as every step below it, so
      nothing a user would want is missing between the body face and the ceiling.
+
+SIZES ABOVE 128 px ARE NOT RASTERISED — THEY ARE UPSCALED (--upscale). A rasterised 512 px
+face is 910 KB, which cannot fit in a 1.9 MB app slot that already holds 214 KB of ladder; the
+naive "just extend the ladder" answer is physically impossible, not merely large. But the panel
+is 1 bit per pixel, so an integer BLOCK SCALE is EXACT: every pixel of an N px glyph becomes a
+k x k block, and there is no grey to lose or invent. So 512 px is 128 px drawn at 4x, 384 is
+128 at 3x, 256 is 128 at 2x — six new sizes for ZERO extra bitmap bytes, because they REUSE
+the base face's glyph table and bitmap and only multiply the metrics.
+
+WHAT A BLOCK SCALE COSTS IN QUALITY, HONESTLY: an upscaled glyph is the 1x face's hinting
+stretched, so its stroke weights are k times the base rather than separately hinted for the
+size. At 1 bit that is a legitimate, crisp look (the same thing draw_line_scaled() in
+provscreen.c already does for the provisioning screen), and it is the ONLY way to reach these
+sizes at all. A user who needs differently-hinted 512 px text does not get it; a user who needs
+512 px text on the glass does. The metadata travels in atlas_face_t (upscale, upscale_of) and in
+the web app's Face (upscale, upscaleFromPx) so BOTH renderers scale identically (NFR-4).
 
 Regular is used below --bold-from and SemiBold at and above it: the hero numerals want weight
 and the small labels do not.
@@ -50,9 +66,14 @@ Usage:
         --ttf-regular assets/fonts/Inter-Regular.ttf \\
         --ttf-bold    assets/fonts/Inter-SemiBold.ttf \\
         --ladder 16,20,24,32,40,48,64,80,96,128 \\
+        --upscale 160:80:2,192:96:2,256:128:2,320:80:4,384:128:3,512:128:4 \\
         --out        lib/layout/src/atlas.h \\
         --ladder-out lib/layout/include/atlas_ladder.h \\
         --extra '°'
+
+--ladder lists the sizes that are RASTERISED; --upscale adds sizes that are k x BLOCK SCALES of
+an already-rasterised size (`px:base:k`), for zero extra bitmap bytes. The upscaled size must be
+exactly base * k and must not also appear in --ladder.
 
 TWO OUTPUTS, DELIBERATELY. The ladder-shape header (sizes, counts, structs) is tiny and is
 included by fonts.h, so anything asking for a font id gets it cheaply. The DATA header is
@@ -200,7 +221,24 @@ def build_face(ttf, px, extra_spec):
 
     return {
         "ttf": os.path.basename(ttf), "px": px, "ascent": ascent, "descent": descent,
-        "glyphs": glyphs, "extra": extra, "blob": blob,
+        "glyphs": glyphs, "extra": extra, "blob": blob, "upscale": 1,
+    }
+
+
+def build_upscaled(px, base, k):
+    """Describe a face that is `k` x BLOCK SCALES of a rasterised face, for no bitmap bytes.
+
+    It carries NO glyph table and NO bitmap of its own: it points at the base face's arrays and
+    records the factor. THE METRICS STORED HERE ARE THE BASE'S, UNSCALED — every accessor in
+    fonts.c returns values that describe the base buffer, so that a glyph's returned w/h always
+    matches the bitmap the returned pointer addresses, and the scale factor is applied by the
+    two renderers (which are the only code that lays text out and blits). font_px() still reports
+    the nominal size, and font_scale() reports k."""
+    return {
+        "ttf": base["ttf"], "px": px, "ascent": base["ascent"], "descent": base["descent"],
+        "line_height": base["ascent"] + base["descent"],
+        "glyphs": base["glyphs"], "extra": base["extra"], "blob": base["blob"],
+        "upscale": k, "upscale_of": base["px"],
     }
 
 
@@ -242,13 +280,21 @@ def emit_ladder(out_path, faces):
     L.append("typedef struct { uint32_t codepoint; uint32_t off; uint8_t w, h; uint8_t advance;"
              " int8_t bx, by; } atlas_extra_t;")
     L.append("")
-    L.append("/* One rasterised size. `extra` is NULL when the face has no non-ASCII glyphs. */")
+    L.append("/* One rasterised size. `extra` is NULL when the face has no non-ASCII glyphs.")
+    L.append(" *")
+    L.append(" * `upscale` is 1 for a rasterised face and k for a face drawn as a k x k BLOCK SCALE")
+    L.append(" * of another one (see the generator). An upscaled face points its `glyphs`/`bits`/")
+    L.append(" * `extra` at its BASE face's arrays and stores only the factor; ascent, descent and")
+    L.append(" * line_height are already multiplied by it, and the accessors scale the per-glyph")
+    L.append(" * metrics. `upscale_of` is the base size in px, for the web app to resolve the reuse. */")
     L.append("typedef struct {")
     L.append("    int px, ascent, descent, line_height;")
     L.append("    const atlas_glyph_t *glyphs;")
     L.append("    const uint8_t       *bits;")
     L.append("    const atlas_extra_t *extra;")
     L.append("    int extra_count;")
+    L.append("    int upscale;        /* 1, or k for a k x k block scale of `upscale_of` */")
+    L.append("    int upscale_of;     /* the base size in px; equal to px when upscale == 1 */")
     L.append("} atlas_face_t;")
     L.append("")
     open(out_path, "w").write("\n".join(L) + "\n")
@@ -273,6 +319,8 @@ def emit_data(out_path, faces, bold_from):
         w(fh)
 
         for f in faces:
+            if f["upscale"] != 1:
+                continue        # an upscaled face owns no arrays: it reuses its base's
             v = f"A{f['px']}"
             w(fh, f"/* ---- {f['px']} px ---- */")
             w(fh, f"static const atlas_glyph_t {v}_GLYPHS[ATLAS_GLYPH_COUNT] = {{")
@@ -294,16 +342,29 @@ def emit_data(out_path, faces, bold_from):
             w(fh)
 
         w(fh, "/* The ladder, in ascending size order. font_id_t indexes this table, so the")
-        w(fh, " * enum and this array are both built from ATLAS_LADDER and cannot fall out of step. */")
+        w(fh, " * enum and this array are both built from ATLAS_LADDER and cannot fall out of step.")
+        w(fh, " *")
+        w(fh, " * AN UPSCALED FACE POINTS AT ITS BASE'S ARRAYS. Its glyphs/bits/extra are the base")
+        w(fh, " * face's, and its ascent/descent/line_height are the base's already multiplied by the")
+        w(fh, " * factor; the accessors in fonts.c scale the per-glyph metrics at lookup. Nothing here")
+        w(fh, " * is duplicated, which is the whole reason these sizes fit in the slot at all. */")
         w(fh, "static const atlas_face_t ATLAS_FACES[ATLAS_FACE_COUNT] = {")
         for f in faces:
-            v = f"A{f['px']}"
-            extra_ref = f"{v}_EXTRA, {len(f['extra'])}" if f["extra"] else "NULL, 0"
-            w(fh, f"    {{ {f['px']}, {f['ascent']}, {f['descent']}, "
-                  f"{f['ascent'] + f['descent']}, {v}_GLYPHS, {v}_BITS, {extra_ref} }},")
+            if f["upscale"] != 1:
+                base = f"A{f['upscale_of']}"
+                extra_ref = (f"{base}_EXTRA, {len(f['extra'])}" if f["extra"] else "NULL, 0")
+                w(fh, f"    {{ {f['px']}, {f['ascent']}, {f['descent']}, {f['line_height']}, "
+                      f"{base}_GLYPHS, {base}_BITS, {extra_ref}, {f['upscale']}, "
+                      f"{f['upscale_of']} }},")
+            else:
+                v = f"A{f['px']}"
+                extra_ref = f"{v}_EXTRA, {len(f['extra'])}" if f["extra"] else "NULL, 0"
+                w(fh, f"    {{ {f['px']}, {f['ascent']}, {f['descent']}, "
+                      f"{f['ascent'] + f['descent']}, {v}_GLYPHS, {v}_BITS, {extra_ref}, "
+                      f"1, {f['px']} }},")
         w(fh, "};")
 
-    total = sum(len(f["blob"]) for f in faces)
+    total = sum(len(f["blob"]) for f in faces if f["upscale"] == 1)
     print(f"wrote {out_path}: {len(faces)} faces, {total} bitmap bytes "
           f"({total / 1024:.1f} KiB), ladder {ladder}")
 
@@ -313,7 +374,11 @@ def main():
     ap.add_argument("--ttf-regular", required=True, help="face used below --bold-from")
     ap.add_argument("--ttf-bold", required=True, help="face used at and above --bold-from")
     ap.add_argument("--ladder", required=True,
-                    help="comma-separated pixel sizes, ascending, e.g. 16,20,24,64")
+                    help="comma-separated pixel sizes to RASTERISE, ascending, e.g. 16,20,24,64")
+    ap.add_argument("--upscale", default="",
+                    help="sizes drawn as a k x k BLOCK SCALE of a rasterised size, as "
+                         "'px:base:k' triples, e.g. 256:128:2,512:128:4. They cost no bitmap "
+                         "bytes: the face reuses its base's arrays and scales the metrics.")
     ap.add_argument("--bold-from", type=int, default=32,
                     help="smallest size that uses the bold face")
     ap.add_argument("--out", required=True,
@@ -339,17 +404,48 @@ def main():
     # `by` is stored as int8_t, so a bearing below -128 would silently wrap to a POSITIVE
     # value and place the glyph BELOW the baseline — a defect that looks like a broken atlas,
     # not an overflow. The deepest ink at a given size is roughly -(px - descent), so this
-    # bounds the ladder at a size where that cannot reach -128. Guarding here rather than in
-    # the struct keeps the struct compact for every real face.
+    # bounds the RASTERISED ladder at a size where that cannot reach -128. Guarding here rather
+    # than in the struct keeps the struct compact for every real face. (Upscaled faces are
+    # immune: they store the BASE's bearings and the renderer multiplies at blit time, so no
+    # int8_t ever holds a value past the ceiling.)
     for px in sizes:
         if px > 128:
             sys.exit(f"ladder size {px}px exceeds the 128px ceiling: the int8_t y bearing "
                      f"would overflow and silently wrap, placing glyphs under the baseline")
 
     faces = []
+    base_of_px = {}
     for px in sizes:
         ttf = args.ttf_bold if px >= args.bold_from else args.ttf_regular
-        faces.append(build_face(ttf, px, args.extra))
+        f = build_face(ttf, px, args.extra)
+        faces.append(f)
+        base_of_px[px] = f
+
+    # Upscaled sizes: `px:base:k`, each a k x block scale of a rasterised (or already-planned)
+    # base. They add faces to the ladder but no bitmap bytes. Validated here rather than trusted,
+    # because a mismatched product would emit a face whose metrics and blitter scale disagree —
+    # text whose line box and glyph ink are drawn at two different sizes.
+    for spec in (args.upscale or "").replace(" ", "").split(","):
+        if not spec:
+            continue
+        try:
+            px, base_px, k = (int(x) for x in spec.split(":"))
+        except ValueError:
+            sys.exit(f"bad --upscale entry {spec!r}: expected px:base:k")
+        if base_px not in base_of_px:
+            sys.exit(f"--upscale {spec}: base {base_px}px is not a rasterised ladder size")
+        if k < 2:
+            sys.exit(f"--upscale {spec}: factor must be >= 2 (1x would duplicate the base)")
+        if px != base_px * k:
+            sys.exit(f"--upscale {spec}: px must equal base * k ({base_px * k})")
+        if px in base_of_px:
+            sys.exit(f"--upscale {spec}: {px}px is already a rasterised ladder size")
+        faces.append(build_upscaled(px, base_of_px[base_px], k))
+        base_of_px[px] = faces[-1]
+
+    faces.sort(key=lambda f: f["px"])
+    if len({f["px"] for f in faces}) != len(faces):
+        sys.exit("duplicate size after applying --upscale")
 
     ladder_path = args.ladder_out or os.path.join(os.path.dirname(args.out), "atlas_ladder.h")
     emit_ladder(ladder_path, faces)

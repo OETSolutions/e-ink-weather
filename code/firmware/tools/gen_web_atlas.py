@@ -66,40 +66,53 @@ def parse_header(ladder_path, data_path):
     for px in px_list:
         v = f'A{px}'
 
-        def arr(kind):
+        # The face struct's metrics, so the web app's line height and baseline cannot drift
+        # from the device's. Row shape: { px, ascent, descent, lineHeight, GLYPHS, BITS, EXTRA,
+        # extraCount, upscale, upscaleOf }. `upscale` is 1 for a rasterised face and k for one
+        # drawn as a k x k BLOCK SCALE of `upscaleOf` (see gen_font_atlas.py); an upscaled face
+        # points its glyphs/bits at its base's arrays, so this generator must reuse them too
+        # rather than re-emit the bitmaps.
+        row = re.search(
+            rf'^\s*\{{\s*{px},\s*(\d+),\s*(\d+),\s*(\d+)\s*,.*?,\s*(\d+),\s*(\d+)\s*\}},',
+            src, re.M)
+        if not row:
+            sys.exit(f'{data_path}: no ATLAS_FACES row for {px}px')
+        ascent, descent, line_height = (int(g) for g in row.groups()[:3])
+        upscale, upscale_of = int(row.group(4)), int(row.group(5))
+
+        # An upscaled face owns no arrays of its own: it borrows its base's glyph table and
+        # bitmap. Look those up rather than re-reading (and re-emitting) them.
+        src_px = upscale_of if upscale > 1 else px
+        sv = f'A{src_px}'
+
+        def arr_of(v, kind):
             m = re.search(rf'{v}_{kind}\[[^\]]+\]\s*=\s*\{{(.*?)\n\}};', src, re.S)
             if not m:
                 sys.exit(f'{data_path}: {v}_{kind} not found')
             return m.group(1)
 
         glyphs = []
-        for row in re.finditer(r'\{\s*(\d+)u?,\s*(\d+),\s*(\d+),\s*(\d+),\s*(-?\d+),\s*(-?\d+)\s*\}',
-                               arr('GLYPHS')):
-            glyphs.append(tuple(int(g) for g in row.groups()))
+        for g in re.finditer(r'\{\s*(\d+)u?,\s*(\d+),\s*(\d+),\s*(\d+),\s*(-?\d+),\s*(-?\d+)\s*\}',
+                             arr_of(sv, 'GLYPHS')):
+            glyphs.append(tuple(int(x) for x in g.groups()))
         if len(glyphs) != glyph_count:
-            sys.exit(f'{data_path}: {v} parsed {len(glyphs)} glyphs, ATLAS_GLYPH_COUNT is '
+            sys.exit(f'{data_path}: {sv} parsed {len(glyphs)} glyphs, ATLAS_GLYPH_COUNT is '
                      f'{glyph_count}')
 
         extra = []
-        em = re.search(rf'{v}_EXTRA\[[^\]]+\]\s*=\s*\{{(.*?)\n\}};', src, re.S)
+        em = re.search(rf'{sv}_EXTRA\[[^\]]+\]\s*=\s*\{{(.*?)\n\}};', src, re.S)
         if em:
-            for row in re.finditer(
+            for g in re.finditer(
                     r'\{\s*(\d+)u?,\s*(\d+)u?,\s*(\d+),\s*(\d+),\s*(\d+),\s*(-?\d+),\s*(-?\d+)\s*\}',
                     em.group(1)):
-                extra.append(tuple(int(g) for g in row.groups()))
+                extra.append(tuple(int(x) for x in g.groups()))
 
-        bits = [int(b, 16) for b in re.findall(r'0x([0-9A-Fa-f]{2})', arr('BITS'))]
-
-        # The face struct's metrics, so the web app's line height and baseline cannot drift
-        # from the device's. Row shape: { px, ascent, descent, lineHeight, GLYPHS, BITS, ... }
-        row = re.search(rf'^\s*\{{\s*{px},\s*(\d+),\s*(\d+),\s*(\d+)\s*,', src, re.M)
-        if not row:
-            sys.exit(f'{data_path}: no ATLAS_FACES row for {px}px')
-        ascent, descent, line_height = (int(g) for g in row.groups())
+        bits = [int(b, 16) for b in re.findall(r'0x([0-9A-Fa-f]{2})', arr_of(sv, 'BITS'))]
 
         faces.append({
             'px': px, 'ascent': ascent, 'descent': descent, 'lineHeight': line_height,
             'first': first_char, 'glyphs': glyphs, 'extra': extra, 'bits': bits,
+            'upscale': upscale, 'upscaleOf': upscale_of, 'srcPx': src_px,
         })
 
     return faces
@@ -137,10 +150,24 @@ def emit(faces, out_path):
     L.append('  lineHeight: number;')
     L.append('  glyphs: Glyph[];')
     L.append('  bits: Uint8Array;')
+    L.append('  /**')
+    L.append('   * The block-scale factor: 1 for a rasterised face, k >= 2 for one drawn as a k x k')
+    L.append('   * block scale of `upscaleFromPx`. Mirrors the firmware\'s atlas_face_t.upscale; the')
+    L.append('   * web renderer applies it exactly as the device does (NFR-4). The metrics above are')
+    L.append('   * the BASE\'s, unscaled, so a glyph\'s w/h matches the bitmap the face points at.')
+    L.append('   */')
+    L.append('  upscale: number;')
+    L.append('  /** The px size of the face this one scales, or this face\'s own size when upscale is 1. */')
+    L.append('  upscaleFromPx: number;')
     L.append('}')
     L.append('')
 
+    # Only RASTERISED faces own glyph tables and bitmaps. An upscaled face points its Face at
+    # its base's — re-emitting the same bytes for a 256px face would double the bundle for no
+    # reason, which is the whole economy the block-scale design buys.
     for f in faces:
+        if f['upscale'] != 1:
+            continue
         v = f'A{f["px"]}'
         L.append(f'const {v}_GLYPHS: Glyph[] = [')
         for (off, w, h, adv, bx, by) in f['glyphs']:
@@ -156,6 +183,8 @@ def emit(faces, out_path):
         for i, c in enumerate(chunks):
             end = ';' if i == len(chunks) - 1 else ' +'
             L.append(f"  '{c}'{end}")
+        L.append('')
+        L.append(f'const {v}_BITS = b64decode({v}_B64);')
         L.append('')
 
     L.append('/** Decode a base64 string to bytes without a DOM or Buffer dependency. */')
@@ -176,6 +205,10 @@ def emit(faces, out_path):
 
     for f in faces:
         v = f'A{f["px"]}'
+        # An upscaled face borrows its BASE's glyph table and decoded bitmap — the same objects,
+        # so the renderer's identity check (a scaled glyph is its base glyph) holds and no bytes
+        # are duplicated. The metrics are the base's too (see Face.upscale).
+        src_v = f'A{f["srcPx"]}'
         L.append(f'export const {v}: Face = {{')
         L.append(f'  firstChar: {f["first"]},')
         if f['extra']:
@@ -190,8 +223,10 @@ def emit(faces, out_path):
         L.append(f'  ascent: {f["ascent"]},')
         L.append(f'  descent: {f["descent"]},')
         L.append(f'  lineHeight: {f["lineHeight"]},')
-        L.append(f'  glyphs: {v}_GLYPHS,')
-        L.append(f'  bits: b64decode({v}_B64),')
+        L.append(f'  glyphs: {src_v}_GLYPHS,')
+        L.append(f'  bits: {src_v}_BITS,')
+        L.append(f'  upscale: {f["upscale"]},')
+        L.append(f'  upscaleFromPx: {f["upscaleOf"]},')
         L.append('};')
         L.append('')
 

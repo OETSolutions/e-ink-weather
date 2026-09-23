@@ -20,6 +20,38 @@ static const atlas_face_t *face_of(font_id_t f)
 /* The two faces the layout names by ROLE (FONT_BODY / FONT_VALUE) are #defines over ladder
  * entries, so nothing here needs to special-case them. */
 
+/* The block-scale factor of a face: 1 for a rasterised face, k for an UPSCALED one (see the
+ * generator). EVERY accessor below multiplies its result by this, so a face past 128 px behaves
+ * exactly like a rasterised one to its callers — the ONLY place the factor is visible outside
+ * this file is font_scale(), which the blitter needs to divide a scaled glyph box back to the
+ * base bitmap it actually points at.
+ *
+ * WHY SCALING HERE AND NOT IN THE TABLES: the glyph metrics are uint8_t (advance) and int8_t
+ * (bearings), sized for a <=128 px face; a 512 px face would overflow both. Scaling at lookup
+ * keeps the tables compact and lets the six upscaled faces share their base's arrays verbatim.
+ *
+ * WHY EVERY ACCESSOR AND NOT JUST THE BLIT: a caller lays text out from advance and bearing and
+ * draws from the glyph box; if any one of those were left unscaled the pen would move a
+ * fraction of what it drew and the glyphs would overlap into a smear. Scaling all of them in one
+ * place makes layout and ink agree by construction. */
+static int face_k(font_id_t font)
+{
+    const atlas_face_t *f = face_of(font);
+    const int k = f ? f->upscale : 1;
+    return k >= 1 ? k : 1;      /* a 0 in a corrupt table means "no scaling", not "collapse" */
+}
+
+int font_scale(font_id_t font)
+{
+    return face_k(font);
+}
+
+int font_upscale_of_px(font_id_t font)
+{
+    const atlas_face_t *f = face_of(font);
+    return f ? f->upscale_of : 0;
+}
+
 /* UTF-8 decode of the next character. Returns the codepoint and advances *p past it; on a
  * malformed sequence it consumes ONE byte and returns that byte's value, so a stray byte
  * cannot desynchronise the whole string.

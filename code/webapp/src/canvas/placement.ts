@@ -139,13 +139,20 @@ export function findPlacement(
  * than the placement it actually is. Choosing by line height keeps the reading whole and as
  * large as the gap allows.
  *
+ * THE DRAWN LINE HEIGHT, NOT THE BASE'S. An upscaled face (see atlas-data) reports its BASE's
+ * line height and a block-scale factor; the height it will draw at is base * k. Comparing the
+ * base figure would let a 256 px face into a box half its real size, clipping the very glyph
+ * this function exists to keep whole.
+ *
  * Falls back to the smallest face if even that does not fit, whose ink is clipped honestly
  * rather than silently.
  */
 export function fontSizeForBox(h: number): number {
   let best = FACE_PX[0]!;
   for (let i = 0; i < FACE_PX.length; i++) {
-    if (FACES[i]!.lineHeight <= h) best = FACE_PX[i]!;
+    const face = FACES[i]!;
+    const k = face.upscale >= 1 ? face.upscale : 1;
+    if (face.lineHeight * k <= h) best = FACE_PX[i]!;
   }
   return best;
 }

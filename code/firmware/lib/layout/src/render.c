@@ -27,25 +27,40 @@ static int offset_v(char a, int box_h, int line_h)
  *
  * Clipping to the box (not just to the panel) is what stops an over-long reading from
  * overwriting the surrounding static art — a field that overflows is truncated, not
- * allowed to scribble across the layout. */
+ * allowed to scribble across the layout.
+ *
+ * AN UPSCALED FACE DRAWS EACH SOURCE PIXEL AS A k x k BLOCK. `bits`, `w` and `h` describe the
+ * BASE face's bitmap (every metric from fonts.c is in base pixels — see font_scale() in
+ * fonts.h), and every set source bit is painted across the whole k x k block. This is exact for
+ * a 1 bpp glyph — there is no grey to interpolate — and it is the same technique
+ * draw_line_scaled() in provscreen.c already uses. The block is clipped per DESTINATION pixel,
+ * so a scaled glyph that overflows its box is truncated cleanly rather than writing outside it. */
 static void blit_glyph_clipped(canvas_t *c, int gx, int gy,
-                               const uint8_t *bits, int w, int h,
+                               const uint8_t *bits, int w, int h, int k,
                                const value_field_t *f)
 {
     if (!bits) return;              /* blank glyph (space): nothing to draw */
-    int pitch = (w + 7) / 8;
-    int x0 = f->x, x1 = f->x + f->w;
-    int y0 = f->y, y1 = f->y + f->h;
+    if (k < 1) k = 1;
+
+    const int pitch = (w + 7) / 8;
+    const int x0 = f->x, x1 = f->x + f->w;
+    const int y0 = f->y, y1 = f->y + f->h;
 
     for (int sy = 0; sy < h; sy++) {
-        int dy = gy + sy;
-        if (dy < y0 || dy >= y1) continue;
         const uint8_t *row = bits + (size_t)sy * pitch;
         for (int sx = 0; sx < w; sx++) {
             if (!((row[sx >> 3] >> (7 - (sx & 7))) & 1)) continue;   /* white: leave it */
-            int dx = gx + sx;
-            if (dx < x0 || dx >= x1) continue;
-            canvas_set_px(c, dx, dy, 1);
+            const int bx = gx + sx * k;
+            const int by = gy + sy * k;
+            for (int dy = 0; dy < k; dy++) {
+                const int py = by + dy;
+                if (py < y0 || py >= y1) continue;
+                for (int dx = 0; dx < k; dx++) {
+                    const int px = bx + dx;
+                    if (px < x0 || px >= x1) continue;
+                    canvas_set_px(c, px, py, 1);
+                }
+            }
         }
     }
 }
@@ -108,12 +123,20 @@ static void draw_field(canvas_t *c, const value_field_t *f, const char *s)
         return;                     /* a character with no glyph: draw nothing, do not guess */
     }
 
+    /* EVERY metric from fonts.c is in BASE pixels; the face's drawn size is base * k. Scaling
+     * them here, in the one place the layout is computed, is what makes an upscaled face behave
+     * exactly like a rasterised one — the pen, the line box and the baseline are all in drawn
+     * pixels, and the blitter expands each source pixel to match. */
+    const int k = font_scale(font);
+    text_w *= k;
+    line_h *= k;
+
     /* The pen origin is the top-left of the line box. Glyph ink is then placed relative to
      * the baseline, which is where the per-glyph bearings come in — placing glyphs by their
      * ink box alone would float a '.' at the top of the line instead of on the baseline. */
     int pen_x = f->x + offset_h(f->align_h, f->w, text_w);
     int pen_y = f->y + offset_v(f->align_v, f->h, line_h);
-    int baseline = pen_y + font_ascent(font);
+    int baseline = pen_y + font_ascent(font) * k;
 
     /* Walk by UTF-8 CHARACTER and use the CODEPOINT API.
      *
@@ -129,8 +152,8 @@ static void draw_field(canvas_t *c, const value_field_t *f, const char *s)
         int w = 0, h = 0, bx = 0, by = 0;
         if (font_glyph_cp(font, cp, &bits, &w, &h) != 0) break;
         if (font_bearing_cp(font, cp, &bx, &by) != 0) break;
-        blit_glyph_clipped(c, pen_x + bx, baseline + by, bits, w, h, f);
-        pen_x += font_advance_cp(font, cp);
+        blit_glyph_clipped(c, pen_x + bx * k, baseline + by * k, bits, w, h, k, f);
+        pen_x += font_advance_cp(font, cp) * k;
     }
 }
 
