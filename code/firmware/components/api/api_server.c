@@ -425,9 +425,16 @@ int api_update_seconds(void)
     layout_config_t cfg;
     const int ok = layout_config_parse(json, &cfg) == 0;
     free(json);
-    /* Refuse a value the parser rejected or one below the documented 30 s floor: a bad read
-     * must not turn the serve loop into a busy refresh loop. */
-    if (!ok || cfg.update_seconds < 30) return 900;
+    /* Refuse a value the parser rejected or one below the documented floor: a bad read must not
+     * turn the serve loop into a busy refresh loop.
+     *
+     * THE FLOOR IS THE PARSER'S OWN CONSTANT, NOT A SECOND COPY. This was a hardcoded 30 and
+     * became a SECOND, HIDDEN FLOOR the moment LAYOUT_MIN_INTERVAL_SECONDS dropped to 5: a
+     * config storing a 5 s interval — accepted by the parser, echoed back by GET /api/config,
+     * and shown in the editor — still refreshed every 900 s, because this line quietly replaced
+     * it. The setting looked applied and did nothing, which is the exact defect class the
+     * owmProduct toggle was. Reading the constant keeps the two ends in step by construction. */
+    if (!ok || cfg.update_seconds < LAYOUT_MIN_INTERVAL_SECONDS) return 900;
     return cfg.update_seconds;
 }
 

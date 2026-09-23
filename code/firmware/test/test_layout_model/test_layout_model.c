@@ -102,11 +102,32 @@ static void test_absurd_intervals_are_clamped(void)
 static void test_intervals_below_floor_fall_back(void)
 {
     layout_config_t c;
+    /* The floor is 5 s (LAYOUT_MIN_INTERVAL_SECONDS), so 4 is below it and 1 certainly is. */
     TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
-        "{\"schemaVersion\":1,\"updateSeconds\":5,"
+        "{\"schemaVersion\":1,\"updateSeconds\":4,"
         "\"pages\":[{\"name\":\"A\",\"refreshSeconds\":1}]}", &c));
     TEST_ASSERT_EQUAL_INT(900, c.update_seconds);
     TEST_ASSERT_EQUAL_INT(900, c.pages[0].refresh_seconds);
+}
+
+/* The floor itself is ACCEPTED, and so is the shortest dwell that is not below it.
+ *
+ * WHY THIS IS ITS OWN TEST: the fall-back test above only proves that small numbers are
+ * rejected — it passes even if the floor is set far too high, which is exactly the defect this
+ * pair exists to catch. A dwell of 5 s and an update interval of 5 s must both be stored as
+ * given; anything that clamps them up (to 30, say) silently ignores the user's setting. */
+static void test_the_floor_itself_is_accepted(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"updateSeconds\":5,"
+        "\"pages\":[{\"name\":\"A\",\"refreshSeconds\":5}]}", &c));
+    TEST_ASSERT_EQUAL_INT(5, c.update_seconds);
+    TEST_ASSERT_EQUAL_INT(5, c.pages[0].refresh_seconds);
+    /* And the rotation arithmetic still works at the minimum: two 5 s pages cycle over 10 s. */
+    TEST_ASSERT_EQUAL_INT(0, layout_page_at(&c, 0));
+    TEST_ASSERT_EQUAL_INT(0, layout_page_at(&c, 4));
+    TEST_ASSERT_EQUAL_INT(0, layout_page_at(&c, 5));
 }
 
 static void test_partial_limit_is_bounded(void)
@@ -299,6 +320,7 @@ int main(void)
     RUN_TEST(test_newer_schema_is_refused);
     RUN_TEST(test_absurd_intervals_are_clamped);
     RUN_TEST(test_intervals_below_floor_fall_back);
+    RUN_TEST(test_the_floor_itself_is_accepted);
     RUN_TEST(test_partial_limit_is_bounded);
     RUN_TEST(test_too_many_pages_are_truncated);
     RUN_TEST(test_junk_entries_do_not_corrupt_page_count);

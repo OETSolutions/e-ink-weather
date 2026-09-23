@@ -15,8 +15,22 @@
 /* Bounds that exist to keep `elapsed_seconds % total` well defined. Every interval is
  * summed into a `long`, so an unclamped 2^31-second page would overflow the sum to a
  * NEGATIVE total; the modulo would then be undefined and the device would show an
- * arbitrary page. A week is far past any sane dwell, so clamping costs nothing real. */
-#define LAYOUT_MIN_INTERVAL_SECONDS 30
+ * arbitrary page. A week is far past any sane dwell, so the max costs nothing real.
+ *
+ * THE MINIMUM IS 5 s, NOT 30 s. The 30 s floor was a taste choice, not a hardware limit:
+ * the serve loop polls on a 1 s tick (app_boot.c), so any whole second >= 1 is reachable,
+ * and the overflow this constant actually guards against is at the TOP of the range, not
+ * the bottom. 5 s lets a user who wants a fast rotation have one.
+ *
+ * WHAT A LOW VALUE DOES *NOT* DO: `refresh_seconds` only divides the rotation cycle
+ * (layout_page_at); it never triggers a fetch or a panel update. `update_seconds` is the
+ * one that decides when the device wakes, fetches and redraws. So a 5 s dwell with a
+ * 900 s update interval is legal and harmless — it just means the device almost always
+ * lands on the same slice when it next wakes. To SEE sub-30 s rotation, the update
+ * interval must be low too, and THAT has a real cost: every wake is a full OWM request,
+ * and the free tier allows 1000 calls/day (~83 minutes at 5 s). See the note on
+ * LAYOUT_MAX_INTERVAL_SECONDS' sibling in the web app's refresh field. */
+#define LAYOUT_MIN_INTERVAL_SECONDS 5
 #define LAYOUT_MAX_INTERVAL_SECONDS 604800
 
 /* Bounds the partial-refresh counter (FR-11) so it cannot be configured into an

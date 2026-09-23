@@ -435,7 +435,7 @@ void app_boot_run(void)
 
     /* ---- 8. Sleep, if on battery (FR-9) ---- */
     {
-        /* Whole seconds from the config, clamped by the parser to [30, 604800]. */
+        /* Whole seconds from the config, clamped by the parser to [5, 604800]. */
         const int wake_s = cfg.update_seconds > 0 ? cfg.update_seconds : 900;
         ESP_LOGI(TAG, "battery: sleeping %d s", wake_s);
         epd_sleep();

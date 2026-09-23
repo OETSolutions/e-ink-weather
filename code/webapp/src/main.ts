@@ -533,27 +533,33 @@ async function mount(root: HTMLElement): Promise<void> {
   });
 
   const pageDwellInput = el('input', {
-    type: 'number', id: 'pageDwell', min: '30', max: '604800', step: '30',
+    type: 'number', id: 'pageDwell', min: '5', max: '604800', step: '1',
   }) as HTMLInputElement;
   pageDwellInput.addEventListener('input', () => {
     const n = Number(pageDwellInput.value);
-    /* The device clamps to [30, 604800] (LAYOUT_MIN/MAX_INTERVAL_SECONDS) and refuses a document
+    /* The device clamps to [5, 604800] (LAYOUT_MIN/MAX_INTERVAL_SECONDS) and refuses a document
      * whose sum would overflow. Clamping HERE keeps the number shown equal to the number stored —
-     * the same rule every other control follows. */
+     * the same rule every other control follows.
+     *
+     * THE FLOOR IS 5 s, NOT 30 s. It was 30 for taste, not for the hardware: the device polls on a
+     * 1 s tick, so any whole second is reachable. NOTE that this field only divides the ROTATION
+     * cycle — it does not make the device fetch or redraw more often. `refreshSeconds` below is
+     * what decides that, and lowering IT costs an OWM call per wake (the free tier allows 1000/day,
+     * so ~5 s burns the day's budget in about 80 minutes). Dwell alone is free. */
     if (!Number.isFinite(n)) return;
-    page.refreshSeconds = Math.min(604800, Math.max(30, Math.round(n)));
+    page.refreshSeconds = Math.min(604800, Math.max(5, Math.round(n)));
   });
   pageDwellInput.addEventListener('blur', () => {
     pageDwellInput.value = String(page.refreshSeconds);
   });
 
   const refreshInput = el('input', {
-    type: 'number', id: 'refreshSeconds', min: '30', max: '604800', step: '30',
+    type: 'number', id: 'refreshSeconds', min: '5', max: '604800', step: '1',
   }) as HTMLInputElement;
   refreshInput.addEventListener('input', () => {
     const n = Number(refreshInput.value);
     if (!Number.isFinite(n)) return;
-    doc.updateSeconds = Math.min(604800, Math.max(30, Math.round(n)));
+    doc.updateSeconds = Math.min(604800, Math.max(5, Math.round(n)));
   });
   refreshInput.addEventListener('blur', () => {
     refreshInput.value = String(doc.updateSeconds);
@@ -574,7 +580,9 @@ async function mount(root: HTMLElement): Promise<void> {
 
   const rotationHint = el('p', { className: 'hint' },
     'Rotation is per page: the display shows each page for its own dwell time, then moves on. '
-    + 'With 2 pages at 900 s each, it turns every 15 minutes.');
+    + 'Dwell only decides which page is current when the device next refreshes — '
+    + '“How often to refresh data” is what makes it wake and redraw, so a short dwell with a '
+    + 'long refresh interval will look unchanged. With 2 pages at 900 s each, it turns every 15 min.');
 
 
   /* ---- which page is being edited ----
