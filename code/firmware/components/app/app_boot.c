@@ -223,6 +223,33 @@ static void app_boot_network_cycle(power_source_t source)
 
 void app_boot_run(void)
 {
+    /* SAY WHY THE LAST BOOT ENDED. Without this there is NO record of a panic, a watchdog reset or a
+     * brownout anywhere on the device: the only symptom is "it was dead and then it booted", which
+     * is impossible to attribute to code, power or the network. This cost a full investigation into
+     * an unreproducible freeze. The reason is one call and one line, and it is the first thing a
+     * later boot can report about the previous one. */
+    const esp_reset_reason_t rr = esp_reset_reason();
+    const char *rrs = "unknown";
+    switch (rr) {
+        case ESP_RST_POWERON:  rrs = "power-on";          break;
+        case ESP_RST_EXT:      rrs = "external pin";      break;
+        case ESP_RST_SW:       rrs = "software restart";  break;
+        case ESP_RST_PANIC:    rrs = "PANIC (crash)";     break;
+        case ESP_RST_INT_WDT:  rrs = "interrupt WDT";     break;
+        case ESP_RST_TASK_WDT: rrs = "task WDT";          break;
+        case ESP_RST_WDT:      rrs = "other WDT";         break;
+        case ESP_RST_DEEPSLEEP:rrs = "deep-sleep wake";   break;
+        case ESP_RST_BROWNOUT: rrs = "BROWNOUT (power)";  break;
+        case ESP_RST_SDIO:     rrs = "SDIO";              break;
+        default: break;
+    }
+    if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT ||
+        rr == ESP_RST_WDT || rr == ESP_RST_BROWNOUT) {
+        ESP_LOGE(TAG, "previous boot ended abnormally: %s (reset reason %d)", rrs, (int)rr);
+    } else {
+        ESP_LOGI(TAG, "reset reason: %s", rrs);
+    }
+
     /* ---- 1. NVS and config ---- */
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
