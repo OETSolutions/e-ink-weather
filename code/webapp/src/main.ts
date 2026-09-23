@@ -226,7 +226,12 @@ async function mount(root: HTMLElement): Promise<void> {
    * what it draws. An absent array is therefore the normal shape and must become an empty one
    * rather than being read as a length. */
   if (!Array.isArray(page.widgets)) page.widgets = [];
-  if (page.widgets.length === 0) page.widgets = starterPage(pageIndex).widgets;
+  /* A page that has never been arranged gets the shipped starter ONCE, and which pages those are
+   * is remembered for the session. WITHOUT THIS, switching to a page the user had deliberately
+   * emptied put the starter boxes back on every visit — the edit would appear to undo itself, and
+   * Save would then write a layout the user had deleted. */
+  const seededPages = new Set<number>();
+  if (page.widgets.length === 0) { page.widgets = starterPage(pageIndex).widgets; seededPages.add(pageIndex); }
   ensurePageRules(page, pageIndex);
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
@@ -376,6 +381,15 @@ async function mount(root: HTMLElement): Promise<void> {
       pageHint.textContent = 'Checking which page the display is showing…';
       return;
     }
+    /* The device may report a page index this document no longer has — the user can load a file
+     * with fewer pages while the device still holds the old schedule. pageAt() would then fall back
+     * to page 0 and the message would name the wrong page, so say what is actually known instead. */
+    if (devicePage >= doc.pages.length) {
+      pageHint.textContent =
+        'The display is on a page this layout no longer has. Save to bring them back in step.';
+      pageHint.classList.add('warn');
+      return;
+    }
     const devName = pageAt(devicePage).name;
     if (devicePage === pageIndex) {
       pageHint.classList.remove('warn');
@@ -401,9 +415,12 @@ async function mount(root: HTMLElement): Promise<void> {
     pageIndex = i;
     page = pageAt(i);
     if (!Array.isArray(page.widgets)) page.widgets = [];
-    /* A page with no widgets at all is a page the user has never arranged — give it the shipped
-     * starter for THIS index rather than page 0's, so its layout is not another page's. */
-    if (page.widgets.length === 0) page.widgets = starterPage(i).widgets;
+    /* Seed only a page the user has never arranged, and only once — see seededPages. A page that is
+     * empty because the user emptied it must STAY empty. */
+    if (page.widgets.length === 0 && !seededPages.has(i)) {
+      page.widgets = starterPage(i).widgets;
+      seededPages.add(i);
+    }
     ensurePageRules(page, i);
     /* Drop the previous page's readings. Ids can recur across pages, and a stale value under a
      * reused id would be another page's number drawn as if it were this page's. */
@@ -472,12 +489,15 @@ async function mount(root: HTMLElement): Promise<void> {
         liveValues = {};
         page = pageAt(0);
         if (!Array.isArray(page.widgets)) page.widgets = [];
-        /* SAME SEEDING AS MOUNT, via the same function. A loaded file that predates rules has no
-         * `rules` key, and the layer still draws the art table's lines — so an empty array here
-         * would show dividers that cannot be grabbed, exactly the state ensurePageRules() exists
-         * to prevent. Two different behaviours for the same missing field is also how the
-         * drawn set and the editable set drift apart in the first place. */
-        if (page.widgets.length === 0) page.widgets = starterPage(0).widgets;
+        /* A LOADED FILE IS RESPECTED EXACTLY — no starter seeding. The seeding at mount exists for
+         * a device that has no layout yet (FR-17); a file the user chose to load is explicit
+         * intent, and putting boxes back into a page it deliberately left empty would be this app
+         * overriding the document it just read. seededPages is cleared so the next page switch
+         * follows the SAME rule as the file rather than the pre-load session's. */
+        seededPages.clear();
+        /* A loaded file that predates rules has no `rules` key, and the layer still draws the art
+         * table's lines — so an empty array would show dividers that cannot be grabbed, exactly the
+         * state ensurePageRules() exists to prevent. */
         ensurePageRules(page, 0);
         editorState.page = page;
         editorState.selection = undefined;
@@ -1024,8 +1044,13 @@ async function mount(root: HTMLElement): Promise<void> {
     entitySearchTimer = window.setTimeout(() => {
       void searchEntities(q).then((res) => {
         /* Report a failure IN PLACE, without a re-render (which would drop focus), so a missing
-         * or wrong token is explained where the user is typing rather than in an empty dropdown. */
-        panel.setEntityOptions(res.ok ? res.entities : [], res.ok ? undefined : res.error);
+         * or wrong token is explained where the user is typing rather than in an empty dropdown.
+         * `total` is passed through so a clipped match list says how many matched. */
+        panel.setEntityOptions(
+          res.ok ? res.entities : [],
+          res.ok ? undefined : res.error,
+          res.ok ? res.total : undefined,
+        );
       });
     }, 250);
   }

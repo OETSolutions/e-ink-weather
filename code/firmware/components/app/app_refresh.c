@@ -1303,14 +1303,28 @@ void app_refresh_tick(power_source_t source, int force_full)
      *
      * AN EXPLICIT OVERRIDE WINS FOR ONE FRAME: the layout editor asks for the page it is editing
      * so a change to a non-scheduled page shows within a second instead of after that page's
-     * rotation slot (fifteen minutes with the shipped intervals). api_take_page() clears the
-     * request, so the next tick returns to the schedule on its own. The override is clamped to a
-     * page this config actually has — a stale request from a deleted page must not index past
-     * the array. */
+     * rotation slot (fifteen minutes with the shipped intervals). The request is NOT consumed here
+     * — it is cleared only after a frame carrying it is actually pushed (api_clear_page() at the
+     * end), so a tick that fails to get its framebuffer and draws nothing does not silently drop
+     * the user's request. It is clamped to a page this config actually has — a stale request from
+     * a deleted page must not index past the array. */
     const long elapsed_s = (long)(esp_timer_get_time() / 1000000LL);
     int page_index = layout_page_at(&cfg, elapsed_s);
     const int page_want = api_take_page();
-    if (page_want >= 0 && page_want < cfg.page_count) page_index = page_want;
+    int page_forced = 0;
+    if (page_want >= 0) {
+        if (page_want < cfg.page_count) {
+            page_index = page_want;
+            page_forced = 1;
+        } else if (cfg_ok) {
+            /* The config is known good and has no such page, so this request can never be
+             * honoured. DISCARD it rather than leaving a stale index pending: if the user later
+             * adds pages, a request that silently took effect then would be a page change nobody
+             * asked for at that moment. When the config could NOT be parsed the request is kept,
+             * because the page count is then a default and the request may still be valid. */
+            api_clear_page();
+        }
+    }
 
     static page_render_t page;      /* static: ~4 KB of widgets, too big for the 3.5 KB stack */
     memset(&page, 0, sizeof(page));
@@ -1686,6 +1700,10 @@ void app_refresh_tick(power_source_t source, int force_full)
         s_last_full_us = esp_timer_get_time();
     }
     api_record_page(page_index);
+    /* The frame is on the glass, so a page override that produced THIS frame has been honoured and
+     * can be cleared. It is deliberately cleared here and not when it was read, so a tick that
+     * failed to draw (and returned early above) leaves the request pending for the retry. */
+    if (page_forced) api_clear_page();
     ESP_LOGI(TAG, "%s refresh done: page %d, %d fields",
              actual_partial ? "partial" : "full",
              page_index, page.n_fields);

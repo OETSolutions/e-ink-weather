@@ -153,12 +153,13 @@ static void test_search_query_rejects_injection_metacharacters(void)
     TEST_ASSERT_EQUAL_INT(0, ha_search_query_valid(big));
 }
 
-/* The picker's response is 'id|name' per line. The tail line has NO trailing newline (the
- * template's last row), and that row must not be dropped — the same off-by-one the state
- * parser was fixed for. */
+/* The picker's response is a TOTAL-COUNT line, then 'id|name' per line. The tail row has NO
+ * trailing newline (the template's last row), and that row must not be dropped — the same
+ * off-by-one the state parser was fixed for. */
 static void test_entity_list_parses_all_rows_including_the_last(void)
 {
     const char *body =
+        "3\n"
         "sensor.upstairs_hallway_temperature|Upstairs Hallway Temperature\n"
         "sensor.upstairs_hallway_humidity|Upstairs Hallway Humidity\n"
         "climate.upstairs_hallway|Upstairs Hallway";
@@ -173,11 +174,71 @@ static void test_entity_list_parses_all_rows_including_the_last(void)
     TEST_ASSERT_EQUAL_STRING("Upstairs Hallway", rows[2].name);
 }
 
+/* The declared total counts matches the row cap dropped, so a clipped list does not read as
+ * complete. The count line must not itself be mistaken for a row. */
+static void test_entity_list_reports_the_declared_total_not_the_row_count(void)
+{
+    const char *body = "57\nsensor.a|A\nsensor.b|B\n";
+    ha_entity_t rows[8];
+    int total = 0;
+    const int n = ha_parse_entity_list(body, rows, 8, &total);
+    TEST_ASSERT_EQUAL_INT(2, n);       /* only two rows were sent */
+    TEST_ASSERT_EQUAL_INT(57, total);  /* but 57 matched */
+    TEST_ASSERT_EQUAL_STRING("sensor.a", rows[0].id);
+}
+
+/* A body with NO leading count (an older template) still parses, with the count falling back to
+ * the row count rather than reading the first row as a number. */
+static void test_entity_list_without_a_count_line_still_works(void)
+{
+    const char *body = "sensor.one|One\nsensor.two|Two";
+    ha_entity_t rows[8];
+    int total = -1;
+    const int n = ha_parse_entity_list(body, rows, 8, &total);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_EQUAL_INT(2, total);
+    TEST_ASSERT_EQUAL_STRING("sensor.one", rows[0].id);
+}
+
+/* A real automation id is longer than 64 chars and MUST survive: with a 64-char cap it was
+ * dropped by the length guard, so it never appeared in the picker while the response's own total
+ * said there were more matches than rows. Seen on the bench. */
+static void test_entity_list_keeps_a_long_valid_id(void)
+{
+    const char *long_id =
+        "automation.turn_on_family_room_vent_fan_when_upstairs_hallway_cooling";
+    TEST_ASSERT_GREATER_THAN_INT(64, (int)strlen(long_id));
+    char body[256];
+    snprintf(body, sizeof(body), "1\n%s|Fan\n", long_id);
+    ha_entity_t rows[4];
+    int total = 0;
+    const int n = ha_parse_entity_list(body, rows, 4, &total);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_STRING(long_id, rows[0].id);
+}
+
+/* A friendly_name over the name buffer is TRUNCATED, not allowed to overrun. */
+static void test_entity_list_truncates_an_over_long_name(void)
+{
+    char body[512];
+    char big[200];
+    memset(big, 'x', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+    snprintf(body, sizeof(body), "1\nsensor.a|%s\n", big);
+    ha_entity_t rows[4];
+    int total = 0;
+    const int n = ha_parse_entity_list(body, rows, 4, &total);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_STRING("sensor.a", rows[0].id);
+    /* Truncated to fit the buffer, NUL included, and not the 199 characters sent. */
+    TEST_ASSERT_EQUAL_INT((int)sizeof(rows[0].name) - 1, (int)strlen(rows[0].name));
+}
+
 /* A row with no '|' is still a usable id; the name falls back to the id. And junk rows that are
  * not valid entity ids are filtered, so a stray token cannot appear in the picker. */
 static void test_entity_list_tolerates_missing_name_and_filters_junk(void)
 {
-    const char *body = "sensor.lonely\nnot an entity\nsensor.named|Friendly\n";
+    const char *body = "2\nsensor.lonely\nnot an entity\nsensor.named|Friendly\n";
     ha_entity_t rows[8];
     int total = 0;
     const int n = ha_parse_entity_list(body, rows, 8, &total);
@@ -193,6 +254,7 @@ static void test_entity_list_tolerates_missing_name_and_filters_junk(void)
 static void test_entity_list_reports_truncation(void)
 {
     char body[512] = {0};
+    strcpy(body, "10\n");
     for (int i = 0; i < 10; i++) {
         char line[48];
         snprintf(line, sizeof(line), "sensor.e%d|N%d\n", i, i);
@@ -203,6 +265,7 @@ static void test_entity_list_reports_truncation(void)
     const int n = ha_parse_entity_list(body, rows, 3, &total);
     TEST_ASSERT_EQUAL_INT(3, n);
     TEST_ASSERT_EQUAL_INT(10, total);
+    TEST_ASSERT_GREATER_THAN_INT(n, total);   /* what makes `truncated` meaningful */
 }
 
 static void test_entity_list_empty_and_bad_args(void)
@@ -230,6 +293,10 @@ int main(void)
     RUN_TEST(test_entity_id_validation_rejects_injection_and_junk);
     RUN_TEST(test_search_query_rejects_injection_metacharacters);
     RUN_TEST(test_entity_list_parses_all_rows_including_the_last);
+    RUN_TEST(test_entity_list_reports_the_declared_total_not_the_row_count);
+    RUN_TEST(test_entity_list_without_a_count_line_still_works);
+    RUN_TEST(test_entity_list_keeps_a_long_valid_id);
+    RUN_TEST(test_entity_list_truncates_an_over_long_name);
     RUN_TEST(test_entity_list_tolerates_missing_name_and_filters_junk);
     RUN_TEST(test_entity_list_reports_truncation);
     RUN_TEST(test_entity_list_empty_and_bad_args);

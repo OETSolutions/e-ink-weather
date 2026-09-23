@@ -128,8 +128,33 @@ int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total
     if (!body || !out || max <= 0) return 0;
 
     int n = 0;
-    int seen = 0;
     const char *p = body;
+
+    /* THE FIRST LINE IS THE TOTAL MATCH COUNT, not a row. The template emits it before the
+     * (bounded) rows so the caller can tell a complete list from a clipped one — without it, the
+     * cap and the response would be the same number and the list would always look complete. It
+     * carries no '|' and no '.', so it is distinguishable from a row and is consumed here rather
+     * than being filtered as junk. A body without it (an older template) still parses: the count
+     * then defaults to the number of rows seen. */
+    int declared = -1;
+    {
+        const char *nl = strchr(p, '\n');
+        const size_t linelen = nl ? (size_t)(nl - p) : strlen(p);
+        if (linelen > 0 && linelen < 12) {
+            int digits = 1;
+            for (size_t i = 0; i < linelen; i++) {
+                if (p[i] < '0' || p[i] > '9') { digits = 0; break; }
+            }
+            if (digits) {
+                int v = 0;
+                for (size_t i = 0; i < linelen; i++) v = v * 10 + (p[i] - '0');
+                declared = v;
+                p = nl ? nl + 1 : p + linelen;
+            }
+        }
+    }
+
+    int seen = 0;
     while (*p) {
         const char *nl = strchr(p, '\n');
         const size_t linelen = nl ? (size_t)(nl - p) : strlen(p);
@@ -146,8 +171,7 @@ int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total
             memcpy(id, p, idlen);
             id[idlen] = '\0';
             /* Filter to real entity ids: the template matches on a substring, and HA's own
-             * response formatting can leave a stray token. `seen` counts every row the template
-             * produced, so the caller can tell "no matches" from "all matches were clipped". */
+             * response formatting can leave a stray token. */
             if (ha_entity_id_valid(id)) {
                 seen++;
                 if (n < max) {
@@ -162,6 +186,8 @@ int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total
         if (!nl) break;
         p = nl + 1;
     }
-    if (total) *total = seen;
+    /* The declared count is authoritative when present (it counts matches the row cap dropped);
+     * otherwise fall back to what was actually seen. Never less than the rows returned. */
+    if (total) *total = declared >= n ? declared : seen;
     return n;
 }

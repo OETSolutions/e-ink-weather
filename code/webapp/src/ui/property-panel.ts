@@ -52,8 +52,12 @@ export interface PropertyPanelHandle {
   setEntities(list: { entityId: string; friendlyName?: string }[], unavailable?: string): void;
   /** Replace ONLY the picker's options, WITHOUT re-rendering. This is what a search-as-you-type
    *  result needs: a full re-render would replace the input the user is typing in and drop focus
-   *  after one keystroke (see the geometry note in render()). */
-  setEntityOptions(list: { entityId: string; friendlyName?: string }[], note?: string): void;
+   *  after one keystroke (see the geometry note in render()).
+   *
+   *  `note` is a failure message to show instead of a match count. `total` is how many entities
+   *  matched on the display, which can exceed the rows returned — saying so keeps a clipped list
+   *  from reading as the whole set. */
+  setEntityOptions(list: { entityId: string; friendlyName?: string }[], note?: string, total?: number): void;
 }
 
 /** A button with a real listener. `onClick` in a props object does NOT work: Object.assign
@@ -443,7 +447,7 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
       entitiesUnavailable = unavailable;
       render();
     },
-    setEntityOptions(list, note) {
+    setEntityOptions(list, note, total) {
       /* NO render() — see the interface note. Only refill the dropdown that is already on screen,
        * so the input keeps focus and the typed text. A missing datalist (no HA widget selected)
        * makes this a no-op rather than an error: a search can land after the user clicked away. */
@@ -459,9 +463,13 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
         haNote.textContent = note;
         haNote.classList.add('warn');
       } else {
-        haNote.textContent = list.length
-          ? `${list.length} matching ${list.length === 1 ? 'entity' : 'entities'} — pick one from the list.`
-          : 'No entities matched. Check the spelling, or type the full id.';
+        const n = list.length;
+        /* Say when the display matched MORE than it returned, rather than presenting a clipped
+         * list as the whole set — the same "says a value it cannot know" class this picker had. */
+        const more = total !== undefined && total > n;
+        haNote.textContent = n === 0
+          ? 'No entities matched. Check the spelling, or type the full id.'
+          : `${n} matching ${n === 1 ? 'entity' : 'entities'}${more ? ` of ${total} — refine the search to narrow it` : ''} — pick one from the list.`;
         haNote.classList.remove('warn');
       }
     },

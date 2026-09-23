@@ -54,9 +54,16 @@ int api_take_full_refresh(void);
  * "show me the page I am working on" and see it within a second.
  *
  * It also implies a FULL refresh: a different page means a different background, which a
- * partial cannot diff against. */
+ * partial cannot diff against.
+ *
+ * THE REQUEST IS NOT CONSUMED BY api_take_page(); it stays until the frame that honours it is
+ * actually pushed (api_clear_page()). A tick that fails to get its framebuffer draws nothing, and
+ * clearing the request there would drop the user's "show this page" with the request having had no
+ * effect — they would then wait a rotation for the page they explicitly asked for. */
 void api_request_page(int page);
 int api_take_page(void);
+/* Clear a page request once a frame carrying it has been rendered. */
+void api_clear_page(void);
 
 /* Record an error for /api/status's `errors` array, newest first (FR-33). Bounded ring, so
  * a device stuck in an error loop cannot grow this without limit. */

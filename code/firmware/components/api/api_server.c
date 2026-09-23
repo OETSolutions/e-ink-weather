@@ -207,9 +207,15 @@ int api_take_page(void)
 {
     lock();
     const int was = s_pending_page;
-    s_pending_page = -1;
     unlock();
     return was;
+}
+
+void api_clear_page(void)
+{
+    lock();
+    s_pending_page = -1;
+    unlock();
 }
 
 int api_live_bitmap_slot(void)
@@ -1129,43 +1135,60 @@ static esp_err_t h_ha_entities(httpd_req_t *req)
     if (devcfg_normalize_ha_url(url, norm, sizeof(norm)) == 0) snprintf(url, sizeof(url), "%s", norm);
 
     /* Build the search template. The query is single-quoted INSIDE a double-quoted JSON string,
-     * so it also cannot break the body. `states` is sorted for a stable list, capped so the reply
-     * is bounded, and the substring match keeps it small. */
+     * so it also cannot break the body.
+     *
+     * THE FIRST LINE IS THE TOTAL MATCH COUNT and the rest are up to HA_SEARCH_MAX rows, so the
+     * app can tell "these are all of them" from "there were more". Emitting the count and the rows
+     * with the SAME cap would make a clipped list always look complete — the exact kind of control
+     * that reports a value it cannot actually know. Matches are collected ONCE into `m` so the
+     * count and the rows agree, then sorted for a stable list.
+     *
+     * THE NAME IS SLICED TO HA_ENTITY_NAME_LEN HERE, not in the parser: it is display text and a
+     * friendly_name can be arbitrarily long, so bounding it in the template keeps the response
+     * size predictable whatever the instance holds. The id is not sliced — a real one reaches 69
+     * chars, and truncating it would make the picker offer an entity that does not exist. */
     char body[512];
     const int bn = snprintf(body, sizeof(body),
-        "{\"template\":\"{%% set c = namespace(n=0) %%}"
-        "{%% for s in states | sort(attribute='entity_id') %%}"
-        "{%% if '%s' in s.entity_id and c.n < %d %%}"
-        "{{ s.entity_id }}|{{ s.name }}\\n"
+        "{\"template\":\"{%% set m = states | selectattr('entity_id','contains','%s') | list %%}"
+        "{{ m | length }}\\n"
+        "{%% set c = namespace(n=0) %%}"
+        "{%% for s in m | sort(attribute='entity_id') %%}"
+        "{%% if c.n < %d %%}{{ s.entity_id }}|{{ s.name[:%d] }}\\n"
         "{%% set c.n = c.n + 1 %%}{%% endif %%}{%% endfor %%}\"}",
-        q, HA_SEARCH_MAX);
+        q, HA_SEARCH_MAX, HA_ENTITY_NAME_LEN - 1);
     if (bn < 0 || (size_t)bn >= sizeof(body)) {
         return api_send_err(req, "500 Internal Server Error", "search template overflow");
     }
 
-    /* The response is at most HA_SEARCH_MAX rows of ~150 bytes. Heap, not `.bss`: a permanent
-     * static block is DRAM the heap never gets, and on this part the 78,200-byte render window
-     * is decided by the largest FREE block — a standing allocation that size can drop it below
-     * what the static layer needs. Freed on every path. */
-    char *resp = malloc(6144);
+    /* The response is at most HA_SEARCH_MAX rows of (HA_ENTITY_ID_LEN + HA_ENTITY_NAME_LEN + 4)
+     * bytes — 24 * 196 = ~4.7 KB, so 8 KB holds it with room for the count line and any escaping.
+     * Heap, not `.bss`: a permanent static block is DRAM the heap never gets, and on this part the
+     * 78,200-byte render window is decided by the largest FREE block — a standing allocation that
+     * size can drop it below what the static layer needs. Freed on every path. */
+    char *resp = malloc(8192);
     if (!resp) return api_send_err(req, "500 Internal Server Error", "oom");
 
     char turl[DEVENV_BUF_HA_URL + 32];
     snprintf(turl, sizeof(turl), "%s/api/template", url);
-    const esp_err_t hx = net_http_post_json(turl, token, body, resp, 6144);
+    const esp_err_t hx = net_http_post_json(turl, token, body, resp, 8192);
     if (hx != ESP_OK) {
         free(resp);
         return api_send_err(req, "502 Bad Gateway",
                             "could not reach Home Assistant (check the url and token)");
     }
 
-    ha_entity_t rows[HA_SEARCH_MAX];
+    /* The parsed rows are ALSO on the heap, not on the handler's stack: 24 rows of 144 bytes is
+     * 3.4 KB, and the httpd task's stack is 8 KB with the OTA handler's TLS headroom in it. A
+     * 3.4 KB array beside the request body would leave the margin too thin for a response that
+     * runs while another socket is being served. */
+    ha_entity_t *rows = calloc(HA_SEARCH_MAX, sizeof(ha_entity_t));
+    if (!rows) { free(resp); return api_send_err(req, "500 Internal Server Error", "oom"); }
     int total = 0;
     const int got = ha_parse_entity_list(resp, rows, HA_SEARCH_MAX, &total);
     free(resp);
 
     cJSON *root = cJSON_CreateObject();
-    if (!root) return api_send_err(req, "500 Internal Server Error", "oom");
+    if (!root) { free(rows); return api_send_err(req, "500 Internal Server Error", "oom"); }
     cJSON *arr = cJSON_AddArrayToObject(root, "entities");
     for (int i = 0; arr && i < got; i++) {
         cJSON *o = cJSON_CreateObject();
@@ -1178,6 +1201,7 @@ static esp_err_t h_ha_entities(httpd_req_t *req)
         }
         cJSON_AddItemToArray(arr, o);
     }
+    free(rows);
     /* Say whether the list was clipped, so a short list is not read as a complete one. */
     cJSON_AddNumberToObject(root, "total", total);
     cJSON_AddBoolToObject(root, "truncated", total > got);

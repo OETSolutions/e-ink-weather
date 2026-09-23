@@ -37,9 +37,17 @@ int ha_entity_id_valid(const char *entity_id);
  * any real id length. Returns 1 for a usable query. */
 int ha_search_query_valid(const char *q);
 
-/* One entity row from the picker's search response. */
-#define HA_ENTITY_ID_LEN   64
-#define HA_ENTITY_NAME_LEN 80
+/* One entity row from the picker's search response.
+ *
+ * THE ID BUFFER MUST FIT REAL IDS. It was 64, and a real automation on the bench —
+ * "automation.turn_on_family_room_vent_fan_when_upstairs_hallway_cooling" at 69 chars — was
+ * dropped by the length guard and never appeared in the picker, while the same response's total
+ * said there were more matches than rows. HA ids are bounded only by the object_id, so 128 leaves
+ * room for any id a real instance carries. THE NAME IS SHORTER ON PURPOSE and is sliced by the
+ * template: it is display text, and capping it server-side keeps the response bounded whatever a
+ * friendly_name contains. */
+#define HA_ENTITY_ID_LEN   128
+#define HA_ENTITY_NAME_LEN 64
 
 typedef struct {
     char id[HA_ENTITY_ID_LEN];
