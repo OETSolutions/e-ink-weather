@@ -94,6 +94,10 @@ static SemaphoreHandle_t s_lock;
 static void lock(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 
+/* Defined near h_config_put, but used by h_values too — both allocate a request-scoped buffer that
+ * lands inside the render window's transient fragmentation, so both need the same retry. */
+static char *alloc_body_retry(size_t len);
+
 void api_reset_cycle_counters(void)
 {
     lock();
@@ -686,8 +690,17 @@ static esp_err_t h_values(httpd_req_t *req)
      * 3 KB of DRAM permanently, is the right side of that trade.
      *
      * Allocated BEFORE the lock: malloc can take a while when the heap is fragmented, and holding
-     * the values lock across it would stall the refresh task that publishes into the store. */
-    char *out = malloc(API_VALUES_JSON_MAX);
+     * the values lock across it would stall the refresh task that publishes into the store.
+     *
+     * IT RETRIES, LIKE THE CONFIG PATH. A bare malloc here failed with HTTP 500 {"error":"oom"} on
+     * a device reporting 54 KB free, seen on hardware while driving the layout editor: saving a
+     * heading resizes triggers the render, and /api/values is the very next request the editor
+     * makes — so it lands inside the transient fragmentation window and the editor's boxes read as
+     * broken. alloc_body_retry() already covers exactly this (see its comment), and this buffer is
+     * the same shape of request-scoped allocation, so it uses the same remedy rather than a second
+     * hand-rolled retry loop. The value the editor gets back is unchanged; only the failure while
+     * the window is open is removed. */
+    char *out = alloc_body_retry(API_VALUES_JSON_MAX);
     if (!out) return api_send_err(req, "500 Internal Server Error", "oom");
 
     api_value_t items[API_VALUES_MAX];
