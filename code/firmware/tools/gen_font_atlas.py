@@ -233,12 +233,20 @@ def build_upscaled(px, base, k):
     fonts.c returns values that describe the base buffer, so that a glyph's returned w/h always
     matches the bitmap the returned pointer addresses, and the scale factor is applied by the
     two renderers (which are the only code that lays text out and blits). font_px() still reports
-    the nominal size, and font_scale() reports k."""
+    the nominal size, and font_scale() reports k.
+
+    THE BASE IS ALWAYS THE RASTERISED ROOT, and `upscale_of` is its size. If a caller bases an
+    upscaled size on another upscaled one, the factors are MULTIPLIED and the root is stored —
+    so `px == upscale_of * upscale` holds by construction, and the renderer's single multiply is
+    correct. Storing the immediate (upscaled) base with its own factor would draw base*k instead
+    of the requested size, and the face itself would then be mis-sized."""
+    root = base.get("_root", base)
+    k_total = k * base["upscale"]
     return {
-        "ttf": base["ttf"], "px": px, "ascent": base["ascent"], "descent": base["descent"],
-        "line_height": base["ascent"] + base["descent"],
-        "glyphs": base["glyphs"], "extra": base["extra"], "blob": base["blob"],
-        "upscale": k, "upscale_of": base["px"],
+        "ttf": root["ttf"], "px": px, "ascent": root["ascent"], "descent": root["descent"],
+        "line_height": root["ascent"] + root["descent"],
+        "glyphs": root["glyphs"], "extra": root["extra"], "blob": root["blob"],
+        "upscale": k_total, "upscale_of": root["px"], "_root": root,
     }
 
 

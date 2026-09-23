@@ -178,6 +178,11 @@ static void test_upscaled_faces_are_block_scales_of_a_base(void)
          * reports — the whole reuse property. */
         const font_id_t bf = font_face_for_px((double)base);
         TEST_ASSERT_EQUAL_INT(base, font_px(bf));
+        /* THE BASE IS ITSELF RASTERISED, never another upscaled face: the generator resolves a
+         * chain to the root and multiplies the factors. If it stored an immediate upscaled base
+         * with only the second factor, the renderer's single multiply would draw base*k — the
+         * wrong size — and this would catch it before the glass did. */
+        TEST_ASSERT_EQUAL_INT(1, font_scale(bf));
         TEST_ASSERT_EQUAL_INT(font_ascent(bf), font_ascent((font_id_t)f));
         TEST_ASSERT_EQUAL_INT(font_line_height(bf), font_line_height((font_id_t)f));
         /* And the glyph bitmap is the base's, byte for byte. */
