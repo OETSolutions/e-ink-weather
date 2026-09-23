@@ -1328,22 +1328,38 @@ void app_refresh_tick(power_source_t source, int force_full)
 
     static page_render_t page;      /* static: ~4 KB of widgets, too big for the 3.5 KB stack */
     memset(&page, 0, sizeof(page));
-    if (cfg_ok) {
-        page.n = layout_widgets_parse(cfg_json, page_index, page.widgets, LAYOUT_MAX_FIELDS);
-    }
-    free(cfg_json);
-    if (page.n < 0) page.n = 0;
-    HEAP_DIAG("after config read+free");
 
+    /* WHAT THE WHOLE DOCUMENT NEEDS, not just the page being drawn.
+     *
+     * THE EDITOR PREVIEWS ANY PAGE (FR-27), and the device is the only party that can resolve a
+     * page's values — it holds the credentials and already fetched the documents. Resolving only
+     * the drawn page meant every other page previewed as "--" until the user saved and the device
+     * happened to rotate onto it, which is the reported "the values show blank til you save".
+     * So the tick now resolves EVERY page, and a fetch driven by the union of their needs serves
+     * all of them from one set of requests.
+     *
+     * PARSED ONCE, THEN DISCARDED — THE TREE MUST NOT SURVIVE THE FETCH. A cJSON tree is several
+     * times the document, and holding one across the TLS handshake is the documented memory
+     * hazard on this part (the handshake needs contiguous DRAM the tree would fragment). The raw
+     * config string stays, and is re-parsed after the fetch to resolve each page. */
     value_needs_t needs;
-    value_scan_needs(page.widgets, page.n, &needs);
-
-    /* The page's HA entities, in template order. Collected HERE because the second HA widget on
-     * a page reads the second token of the one response line. */
+    memset(&needs, 0, sizeof(needs));
+    /* The HA entities the WHOLE document needs, in first-seen order — the order the template
+     * request is built in and the order a widget's slot is looked up in, so they must agree. */
     char ha_ids[LAYOUT_MAX_FIELDS][48];
-    int ha_want = 0;
-    const int n_ha = value_collect_ha_entities(page.widgets, page.n, ha_ids,
-                                               LAYOUT_MAX_FIELDS, &ha_want);
+    int n_ha = 0;
+    if (cfg_ok) {
+        cJSON *root = cJSON_Parse(cfg_json);
+        if (root) {
+            const int np = cfg.page_count > 0 ? cfg.page_count : 1;
+            layout_scan_all_pages(root, np,
+                                  &needs.need_owm_current, &needs.need_owm_daily,
+                                  &needs.need_owm_alert, &needs.need_ha, &needs.max_day_index,
+                                  ha_ids, LAYOUT_MAX_FIELDS, &n_ha);
+            cJSON_Delete(root);
+        }
+    }
+    HEAP_DIAG("after config scan");
 
     fetch_creds_t creds;
     read_creds(&creds);
@@ -1484,15 +1500,63 @@ void app_refresh_tick(power_source_t source, int force_full)
          * cannot describe a different product from the one on the glass. */
         .owm_alerts_supported = needs.need_owm_alert ? owm_product_has_alerts(product) : 0,
     };
-    build_fields(&page, &src, ha_ids, n_ha, now_unix);
 
-    /* Hand the resolved strings to the API for GET /api/values (FR-27), which is what lets the
-     * editor preview REAL fetched data instead of re-deriving it (and, in the embedded case,
-     * without any credentials or internet of its own). Recorded even for a failed fetch: the
-     * widget then resolved to its fallback, and "the panel will show --" is exactly what the
-     * preview should say rather than keeping a stale value from a previous refresh. */
+    /* ---- Resolve EVERY page for GET /api/values (FR-27) ----
+     *
+     * This is what makes the editor's preview show real values for the page it is editing, even
+     * while the glass is on another page (see the scan above). Each page is resolved into the
+     * SAME tick-local buffer in turn, so the ~9 KB page_render_t is not duplicated per page;
+     * only the drawn page's result is left in `page` at the end, which is what the render reads.
+     *
+     * Recorded even for a failed fetch: the widget then resolved to its fallback, and "the panel
+     * will show --" IS the honest answer rather than a stale value from a previous refresh.
+     *
+     * The drawn page is resolved LAST so its built fields/values are the ones the push below
+     * stamps. Reading it through the same path means the preview and the glass cannot disagree —
+     * a preview produced by different code is exactly the "preview is a confident lie" failure
+     * FR-27 and NFR-4 exist to prevent. */
+    const int page_total = cfg_ok && cfg.page_count > 0 ? cfg.page_count : 1;
+
+    /* Size the per-page value store BEFORE anything records into it, and allocate it HERE rather
+     * than in .bss — a fixed LAYOUT_MAX_PAGES x 24 array is ~13 KB of DRAM the heap never gets,
+     * which measured before as enough to drop the largest free block below what the static layer
+     * needs. See api_values_reserve. This is still before the render window takes the layer, so it
+     * does not compete for the contiguous block the layer needs. */
+    api_values_reserve(page_total);
+
+    {
+        cJSON *root = cfg_ok ? cJSON_Parse(cfg_json) : NULL;
+        for (int p = 0; p < page_total; p++) {
+            if (p == page_index) continue;          /* the drawn page is handled below */
+            if (!root) break;
+            memset(&page, 0, sizeof(page));
+            page.n = layout_widgets_from_root(root, p, page.widgets, LAYOUT_MAX_FIELDS);
+            if (page.n < 0) page.n = 0;
+            build_fields(&page, &src, ha_ids, n_ha, now_unix);
+            api_record_values(page.ids, page.values, page.has_value, page.n_fields,
+                              p, page_total);
+        }
+        if (root) cJSON_Delete(root);
+    }
+
+    /* Now the page that is actually drawn, into `page` for the render below. */
+    memset(&page, 0, sizeof(page));
+    if (cfg_ok) {
+        cJSON *root = cJSON_Parse(cfg_json);
+        if (root) {
+            page.n = layout_widgets_from_root(root, page_index, page.widgets, LAYOUT_MAX_FIELDS);
+            cJSON_Delete(root);
+        }
+    }
+    if (page.n < 0) page.n = 0;
+    build_fields(&page, &src, ha_ids, n_ha, now_unix);
     api_record_values(page.ids, page.values, page.has_value, page.n_fields,
-                      page_index, cfg_ok ? cfg.page_count : 1);
+                      page_index, page_total);
+
+    /* The config string has been read twice more above; give it back now so the render window
+     * opens against the same heap it would have without the per-page pass. */
+    free(cfg_json);
+    cfg_json = NULL;
 
     /* The forecast buffer has served its purpose; releasing it here gives the render window the
      * ~16.5 KB back, which matters on USB where the second framebuffer is already tight. */

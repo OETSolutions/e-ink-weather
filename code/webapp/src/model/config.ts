@@ -106,6 +106,32 @@ export interface Rule {
   inset: number;
 }
 
+/**
+ * A static text label: "NOW", "HALLWAY", "TODAY HIGH".
+ *
+ * IT IS PART OF THE CONFIG, not the web app's own table, for the same reason a Rule is: the user
+ * must be able to rename and move it. These labels used to be a hard-coded per-page table, so the
+ * headings on the glass were the headings the preset happened to contain — a user who wanted
+ * "COOP" instead of "OUTDOOR", or a heading where there was none, had no way to get one short of
+ * hand-editing JSON.
+ *
+ * The device never sees a label: labels are rasterised into the 1-bpp artwork this app uploads,
+ * and the firmware draws only values (FR-1). But they still travel in the document so a saved
+ * layout round-trips and a GET hands back the labels the user actually wrote. The firmware's
+ * layout parser ignores unknown per-page keys, so a label survives the round-trip unchanged.
+ *
+ * THERE IS NO WIDTH OR HEIGHT. A label is one line of text; its box is measured from the glyphs
+ * (see canvas/geometry.ts:labelRect), so a width stored here could only drift out of step with
+ * the text it is supposed to bound.
+ */
+export interface Label {
+  x: number;
+  y: number;
+  text: string;
+  /** Pixel size; the ladder resolves it to a face, exactly like a widget's font.size. */
+  font: number;
+}
+
 export interface Page {
   id: string;
   name: string;
@@ -114,6 +140,9 @@ export interface Page {
   widgets: Widget[];
   /** Dividers, in the static layer (FR-15). Absent means none. */
   rules?: Rule[];
+  /** Static text labels, in the static layer. Absent on a document authored before labels moved
+   *  into the config; the shell seeds such a page from the art table (see ensurePageLabels). */
+  labels?: Label[];
 }
 
 /** The id every rule shares. A rule is not a widget, but the editor selects, drags and deletes
@@ -121,16 +150,28 @@ export interface Page {
  *  never be a widget: its id is reserved here and never assigned to a value box. */
 export const RULE_ID = '@rule';
 
+/** The id every label shares. Reserved like RULE_ID, and for the same reason: a label is selected
+ *  and deleted like a widget but is addressed by INDEX, so it must never collide with a widget
+ *  id. A label can never be a widget. */
+export const LABEL_ID = '@label';
+
 /** A rule as the editor addresses it: an id plus the divider. */
 export interface RuleSelection extends Rule {
   id: typeof RULE_ID;
   index: number;
 }
 
-/** The editor's selection is a widget (by id) or a rule (by id AND index). */
+/** A label as the editor addresses it: an id plus the label and its index in the page. */
+export interface LabelSelection extends Label {
+  id: typeof LABEL_ID;
+  index: number;
+}
+
+/** The editor's selection is a widget (by id), a rule (by id AND index), or a label. */
 export type Selection =
   | { kind: 'widget'; id: string }
-  | { kind: 'rule'; id: string; index: number };
+  | { kind: 'rule'; id: string; index: number }
+  | { kind: 'label'; id: string; index: number };
 
 export interface LocationConfig {
   /** Precise position picked on the map. */

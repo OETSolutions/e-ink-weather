@@ -63,8 +63,8 @@ int api_values_json(const api_values_t *v, char *out, size_t outlen)
         o += (size_t)n;                                                      \
     } while (0)
 
-    APPEND("{\"page\":%d,\"page_count\":%d,\"resolved_at\":%ld,\"values\":[",
-           v->page, v->page_count, v->resolved_at);
+    APPEND("{\"page\":%d,\"drawn_page\":%d,\"page_count\":%d,\"resolved_at\":%ld,\"values\":[",
+           v->page, v->drawn_page, v->page_count, v->resolved_at);
 
     for (int i = 0; i < v->count; i++) {
         const api_value_t *it = &v->items[i];

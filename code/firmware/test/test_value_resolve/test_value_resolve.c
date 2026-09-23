@@ -338,6 +338,37 @@ static void test_ha_unavailable_shows_fallback(void)
     TEST_ASSERT_EQUAL_STRING("--", buf);
 }
 
+/* A NON-NUMERIC HA state renders as its own WORD — the binary_sensor case.
+ *
+ * The numeric-only classifier rejected "off" as UNAVAILABLE, so a working door sensor showed the
+ * widget's fallback. The state is a real reading and must reach the glass, and it must carry no
+ * suffix: this widget's format is a temperature's, so appending it would draw "off°F". */
+static void test_ha_text_state_renders_its_word_without_a_suffix(void)
+{
+    layout_widget_t w = mk(BIND_HA);
+    strcpy(w.binding.entity_id, "binary_sensor.door_open");
+    strcpy(w.format.suffix, "\xc2\xb0""F");      /* the temperature affix must NOT appear */
+    char ids[LAYOUT_MAX_FIELDS][48];
+    int needed = 0;
+    const int n_ids = value_collect_ha_entities(&w, 1, ids, LAYOUT_MAX_FIELDS, &needed);
+
+    value_sources_t src = { .ha_line = "off" };
+    char buf[64];
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget(&w, &src, ids, n_ids, 0, &v, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("off", buf);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_EQUAL_INT(0, v.is_numeric);
+
+    /* A threshold rule cannot fire on a word — there is no magnitude to compare. */
+    w.n_rules = 1;
+    w.rules[0].op = ALERT_OP_GT;
+    w.rules[0].threshold = 0;
+    w.rules[0].level = ALERT_SEVERE;
+    value_format_widget(&w, &src, ids, n_ids, 0, &v, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("off", buf);      /* not "severe" */
+}
+
 /* A page that binds the same entity twice must ask HA for it ONCE — the template response is
  * one line, and duplicating the entity burns the 512-byte budget for nothing. */
 static void test_duplicate_ha_entities_are_deduplicated(void)
@@ -423,6 +454,7 @@ int main(void)
     RUN_TEST(test_most_severe_rule_wins);
     RUN_TEST(test_ha_widgets_read_their_own_token);
     RUN_TEST(test_ha_unavailable_shows_fallback);
+    RUN_TEST(test_ha_text_state_renders_its_word_without_a_suffix);
     RUN_TEST(test_duplicate_ha_entities_are_deduplicated);
     RUN_TEST(test_scan_needs_ignores_static_widgets);
     RUN_TEST(test_scan_needs_reports_all_sources_and_max_day);

@@ -38,10 +38,15 @@ typedef struct {
 typedef struct {
     const api_value_t *items;
     int                count;
-    /* The page these values belong to, and whether the schedule has a page at all. Lets the
-     * editor say "showing page 2" rather than silently previewing a different page than the
-     * one being edited. */
+    /* WHICH PAGE THESE VALUES ARE FOR. This is the page the CALLER asked about, which is not
+     * necessarily the page on the glass: the editor edits one page while the device rotates
+     * through them on its own, so the two are reported separately (see `drawn_page`). The
+     * editor's boxes must fill in for the page being EDITED, which is why the device resolves
+     * every page rather than only the one it drew. */
     int                page;
+    /* The page currently drawn on the panel, or -1 while nothing has been drawn. Distinct from
+     * `page` so the editor can say "the display is showing page 1" while previewing page 2. */
+    int                drawn_page;
     int                page_count;
     /* The device's own unix time at resolution, 0 if it has none. The device's clock is
      * seconds-since-boot, so this is not wall-clock — but it is monotone and lets the editor

@@ -18,8 +18,28 @@ int ha_parse_template_line(const char *line, double *out,
 /* Classify a single HA state string. HA states are STRINGS and are routinely
  * "unavailable" or "unknown" (a sleeping sensor, a dead Zigbee node), so they must never
  * be cast blindly (FR-5b). Surrounding whitespace is ignored — an HTTP body can arrive
- * with a trailing newline, and that must not turn the last entity into UNAVAILABLE. */
+ * with a trailing newline, and that must not turn the last entity into UNAVAILABLE.
+ *
+ * THIS IS THE NUMERIC-ONLY VIEW: it returns OK only for a plain finite number and
+ * UNAVAILABLE for everything else, including a perfectly good text state. Callers that
+ * must DRAW a non-numeric state (a binary_sensor's "on"/"off") want
+ * ha_classify_state_text() — see its note for why the two are different questions. */
 datasrc_status_t ha_classify_state(const char *state, double *out_value);
+
+/* Classify a state preserving its TEXT, for widgets that draw a word rather than a number.
+ *
+ * WHY THIS EXISTS: a binary_sensor reports "on"/"off", a lock "locked", a climate "heat" — real
+ * readings that are not numbers. The numeric classifier rejected all of them as UNAVAILABLE, so
+ * the widget printed its fallback and the user saw "--" for a sensor that was working. The two
+ * questions are different: "is this a number I can compare" and "is this a real reading I can
+ * show". `out->is_numeric` distinguishes them for the caller.
+ *
+ * "unavailable"/"unknown" remain UNAVAILABLE with NO text: a truly missing reading must fall back
+ * rather than print the word "unavailable" as though it were the value. */
+datasrc_status_t ha_classify_state_text(const char *state, datasrc_value_t *out);
+
+/* The text-preserving parse of one '|'-separated line, parallel to ha_parse_template_line(). */
+int ha_parse_template_line_text(const char *line, datasrc_value_t *out, int n_out);
 
 /* Validate an entity_id against HA's grammar (lowercase alphanumerics and underscores,
  * at least one '.', non-empty domain and object_id). Exported because the MQTT topic

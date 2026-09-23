@@ -179,11 +179,21 @@ export function defaultLayout(): Config {
     ha: { mode: 'rest' },
     pages: [
       { id: 'main', name: 'Weather', refreshSeconds: 900, weight: 1, widgets: page,
-        rules: DEFAULT_RULES.map((r) => ({ ...r })) },
+        rules: DEFAULT_RULES.map((r) => ({ ...r })),
+        /* THE LABELS LIVE IN THE PAGE so the user can rename and move them, exactly as they can a
+         * divider. PAGE_ARTWORK below still holds the same set for the golden fixture and the
+         * pre-labels schema fallback (see ensurePageLabels) — the two are seeded from one source
+         * (DEFAULT_LABELS) so they cannot drift. */
+        labels: DEFAULT_LABELS.map((l) => ({ ...l })) },
       { id: 'forecast', name: 'Forecast', refreshSeconds: 900, weight: 1, widgets: page2,
         /* THE RULE LIVES IN THE PAGE, matching PAGE_ARTWORK[1]'s y=236 — so the page's art and
          * the page's config cannot drift apart, and the editor can move it. */
-        rules: [{ y: 236, thickness: 2, inset: 40 }] },
+        rules: [{ y: 236, thickness: 2, inset: 40 }],
+        labels: [
+          { x: 40, y: 60, text: 'TODAY HIGH', font: BODY_PX },
+          { x: 40, y: 248, text: 'TODAY LOW', font: BODY_PX },
+          { x: 500, y: 60, text: 'HALLWAY', font: BODY_PX },
+        ] },
     ],
   };
 }

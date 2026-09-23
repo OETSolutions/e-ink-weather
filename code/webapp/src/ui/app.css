@@ -75,7 +75,16 @@ canvas.panel {
   color: var(--muted);
 }
 
-/* An alert row reads left-to-right: operation, threshold, level, remove. */
+/* An alert row reads left-to-right: operation, threshold, level, remove.
+ *
+ * WHY THE THRESHOLD FIELD IS FIXED AND THE SELECTS FLEX. The number input used to be `flex: 1 1
+ * 4.5rem` with `min-width: 0`, so under any squeeze it shrank — and the browser's spinner arrows
+ * are ~1rem wide and do not shrink with the field. The arrows ended up clipped at the right edge,
+ * half-drawn inside a 3-character-wide box, which is exactly the "cut off and looks bad" report.
+ * Giving the field a fixed basis wide enough for a signed 3-digit number AND its spinner, and
+ * letting the two selects absorb the slack instead, keeps the control usable at every width
+ * (min-width: max-content stops a flex item shrinking below its content, and `appearance: auto`
+ * keeps the native spinner the user reaches for). */
 .pRule {
   display: flex;
   gap: var(--s-1);
@@ -85,17 +94,21 @@ canvas.panel {
 
 .pRule select {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 4.5rem;
 }
 
 .pRule input {
-  flex: 1 1 4.5rem;
-  min-width: 0;
+  flex: 0 0 5rem;
+  width: 5rem;
+  min-width: 5rem;
+  padding-right: var(--s-1);
 }
 
 .pRule button {
+  width: auto;
+  min-width: 1.75rem;
   flex: 0 0 auto;
-  width: 2rem;
+  margin-top: 0;
   padding: var(--s-1);
   color: var(--muted);
 }
@@ -103,6 +116,22 @@ canvas.panel {
 .panelHost button {
   width: 100%;
   margin-top: var(--s-2);
+}
+
+/* ...EXCEPT a row's own buttons.
+ *
+ * `.panelHost button { width: 100% }` above is meant for the full-width action buttons ("Add rule",
+ * "Delete box"), but it has the SAME specificity as `.pRule button` and comes LATER in the file, so
+ * it won for the × too: the remove button stretched to the whole row and squeezed the operator and
+ * level selects down to ~18 px — unusable, and it only became visible once the threshold field
+ * stopped absorbing the shrinkage. A row button takes its natural size and no top margin. */
+.pRule button {
+  width: auto;
+  min-width: 1.75rem;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: var(--s-1);
+  color: var(--muted);
 }
 
 /* An empty state that says what to DO, not merely that something is absent. */

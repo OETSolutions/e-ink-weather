@@ -15,13 +15,13 @@
 import {
   MAX_ALERT_RULES_PER_WIDGET,
   type AlertLevel, type AlertOp, type AlertRule, type DataBinding, type DataSourceKind,
-  type Page, type Rule, type Selection, type Widget,
+  type Label, type Page, type Rule, type Selection, type Widget,
 } from '../model/config';
 import { describeRule } from '../alerts/rules';
 import { describeBinding } from '../data/binding';
 import { formatPlaceholder } from '../data/format';
 import { FACES_AVAILABLE, sizeFor } from '../canvas/face';
-import { PANEL_WIDTH } from '../model/canvas-consts';
+import { PANEL_WIDTH, PANEL_HEIGHT } from '../model/canvas-consts';
 
 export interface PropertyPanelOptions {
   host: HTMLElement;
@@ -31,6 +31,10 @@ export interface PropertyPanelOptions {
    *  shell must rebuild it — a panel that edited the number without repainting would confirm a
    *  move the preview never shows. */
   onRuleChange: () => void;
+  /** Called after any edit to a label. Same reason as onRuleChange: labels are baked into the
+   *  static layer, so a renamed or moved heading must repaint that layer or the preview would
+   *  show the old one while the document held the new. */
+  onLabelChange: () => void;
   /** Called when the user deletes the current selection. */
   onDelete: (sel: Selection) => void;
   /** Entity ids to offer in the picker, if a list has been fetched. Empty is fine. */
@@ -82,7 +86,28 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-const OWM_FIELDS = ['temp', 'min', 'max', 'wind', 'humidity', 'condition', 'city'] as const;
+/* THE VALUE MENU MUST INCLUDE `icon`.
+ *
+ * It did not, and that is the reported "the icons don't make sense, I don't know how to add more":
+ * the shipped layout has one icon box, but the only way to create another is to bind a widget to
+ * the `icon` field — and the dropdown could not produce that binding at all, so the icon was
+ * unreachable from the editor. The list is now labelled rather than showing raw schema keys, so
+ * "Weather icon" says what it does; the schema value is still the key. */
+const OWM_FIELDS: { value: NonNullable<DataBinding['owmField']>; label: string }[] = [
+  { value: 'temp', label: 'Temperature' },
+  { value: 'min', label: 'Daily low' },
+  { value: 'max', label: 'Daily high' },
+  { value: 'wind', label: 'Wind speed' },
+  { value: 'humidity', label: 'Humidity' },
+  { value: 'condition', label: 'Conditions (word)' },
+  { value: 'icon', label: 'Weather icon (picture)' },
+  { value: 'city', label: 'Location name' },
+];
+
+/** The `icon` value is special: the box draws a PICTURE from the icon code rather than the code as
+ *  text (see canvas/widget-kind.ts). The panel says so, because a user who picked it and saw "01n"
+ *  in the box would otherwise have no way to know a picture will appear on the glass. */
+const ICON_FIELD: NonNullable<DataBinding['owmField']> = 'icon';
 const KINDS: { value: DataSourceKind; label: string }[] = [
   { value: 'owm-current', label: 'Current weather' },
   { value: 'owm-daily', label: 'Forecast' },
@@ -93,7 +118,7 @@ const OPS: AlertOp[] = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'];
 const LEVELS: Exclude<AlertLevel, 'none'>[] = ['advisory', 'warning', 'severe'];
 
 export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHandle {
-  const { host, onChange, onRuleChange, onDelete } = opts;
+  const { host, onChange, onRuleChange, onLabelChange, onDelete } = opts;
   let entities = opts.entities ?? [];
   let entitiesUnavailable = opts.entitiesUnavailable;
   let current: Widget | undefined;
@@ -120,6 +145,17 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
     if (!r) return;
     Object.assign(r, patch);
     onRuleChange();
+  }
+
+  /** Edit the selected label in place and notify. Like commitRule, every field is a primitive, so
+   *  there is nothing to merge — and it reads through currentPage so a page switch cannot leave
+   *  the handler writing to a label of the previous page. */
+  function commitLabel(patch: Partial<Label>): void {
+    if (currentSel?.kind !== 'label' || !currentPage?.labels) return;
+    const l = currentPage.labels[currentSel.index];
+    if (!l) return;
+    Object.assign(l, patch);
+    onLabelChange();
   }
 
   function field(label: string, control: HTMLElement): HTMLElement {
@@ -216,6 +252,46 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
         el('p', { className: 'hint' }, 'Drag the line on the panel to move it vertically.')));
       host.append(el('div', { className: 'actions' },
         makeButton('Delete divider', () => onDelete(currentSel!))));
+      return;
+    }
+
+    if (currentSel?.kind === 'label') {
+      const l = currentPage?.labels?.[currentSel.index];
+      if (!l) {
+        host.append(el('div', { className: 'empty' }, 'Nothing selected.'));
+        return;
+      }
+      host.append(el('h3', {}, `Heading: ${l.text || '(empty)'}`));
+      const idx = currentSel.index;
+      const geo = el('div', { className: 'pGrid' });
+      for (const [label, key, min] of [['X', 'x', 0], ['Y', 'y', 0], ['Size', 'font', 16]] as const) {
+        geo.append(
+          el('div', {},
+             el('label', {}, label),
+             numberInput(l[key] as number, (n) => {
+               const clampMin = Math.max(min, Math.round(n));
+               const v = key === 'y' ? Math.min(PANEL_HEIGHT - 1, clampMin)
+                       : key === 'x' ? Math.min(PANEL_WIDTH - 1, clampMin)
+                       : Math.min(256, clampMin);
+               commitLabel({ [key]: v } as Partial<Label>);
+             }, 1, () => (currentPage?.labels?.[idx]?.[key] as number) ?? 0)),
+        );
+      }
+      host.append(el('fieldset', {}, el('legend', {}, 'Heading position and size'), geo,
+        el('p', { className: 'hint' }, 'Drag the heading on the panel to move it.')));
+      /* THE TEXT FIELD IS UPDATED IN PLACE, NO re-render — rebuilding the DOM mid-typing drops
+       * focus after one keystroke (the same trap as every other text field here). The document is
+       * updated on each keystroke, and onLabelChange repaints the canvas, which is the only other
+       * thing that depends on it. */
+      const tset = el('fieldset', {}, el('legend', {}, 'Heading text'));
+      tset.append(field('Text', textInput(l.text, (s) => commitLabel({ text: s }))),
+        el('p', { className: 'hint' },
+           'These are the headings that sit above the readings, like NOW or HALLWAY.'),
+        el('p', { className: 'hint' },
+           'A heading is part of the picture on the display, so it appears after you press Save.'));
+      host.append(tset);
+      host.append(el('div', { className: 'actions' },
+        makeButton('Delete heading', () => onDelete(currentSel!))));
       return;
     }
 
@@ -317,16 +393,22 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
         field('Day', select(String(binding.dayIndex ?? 0),
           [0, 1, 2, 3, 4].map((d) => ({ value: String(d), label: d === 0 ? 'Today' : `Day ${d + 1}` })),
           (v) => commit({ binding: { ...binding, dayIndex: Number(v) } }))),
-        field('Value', select(binding.owmField ?? 'max',
-          OWM_FIELDS.map((f) => ({ value: f, label: f })),
-          (v) => commit({ binding: { ...binding, owmField: v as DataBinding['owmField'] } }))),
+        field('Value', select(binding.owmField ?? 'max', OWM_FIELDS,
+          (v) => { commit({ binding: { ...binding, owmField: v } }); render(); })),
       );
     } else if (binding.kind === 'owm-current') {
       bset.append(
-        field('Value', select(binding.owmField ?? 'temp',
-          OWM_FIELDS.map((f) => ({ value: f, label: f })),
-          (v) => commit({ binding: { ...binding, owmField: v as DataBinding['owmField'] } }))),
+        field('Value', select(binding.owmField ?? 'temp', OWM_FIELDS,
+          (v) => { commit({ binding: { ...binding, owmField: v } }); render(); })),
       );
+      /* Say what the icon option will actually do. The editor's preview draws the picture, but a
+       * user who has just switched to it deserves the sentence rather than having to infer it from
+       * a preview that looks empty until a real icon code arrives. */
+      if (binding.owmField === ICON_FIELD) {
+        bset.append(el('p', { className: 'hint' },
+          'This box draws the current weather icon as a PICTURE, not as text. Make it square so the '
+          + 'icon is not distorted. It needs a rounded, square-ish box of at least 48 px to read.'));
+      }
     }
 
     bset.append(el('p', { className: 'hint' }, describeBinding(binding)));

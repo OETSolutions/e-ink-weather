@@ -1,4 +1,4 @@
-import type { Rule, Widget } from '../model/config';
+import type { Label, Rule, Widget } from '../model/config';
 
 export const PANEL_W = 920;
 export const PANEL_H = 680;
@@ -174,4 +174,57 @@ export function snap(value: number, grid: number, guides: number[]): number {
   }
   if (bestD <= tol) return best;
   return Math.round(value / grid) * grid;
+}
+
+/**
+ * The index of the label under a point, or -1.
+ *
+ * A LABEL IS HIT BY A BOX, NOT BY ITS BASELINE. `measure` returns the text's rendered width and
+ * the line height for the label's pixel size, and that box is what the pointer must be inside —
+ * testing the single anchor point instead would make a label almost impossible to grab, and the
+ * near miss would select the widget behind it. `minW`/`minH` floor the box so a one-character
+ * label ("1") still has a usable grab area rather than a sliver a few pixels wide.
+ *
+ * Tested AFTER rules and widgets by the caller: a label sits in the margin above its reading, but
+ * a user may drag one anywhere, and a widget on top of a label should stay reachable.
+ */
+export function labelHit(
+  labels: Label[],
+  x: number,
+  y: number,
+  measure: (text: string, px: number) => { w: number; h: number },
+  minW = 16,
+  minH = 12,
+): number {
+  /* Reverse order so the most recently added label wins when two overlap, matching hitTest. */
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const l = labels[i]!;
+    const m = measure(l.text, l.font);
+    const w = Math.max(minW, m.w);
+    const h = Math.max(minH, m.h);
+    if (x >= l.x && x <= l.x + w && y >= l.y && y <= l.y + h) return i;
+  }
+  return -1;
+}
+
+/**
+ * Move a label by a pointer delta, snapped to the grid and clamped inside the panel.
+ *
+ * THE BOX IS WHAT IS CLAMPED, not the anchor: a label dragged to x=915 would otherwise put all
+ * but a few pixels of its text off the glass, and the renderer clips text to the panel — so the
+ * heading would silently lose characters with no indication why.
+ */
+export function applyLabelDrag(
+  origin: Label,
+  dx: number,
+  dy: number,
+  grid: number,
+  measure: (text: string, px: number) => { w: number; h: number },
+): Label {
+  const m = measure(origin.text, origin.font);
+  const rawX = origin.x + dx;
+  const rawY = origin.y + dy;
+  const x = Math.min(Math.max(0, snap(rawX, grid, [0, PANEL_W])), Math.max(0, PANEL_W - m.w));
+  const y = Math.min(Math.max(0, snap(rawY, grid, [0, PANEL_H])), Math.max(0, PANEL_H - m.h));
+  return { ...origin, x, y };
 }

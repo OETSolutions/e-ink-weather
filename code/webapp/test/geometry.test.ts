@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   hitTest, applyResize, applyDrag, guidesFor, clampToPanel, snap, ruleHit, applyRuleDrag, RULE_GRAB,
+  labelHit, applyLabelDrag,
 } from '../src/canvas/geometry';
-import type { Rule, Widget } from '../src/model/config';
+import type { Label, Rule, Widget } from '../src/model/config';
 const w = (o: Partial<Widget> = {}): Widget => ({ id:'a', x:100, y:100, w:200, h:100, role:'dynamic', ...o });
 const rule = (y: number, o: Partial<Rule> = {}): Rule => ({ y, thickness: 2, inset: 40, ...o });
 describe('hit testing', () => {
@@ -159,5 +160,76 @@ describe('rule drag', () => {
     /* The function takes only dy — there is no x to move, which is the vertical-only rule
      * enforced by the signature rather than by a comment. */
     expect(applyRuleDrag(200, 0, 8)).toBe(200);
+  });
+});
+
+/* LABELS (headings). These were hard-coded per-page artwork until they became editable, so the
+ * hit test and the drag are what make "NOW"/"HALLWAY"/"TODAY HIGH" reachable in the editor at
+ * all. `measure` is injected because a label's box is its rendered text, and the real measurer
+ * lives in the renderer. */
+describe('label hit testing', () => {
+  const label = (o: Partial<Label> = {}): Label => ({ x: 40, y: 32, text: 'NOW', font: 20, ...o });
+  /* A fake measurer: 6 px per character, one line 20 px tall. Deterministic and independent of
+   * the font ladder, so the test is about the hit test and not about glyph advances. */
+  const measure = (text: string): { w: number; h: number } => ({ w: text.length * 6, h: 20 });
+
+  it('finds a label inside its measured box', () => {
+    expect(labelHit([label()], 50, 40, measure)).toBe(0);
+    expect(labelHit([label()], 40, 32, measure)).toBe(0);
+    /* "NOW" is 18 px wide, so x=62 is just past the right edge. */
+    expect(labelHit([label()], 70, 40, measure)).toBe(-1);
+  });
+
+  it('floors the box so a one-character heading is still grabbable', () => {
+    /* "1" measures 6 px wide — below the 16 px floor. A sliver a few pixels wide would be
+     * effectively unclickable, and the near miss would land on whatever sits behind it. */
+    const l = [label({ text: '1' })];
+    expect(labelHit(l, 40 + 14, 32 + 4, measure)).toBe(0);
+    expect(labelHit(l, 40 + 20, 32 + 4, measure)).toBe(-1);
+  });
+
+  it('prefers the topmost (most recently added) label when two overlap', () => {
+    const a = label({ text: 'A', y: 32 });
+    const b = label({ text: 'B', y: 32 });
+    expect(labelHit([a, b], 45, 40, measure)).toBe(1);
+  });
+
+  it('reports no hit past the end of the list', () => {
+    expect(labelHit([], 45, 40, measure)).toBe(-1);
+    expect(labelHit([label()], 500, 500, measure)).toBe(-1);
+  });
+});
+
+describe('label drag', () => {
+  const measure = (text: string): { w: number; h: number } => ({ w: text.length * 6, h: 20 });
+  const l = (o: Partial<Label> = {}): Label => ({ x: 40, y: 32, text: 'NOW', font: 20, ...o });
+
+  it('moves by the pointer delta, snapped to the grid', () => {
+    const r = applyLabelDrag(l(), 51, 23, 8, measure);
+    expect(r.x % 8).toBe(0);
+    expect(r.y % 8).toBe(0);
+    expect(r.text).toBe('NOW');   /* the text is untouched by a move */
+  });
+
+  it('clamps so the whole label stays on the panel', () => {
+    /* Dragged far right, the label's LEFT edge is clamped so its text still fits — a heading
+     * that hung off the edge would be silently clipped by the renderer, losing characters. */
+    const m = measure('NOW');
+    const r = applyLabelDrag(l(), 5000, 5000, 8, measure);
+    expect(r.x + m.w).toBeLessThanOrEqual(920);
+    expect(r.y + m.h).toBeLessThanOrEqual(680);
+    const neg = applyLabelDrag(l(), -5000, -5000, 8, measure);
+    expect(neg.x).toBeGreaterThanOrEqual(0);
+    expect(neg.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps a wide label on the panel rather than letting it overflow both ends', () => {
+    const wide = l({ text: 'X'.repeat(200), x: 0 });
+    const m = measure(wide.text);
+    const r = applyLabelDrag(wide, 60, 0, 8, measure);
+    /* The text is wider than the panel, so it cannot fit; the clamp must still not produce a
+     * NEGATIVE x (which would be worse than the overflow). */
+    expect(r.x).toBeGreaterThanOrEqual(0);
+    expect(m.w).toBeGreaterThan(920);   /* documents the case this guards */
   });
 });

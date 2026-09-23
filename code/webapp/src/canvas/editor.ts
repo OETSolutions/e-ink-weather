@@ -13,21 +13,23 @@
  * parts (west-edge coupling, right-edge snapping, clamping after snapping) testable at all.
  */
 
-import type { Page, Selection, Widget } from '../model/config';
-import { RULE_ID } from '../model/config';
+import type { Label, Page, Selection, Widget } from '../model/config';
+import { LABEL_ID, RULE_ID } from '../model/config';
 import { PANEL_WIDTH, PANEL_HEIGHT } from '../model/canvas-consts';
 import {
   applyDrag,
+  applyLabelDrag,
   applyResize,
   applyRuleDrag,
   clampToPanel,
   guidesFor,
   hitTest,
+  labelHit,
   ruleHit,
   type Zone,
 } from './geometry';
-import { renderPage, type ValueField } from './render';
-import { fontIdFor } from './face';
+import { renderPage, fontMeasure, type ValueField } from './render';
+import { fontIdFor, faceIdForPx } from './face';
 import { isIconWidget } from './widget-kind';
 import type { Bitmap } from './bitmap';
 
@@ -96,6 +98,8 @@ export interface EditorOptions {
   onUpdate?: (w: Widget) => void;
   /** Called on every move DURING a rule drag, with the rule's new y. */
   onRuleUpdate?: (y: number) => void;
+  /** Called on every move DURING a label drag, with the label as it now stands. */
+  onLabelUpdate?: (l: Label) => void;
 }
 
 /* The scale is chosen so the whole panel is visible in the container; the canvas backing
@@ -131,6 +135,21 @@ function blankLayer(): Uint8Array {
   return new Uint8Array((PANEL_WIDTH * PANEL_HEIGHT) / 8).fill(0xff);
 }
 
+/**
+ * Measure a LABEL's rendered box, the same way the device and the preview will draw it.
+ *
+ * IT RESOLVES THE SIZE TO A LADDER FACE FIRST (faceIdForPx), because a label stores a PIXEL SIZE
+ * and the glyphs that actually get blitted come from a fixed face. Measuring with a hypothetical
+ * size would give a box the text does not fill on either side.
+ *
+ * A string containing a glyph no face carries returns null from fontMeasure; the label then has no
+ * measurable box, so this reports a zero-height box rather than inventing a width — the hit test
+ * floors it (see labelHit), so the label is still reachable and deletable.
+ */
+function measureLabel(text: string, px: number): { w: number; h: number } {
+  return fontMeasure(faceIdForPx(px), text) ?? { w: 0, h: 0 };
+}
+
 /** A widget's bounds, for the selection outline. */
 function widgetRect(w: Widget): { x: number; y: number; w: number; h: number } {
   return { x: w.x, y: w.y, w: w.w, h: w.h };
@@ -156,6 +175,7 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
   let drag:
     | { kind: 'widget'; id: string; zone: Zone; startX: number; startY: number; origin: Widget }
     | { kind: 'rule'; index: number; startY: number; originY: number }
+    | { kind: 'label'; index: number; startX: number; startY: number; origin: Label }
     | null = null;
 
   function redraw(): void {
@@ -232,6 +252,30 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
         ctx.fillRect(PANEL_WIDTH - r.inset - H / 2, r.y + r.thickness / 2 - H / 2, H, H);
         ctx.restore();
       }
+    } else if (sel?.kind === 'label') {
+      /* A selected label is outlined by its measured box with corner handles, so it reads as a
+       * grabbable object rather than as part of the baked artwork — which is exactly what the
+       * hard-coded headings used to look like. */
+      const l = state.page.labels?.[sel.index];
+      if (l) {
+        const m = measureLabel(l.text, l.font);
+        const w = Math.max(16, m.w);
+        const h = Math.max(12, m.h);
+        ctx.save();
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(l.x - 1, l.y - 1, w + 2, h + 2);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#2563eb';
+        const H = 8;
+        for (const [hx, hy] of [
+          [l.x, l.y], [l.x + w, l.y], [l.x, l.y + h], [l.x + w, l.y + h],
+        ] as [number, number][]) {
+          ctx.fillRect(hx - H / 2, hy - H / 2, H, H);
+        }
+        ctx.restore();
+      }
     }
   }
 
@@ -249,6 +293,18 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     }
     const hit = hitTest(state.page.widgets, p.x, p.y);
     if (!hit) {
+      /* LABELS ARE TESTED AFTER WIDGETS: a label normally sits in the margin above its reading,
+       * but a user may drag one anywhere, and a value box on top of a label must stay reachable —
+       * a box holds the live number, so losing access to it costs more than losing a heading. */
+      const li = labelHit(state.page.labels ?? [], p.x, p.y, measureLabel);
+      if (li >= 0) {
+        const origin = state.page.labels![li]!;
+        drag = { kind: 'label', index: li, startX: p.x, startY: p.y, origin };
+        canvasEl.setPointerCapture(e.pointerId);
+        onSelect({ kind: 'label', id: LABEL_ID, index: li });
+        redraw();
+        return;
+      }
       onSelect(undefined);
       redraw();
       return;
@@ -268,13 +324,16 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
     if (!drag) {
       const overRule = ruleHit(state.page.rules ?? [], p.x, p.y) >= 0;
       const hit = hitTest(state.page.widgets, p.x, p.y);
+      const overLabel = !hit && !overRule && labelHit(state.page.labels ?? [], p.x, p.y, measureLabel) >= 0;
       canvasEl.style.cursor = overRule
         ? 'ns-resize'
-        : !hit
-          ? 'default'
-          : hit.zone === 'move'
-            ? 'move'
-            : `${hit.zone}-resize`;
+        : overLabel
+          ? 'move'
+          : !hit
+            ? 'default'
+            : hit.zone === 'move'
+              ? 'move'
+              : `${hit.zone}-resize`;
       return;
     }
 
@@ -290,6 +349,21 @@ export function attachEditor(opts: EditorOptions): EditorHandle {
       layer = opts.rebuildLayer ? opts.rebuildLayer() : layer;
       redraw();
       opts.onRuleUpdate?.(y);
+      return;
+    }
+
+    if (drag.kind === 'label') {
+      const labels = state.page.labels;
+      if (!labels) return;
+      const moved = applyLabelDrag(drag.origin, p.x - drag.startX, p.y - drag.startY,
+                                   SNAP_GRID, measureLabel);
+      labels[drag.index] = moved;
+      /* The label is BAKED INTO THE STATIC LAYER, so the move is only visible once that layer is
+       * rebuilt — the same reason a rule drag rebuilds it. Without this the outline would move
+       * while the heading stayed put, which reads as a broken drag. */
+      layer = opts.rebuildLayer ? opts.rebuildLayer() : layer;
+      redraw();
+      opts.onLabelUpdate?.(moved);
       return;
     }
 

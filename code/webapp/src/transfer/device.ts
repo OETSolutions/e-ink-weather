@@ -127,14 +127,17 @@ export interface DeviceValue {
 }
 
 export interface DeviceValues {
+  /** The page these values are for — the one that was asked about, not necessarily the drawn one. */
   page: number;
+  /** The page currently drawn on the panel, or -1 while nothing has been drawn. */
+  drawn_page?: number;
   page_count: number;
   resolved_at: number;
   values: DeviceValue[];
 }
 
 /**
- * The values the device last resolved, WITH the page they belong to.
+ * The values the device resolved for `page` (default: the page on the glass), keyed by widget id.
  *
  * THIS IS WHAT MAKES THE PREVIEW HONEST (FR-27: "rendered with real fetched data"). The device
  * holds the OWM key and the HA token and has already run every widget through the same formatter
@@ -142,22 +145,31 @@ export interface DeviceValues {
  * panel without a second implementation of the resolution rules — and in the embedded case the
  * browser has no credentials and, on the setup network, no internet at all.
  *
- * WHY THE PAGE MATTERS: the device stores only the page it is CURRENTLY showing, and it rotates
- * on its own. The editor edits one page at a time, so a caller that ignored the page would paint
- * the other page's readings into this page's boxes the moment the scheduler rotated — numbers
- * that look real but belong to a different layout. The caller compares `page` against the index
- * it is editing and only applies a match. Returns null when the device is unreachable or has not
- * resolved anything yet, which is distinct from "this page has no values". */
+ * ASK FOR THE PAGE BEING EDITED. The device rotates pages on its own, so a caller that did not
+ * name a page got whatever was on the glass — every other page's boxes read "--" and the user
+ * concluded the fetch was broken. The device now resolves every page, so `page` selects one; when
+ * omitted it answers for the drawn page, which is what the "which page is the display showing"
+ * readout wants. `drawnPage` is reported separately so that readout keeps working while the editor
+ * previews a page the glass is not on.
+ *
+ * Returns null when the device is unreachable, which is distinct from "this page has no values". */
 export async function getValuesInfo(
   opts: DeviceOptions = {},
-): Promise<{ page: number; pageCount: number; values: Record<string, string> } | null> {
-  const res = await jsonCall<DeviceValues>('/api/values', { method: 'GET', cache: 'no-store' }, opts);
+  page?: number,
+): Promise<{ page: number; drawnPage: number; pageCount: number; values: Record<string, string> } | null> {
+  const q = page === undefined ? '' : `?page=${encodeURIComponent(String(page))}`;
+  const res = await jsonCall<DeviceValues>(`/api/values${q}`, { method: 'GET', cache: 'no-store' }, opts);
   if (!res.ok) return null;
   const values: Record<string, string> = {};
   for (const v of res.value.values ?? []) {
     if (typeof v.id === 'string' && typeof v.text === 'string') values[v.id] = v.text;
   }
-  return { page: res.value.page ?? 0, pageCount: res.value.page_count ?? 1, values };
+  return {
+    page: res.value.page ?? 0,
+    drawnPage: res.value.drawn_page ?? res.value.page ?? 0,
+    pageCount: res.value.page_count ?? 1,
+    values,
+  };
 }
 
 export interface AuthState {

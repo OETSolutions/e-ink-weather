@@ -229,15 +229,14 @@ static int parse_one(cJSON *o, layout_widget_t *w)
     return 0;
 }
 
-int layout_widgets_parse(const char *json, int page_index,
-                         layout_widget_t *out, int cap)
+int layout_widgets_from_root(void *root_v, int page_index,
+                             layout_widget_t *out, int cap)
 {
-    if (!json || !out || cap <= 0) return -1;
+    if (!root_v || !out || cap <= 0) return -1;
     if (page_index < 0) return -1;
 
-    cJSON *root = cJSON_Parse(json);
-    if (!root) return -2;
-    if (!cJSON_IsObject(root)) { cJSON_Delete(root); return -3; }
+    cJSON *root = (cJSON *)root_v;
+    if (!cJSON_IsObject(root)) return -3;
 
     cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");
     cJSON *page = cJSON_IsArray(pages) ? cJSON_GetArrayItem(pages, page_index) : NULL;
@@ -245,12 +244,11 @@ int layout_widgets_parse(const char *json, int page_index,
         /* No such page. This is NOT an error: a device whose config has one page is asked for
          * page 0, and a caller probing past the end should get "no widgets", not a failure that
          * blanks the panel. */
-        cJSON_Delete(root);
         return 0;
     }
 
     cJSON *widgets = cJSON_GetObjectItemCaseSensitive(page, "widgets");
-    if (!cJSON_IsArray(widgets)) { cJSON_Delete(root); return 0; }
+    if (!cJSON_IsArray(widgets)) return 0;
 
     const int n = cJSON_GetArraySize(widgets);
     int used = 0;
@@ -260,7 +258,86 @@ int layout_widgets_parse(const char *json, int page_index,
         parse_one(o, &out[used]);
         used++;
     }
-
-    cJSON_Delete(root);
     return used;
+}
+
+int layout_widgets_parse(const char *json, int page_index,
+                         layout_widget_t *out, int cap)
+{
+    if (!json || !out || cap <= 0) return -1;
+    if (page_index < 0) return -1;
+
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return -2;
+
+    const int r = layout_widgets_from_root(root, page_index, out, cap);
+    cJSON_Delete(root);
+    return r;
+}
+
+void layout_scan_all_pages(void *root_v, int npages,
+                           int *need_current, int *need_daily, int *need_alert,
+                           int *need_ha, int *max_day,
+                           char (*ha_out)[48], int ha_cap, int *ha_n)
+{
+    if (need_current) *need_current = 0;
+    if (need_daily)   *need_daily = 0;
+    if (need_alert)   *need_alert = 0;
+    if (need_ha)      *need_ha = 0;
+    if (max_day)      *max_day = 0;
+    if (ha_n)         *ha_n = 0;
+
+    cJSON *root = (cJSON *)root_v;
+    if (!cJSON_IsObject(root) || npages <= 0) return;
+
+    cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");
+    if (!cJSON_IsArray(pages)) return;
+
+    for (int p = 0; p < npages; p++) {
+        cJSON *page = cJSON_GetArrayItem(pages, p);
+        if (!cJSON_IsObject(page)) continue;
+        cJSON *widgets = cJSON_GetObjectItemCaseSensitive(page, "widgets");
+        if (!cJSON_IsArray(widgets)) continue;
+
+        const int n = cJSON_GetArraySize(widgets);
+        for (int i = 0; i < n; i++) {
+            cJSON *o = cJSON_GetArrayItem(widgets, i);
+            if (!cJSON_IsObject(o)) continue;
+            /* A static widget is baked into the bitmap and stamping nothing — it must not make
+             * the tick fetch a source no dynamic box reads. Matches value_scan_needs(). */
+            cJSON *role = cJSON_GetObjectItemCaseSensitive(o, "role");
+            if (cJSON_IsString(role) && role->valuestring && role->valuestring[0] == 's') continue;
+
+            binding_t b;
+            parse_binding(cJSON_GetObjectItemCaseSensitive(o, "binding"), &b);
+            switch (b.kind) {
+            case BIND_OWM_CURRENT: if (need_current) *need_current = 1; break;
+            case BIND_OWM_DAILY:
+                if (need_daily) *need_daily = 1;
+                if (max_day && b.day_index > *max_day) *max_day = b.day_index;
+                break;
+            case BIND_OWM_ALERT:   if (need_alert) *need_alert = 1; break;
+            case BIND_HA:
+                if (!b.entity_id[0]) break;
+                if (need_ha) *need_ha = 1;
+                {
+                    /* Deduplicate across EVERY page, not within one: the shipped layout binds the
+                     * same hallway entity on two pages, and requesting it twice would inflate the
+                     * template line and burn the bounded response budget for nothing. The order is
+                     * first-seen, which is what the template and the slot lookup must agree on. */
+                    const int have = ha_n ? *ha_n : 0;
+                    int seen = 0;
+                    for (int k = 0; k < have; k++) {
+                        if (ha_out && strcmp(ha_out[k], b.entity_id) == 0) { seen = 1; break; }
+                    }
+                    if (!seen && ha_out && ha_n && have < ha_cap) {
+                        copy_str(ha_out[have], 48, b.entity_id);
+                        (*ha_n)++;
+                    }
+                }
+                break;
+            default: break;
+            }
+        }
+    }
 }

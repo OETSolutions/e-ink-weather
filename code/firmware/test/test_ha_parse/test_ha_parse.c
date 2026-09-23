@@ -50,6 +50,76 @@ static void test_non_finite_is_rejected(void)
     TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state("1e999", &v));
 }
 
+/* A NON-NUMERIC state is a REAL READING for a widget that draws words.
+ *
+ * A binary_sensor reports "on"/"off", a lock "locked", a climate "heat". The numeric classifier
+ * rejected all of these as UNAVAILABLE, so the widget printed its fallback and the user saw "--"
+ * for a sensor that was working. Verified against the bench: binary_sensor.64b708cfe0fc_door_open
+ * returns "off". */
+static void test_text_states_are_readable_not_unavailable(void)
+{
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, ha_classify_state_text("off", &v));
+    TEST_ASSERT_EQUAL_INT(0, v.is_numeric);          /* so no threshold rule fires on it */
+    TEST_ASSERT_EQUAL_STRING("off", v.text);
+
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, ha_classify_state_text("on", &v));
+    TEST_ASSERT_EQUAL_STRING("on", v.text);
+    TEST_ASSERT_EQUAL_STRING("locked", (ha_classify_state_text("locked", &v), v.text));
+    TEST_ASSERT_EQUAL_STRING("heat", (ha_classify_state_text("heat", &v), v.text));
+
+    /* Trimming applies to text too — a trailing newline must not become part of the word. */
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, ha_classify_state_text("off\n", &v));
+    TEST_ASSERT_EQUAL_STRING("off", v.text);
+}
+
+/* A number stays NUMERIC through the text-preserving classifier, so a threshold rule on a
+ * temperature entity still works. */
+static void test_text_classifier_keeps_numbers_numeric(void)
+{
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, ha_classify_state_text("73.22", &v));
+    TEST_ASSERT_EQUAL_INT(1, v.is_numeric);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 73.22, v.value);
+}
+
+/* "unavailable"/"unknown" are STILL a failure with NO text: printing the word "unavailable" on the
+ * glass would look like a reading, when the widget's own fallback is the honest answer. */
+static void test_unavailable_is_not_a_text_reading(void)
+{
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state_text("unavailable", &v));
+    TEST_ASSERT_EQUAL_STRING("", v.text);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state_text("unknown", &v));
+    TEST_ASSERT_EQUAL_STRING("", v.text);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state_text(NULL, &v));
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state_text("", &v));
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, ha_classify_state_text("   ", &v));
+}
+
+/* The text-preserving line parser keeps a word in its own slot, alongside a number in another,
+ * and marks both OK — a mixed page must not lose either. */
+static void test_text_line_parser_mixes_words_and_numbers(void)
+{
+    datasrc_value_t out[3];
+    const int n = ha_parse_template_line_text("off|73.2|unknown", out, 3);
+    TEST_ASSERT_EQUAL_INT(3, n);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, out[0].status);
+    TEST_ASSERT_EQUAL_INT(0, out[0].is_numeric);
+    TEST_ASSERT_EQUAL_STRING("off", out[0].text);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, out[1].status);
+    TEST_ASSERT_EQUAL_INT(1, out[1].is_numeric);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 73.2, out[1].value);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, out[2].status);
+
+    /* A short line leaves the remainder unavailable, not zero — the same rule as the numeric
+     * parser, so a shorter response cannot make a later widget show an invented value. */
+    datasrc_value_t few[4];
+    TEST_ASSERT_EQUAL_INT(1, ha_parse_template_line_text("on", few, 4));
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, few[1].status);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_UNAVAILABLE, few[3].status);
+}
+
 static void test_template_line_parses_in_order(void)
 {
     double v[3]; datasrc_status_t s[3];
@@ -285,6 +355,10 @@ int main(void)
     RUN_TEST(test_unavailable_and_junk_are_rejected);
     RUN_TEST(test_trailing_newline_does_not_break_the_last_value);
     RUN_TEST(test_non_finite_is_rejected);
+    RUN_TEST(test_text_states_are_readable_not_unavailable);
+    RUN_TEST(test_text_classifier_keeps_numbers_numeric);
+    RUN_TEST(test_unavailable_is_not_a_text_reading);
+    RUN_TEST(test_text_line_parser_mixes_words_and_numbers);
     RUN_TEST(test_template_line_parses_in_order);
     RUN_TEST(test_short_line_marks_remainder_unavailable);
     RUN_TEST(test_realistic_body_parses);

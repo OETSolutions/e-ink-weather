@@ -4,6 +4,9 @@
 #include "widgets.h"
 #include "fonts.h"
 #include "alerts.h"
+/* cJSON is used directly here because layout_widgets_from_root() and layout_scan_all_pages()
+ * take an already-parsed tree (void *), so a test of them must own one. */
+#include "cJSON.h"
 
 /* The parser that turns a pushed layout into the boxes the device stamps. Before this existed
  * the firmware used a hard-coded two-box array, so a layout from the web app was parsed for
@@ -207,6 +210,129 @@ static void test_garbage_and_empty_input(void)
     TEST_ASSERT_TRUE(layout_widgets_parse(DOC, -1, w, LAYOUT_MAX_FIELDS) < 0);
 }
 
+/* A TWO-PAGE DOCUMENT where the same entity is bound on both pages, plus sources only one page
+ * uses. This is the shape the tick resolves every page of, and the shape that caught the
+ * "only the drawn page previews" defect. */
+static const char *TWO_PAGES =
+"{"
+  "\"schemaVersion\":1,"
+  "\"pages\":["
+    "{\"name\":\"A\",\"refreshSeconds\":900,\"widgets\":["
+      "{\"id\":\"a_temp\",\"x\":0,\"y\":0,\"w\":100,\"h\":50,\"role\":\"dynamic\","
+       "\"binding\":{\"kind\":\"owm-current\",\"owmField\":\"temp\"}},"
+      "{\"id\":\"a_hall\",\"x\":0,\"y\":60,\"w\":100,\"h\":50,\"role\":\"dynamic\","
+       "\"binding\":{\"kind\":\"ha\",\"entityId\":\"sensor.hallway\"}},"
+      "{\"id\":\"a_art\",\"x\":0,\"y\":120,\"w\":920,\"h\":2,\"role\":\"static\","
+       "\"binding\":{\"kind\":\"owm-alert\"}}"
+    "]},"
+    "{\"name\":\"B\",\"refreshSeconds\":900,\"widgets\":["
+      "{\"id\":\"b_hall\",\"x\":0,\"y\":0,\"w\":100,\"h\":50,\"role\":\"dynamic\","
+       "\"binding\":{\"kind\":\"ha\",\"entityId\":\"sensor.hallway\"}},"
+      "{\"id\":\"b_day\",\"x\":0,\"y\":60,\"w\":100,\"h\":50,\"role\":\"dynamic\","
+       "\"binding\":{\"kind\":\"owm-daily\",\"dayIndex\":2,\"owmField\":\"max\"}},"
+      "{\"id\":\"b_bar\",\"x\":0,\"y\":120,\"w\":840,\"h\":80,\"role\":\"dynamic\","
+       "\"binding\":{\"kind\":\"owm-alert\"}}"
+    "]}"
+  "]"
+"}";
+
+/* Reading a page out of an ALREADY-PARSED root must give the identical widgets to parsing the
+ * whole document — it is the same code path, and that is the point: the tick parses the document
+ * once and reads every page out of it, so the two must not be able to drift. */
+static void test_from_root_matches_a_full_parse(void)
+{
+    layout_widget_t a1[LAYOUT_MAX_FIELDS], a2[LAYOUT_MAX_FIELDS];
+    const int n1 = layout_widgets_parse(TWO_PAGES, 1, a1, LAYOUT_MAX_FIELDS);
+
+    cJSON *root = cJSON_Parse(TWO_PAGES);
+    TEST_ASSERT_NOT_NULL(root);
+    const int n2 = layout_widgets_from_root(root, 1, a2, LAYOUT_MAX_FIELDS);
+    cJSON_Delete(root);
+
+    TEST_ASSERT_EQUAL_INT(n1, n2);
+    TEST_ASSERT_EQUAL_INT(3, n2);
+    for (int i = 0; i < n2; i++) {
+        TEST_ASSERT_EQUAL_STRING(a1[i].id, a2[i].id);
+        TEST_ASSERT_EQUAL_INT(a1[i].binding.kind, a2[i].binding.kind);
+        TEST_ASSERT_EQUAL_INT(a1[i].binding.day_index, a2[i].binding.day_index);
+    }
+    TEST_ASSERT_EQUAL_STRING("b_hall", a2[0].id);
+}
+
+/* The whole-document need scan is what lets ONE set of fetches serve EVERY page. A page that is
+ * not being drawn still needs its sources fetched, or the editor's preview of it reads "--". */
+static void test_scan_covers_every_page(void)
+{
+    cJSON *root = cJSON_Parse(TWO_PAGES);
+    TEST_ASSERT_NOT_NULL(root);
+    int cur = 0, day = 0, alert = 0, ha = 0, maxday = 0, n_ha = 0;
+    char ids[LAYOUT_MAX_FIELDS][48];
+    layout_scan_all_pages(root, 2, &cur, &day, &alert, &ha, &maxday, ids, LAYOUT_MAX_FIELDS, &n_ha);
+    cJSON_Delete(root);
+
+    TEST_ASSERT_EQUAL_INT(1, cur);      /* page A binds current */
+    TEST_ASSERT_EQUAL_INT(1, day);      /* page B binds a daily field */
+    TEST_ASSERT_EQUAL_INT(1, alert);    /* page B binds the alert bar */
+    TEST_ASSERT_EQUAL_INT(1, ha);
+    TEST_ASSERT_EQUAL_INT(2, maxday);   /* page B asks for day 2, not page A's day 0 */
+    TEST_ASSERT_EQUAL_INT(1, n_ha);     /* the SAME entity on both pages is requested once */
+    TEST_ASSERT_EQUAL_STRING("sensor.hallway", ids[0]);
+}
+
+/* A STATIC widget's binding must not make the tick fetch. The default layout draws its dividers
+ * as static widgets, and a static box is baked into the bitmap — fetching an alert document for
+ * one would be a request whose result is never drawn. */
+static void test_scan_ignores_static_widgets(void)
+{
+    cJSON *root = cJSON_Parse(TWO_PAGES);
+    TEST_ASSERT_NOT_NULL(root);
+    int cur = 0, day = 0, alert = 0, ha = 0, maxday = 0, n_ha = 0;
+    char ids[LAYOUT_MAX_FIELDS][48];
+    /* One page only: page A's lone owm-alert binding is on a STATIC widget, so nothing about the
+     * alert bar may be requested. */
+    layout_scan_all_pages(root, 1, &cur, &day, &alert, &ha, &maxday, ids, LAYOUT_MAX_FIELDS, &n_ha);
+    cJSON_Delete(root);
+
+    TEST_ASSERT_EQUAL_INT(1, cur);
+    TEST_ASSERT_EQUAL_INT(0, alert);
+    TEST_ASSERT_EQUAL_INT(0, day);
+    TEST_ASSERT_EQUAL_INT(1, ha);
+}
+
+/* The HA entity list is bounded by its capacity: a document binding more entities than the
+ * template buffer can carry must report the ones it kept and not run past the array. */
+static void test_scan_bounds_the_ha_list(void)
+{
+    cJSON *root = cJSON_Parse(TWO_PAGES);
+    TEST_ASSERT_NOT_NULL(root);
+    int cur = 0, day = 0, alert = 0, ha = 0, maxday = 0, n_ha = 0;
+    char ids[1][48];
+    layout_scan_all_pages(root, 2, &cur, &day, &alert, &ha, &maxday, ids, 1, &n_ha);
+    cJSON_Delete(root);
+
+    TEST_ASSERT_EQUAL_INT(1, n_ha);     /* capacity respected */
+    TEST_ASSERT_EQUAL_INT(1, ha);       /* and the need is still reported */
+}
+
+static void test_scan_of_a_null_root_is_all_zero(void)
+{
+    int cur = 1, day = 1, alert = 1, ha = 1, maxday = 9, n_ha = 9;
+    char ids[4][48];
+    layout_scan_all_pages(NULL, 3, &cur, &day, &alert, &ha, &maxday, ids, 4, &n_ha);
+    TEST_ASSERT_EQUAL_INT(0, cur);
+    TEST_ASSERT_EQUAL_INT(0, day);
+    TEST_ASSERT_EQUAL_INT(0, alert);
+    TEST_ASSERT_EQUAL_INT(0, ha);
+    TEST_ASSERT_EQUAL_INT(0, maxday);
+    TEST_ASSERT_EQUAL_INT(0, n_ha);
+
+    /* A zero page count likewise asks nothing of the fetcher. */
+    cJSON *root = cJSON_Parse(TWO_PAGES);
+    layout_scan_all_pages(root, 0, &cur, &day, &alert, &ha, &maxday, ids, 4, &n_ha);
+    cJSON_Delete(root);
+    TEST_ASSERT_EQUAL_INT(0, ha);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -223,5 +349,10 @@ int main(void)
     RUN_TEST(test_unfireable_rules_are_dropped);
     RUN_TEST(test_cap_is_respected);
     RUN_TEST(test_garbage_and_empty_input);
+    RUN_TEST(test_from_root_matches_a_full_parse);
+    RUN_TEST(test_scan_covers_every_page);
+    RUN_TEST(test_scan_ignores_static_widgets);
+    RUN_TEST(test_scan_bounds_the_ha_list);
+    RUN_TEST(test_scan_of_a_null_root_is_all_zero);
     return UNITY_END();
 }

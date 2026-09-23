@@ -13,25 +13,31 @@ static char out[2048];
  * fault. */
 static void test_empty_list_is_a_valid_document(void)
 {
-    api_values_t v = { .items = NULL, .count = 0, .page = 0, .page_count = 2, .resolved_at = 0 };
+    api_values_t v = { .items = NULL, .count = 0, .page = 0, .drawn_page = -1, .page_count = 2, .resolved_at = 0 };
     const int n = api_values_json(&v, out, sizeof(out));
     TEST_ASSERT_GREATER_THAN(0, n);
-    TEST_ASSERT_EQUAL_STRING("{\"page\":0,\"page_count\":2,\"resolved_at\":0,\"values\":[]}", out);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"page\":0,\"drawn_page\":-1,\"page_count\":2,\"resolved_at\":0,\"values\":[]}", out);
 }
 
+/* `page` is the page the CALLER asked about and `drawn_page` is the page on the glass: the
+ * editor edits one page while the device rotates on its own, so the two routinely differ and
+ * the app needs both to fill in the edited page without lying about what the panel shows. */
 static void test_reports_values_with_ids(void)
 {
     const api_value_t items[] = {
         { .id = "owm_temp",      .text = "58.0°F",      .has_value = 1 },
         { .id = "ha_hallway",    .text = "--",          .has_value = 0 },
     };
-    api_values_t v = { .items = items, .count = 2, .page = 1, .page_count = 2, .resolved_at = 42 };
+    api_values_t v = { .items = items, .count = 2, .page = 1, .drawn_page = 0,
+                       .page_count = 2, .resolved_at = 42 };
     const int n = api_values_json(&v, out, sizeof(out));
     TEST_ASSERT_GREATER_THAN(0, n);
     TEST_ASSERT_NOT_NULL(strstr(out, "\"id\":\"owm_temp\""));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"has_value\":1"));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"has_value\":0"));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"page\":1"));
+    TEST_ASSERT_NOT_NULL(strstr(out, "\"drawn_page\":0"));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"resolved_at\":42"));
 }
 
@@ -43,7 +49,7 @@ static void test_quotes_and_backslashes_are_escaped(void)
     const api_value_t items[] = {
         { .id = "owm_city", .text = "Ba\"ck\\slash", .has_value = 1 },
     };
-    api_values_t v = { .items = items, .count = 1, .page = 0, .page_count = 1, .resolved_at = 0 };
+    api_values_t v = { .items = items, .count = 1, .page = 0, .drawn_page = 0, .page_count = 1, .resolved_at = 0 };
     const int n = api_values_json(&v, out, sizeof(out));
     TEST_ASSERT_GREATER_THAN(0, n);
     TEST_ASSERT_NOT_NULL(strstr(out, "Ba\\\"ck\\\\slash"));
@@ -54,7 +60,7 @@ static void test_quotes_and_backslashes_are_escaped(void)
 static void test_null_fields_are_safe(void)
 {
     const api_value_t items[] = { { .id = NULL, .text = NULL, .has_value = 0 } };
-    api_values_t v = { .items = items, .count = 1, .page = 0, .page_count = 1, .resolved_at = 0 };
+    api_values_t v = { .items = items, .count = 1, .page = 0, .drawn_page = 0, .page_count = 1, .resolved_at = 0 };
     const int n = api_values_json(&v, out, sizeof(out));
     TEST_ASSERT_GREATER_THAN(0, n);
     TEST_ASSERT_NOT_NULL(strstr(out, "\"id\":\"\""));
@@ -65,7 +71,7 @@ static void test_null_fields_are_safe(void)
 static void test_a_short_buffer_is_refused_not_truncated(void)
 {
     const api_value_t items[] = { { .id = "owm_temp", .text = "58.0", .has_value = 1 } };
-    api_values_t v = { .items = items, .count = 1, .page = 0, .page_count = 1, .resolved_at = 0 };
+    api_values_t v = { .items = items, .count = 1, .page = 0, .drawn_page = 0, .page_count = 1, .resolved_at = 0 };
     char small[16];
     TEST_ASSERT_EQUAL_INT(-1, api_values_json(&v, small, sizeof(small)));
 }
@@ -75,14 +81,14 @@ static void test_a_short_buffer_is_refused_not_truncated(void)
 static void test_an_oversized_count_is_rejected(void)
 {
     const api_value_t items[1] = { { .id = "x", .text = "y", .has_value = 1 } };
-    api_values_t v = { .items = items, .count = API_VALUES_MAX + 1, .page = 0, .page_count = 1, .resolved_at = 0 };
+    api_values_t v = { .items = items, .count = API_VALUES_MAX + 1, .page = 0, .drawn_page = 0, .page_count = 1, .resolved_at = 0 };
     TEST_ASSERT_EQUAL_INT(-1, api_values_json(&v, out, sizeof(out)));
 }
 
 static void test_null_arguments_are_rejected(void)
 {
     const api_value_t items[1] = { { .id = "x", .text = "y", .has_value = 1 } };
-    api_values_t v = { .items = items, .count = 1, .page = 0, .page_count = 1, .resolved_at = 0 };
+    api_values_t v = { .items = items, .count = 1, .page = 0, .drawn_page = 0, .page_count = 1, .resolved_at = 0 };
     TEST_ASSERT_EQUAL_INT(-1, api_values_json(NULL, out, sizeof(out)));
     TEST_ASSERT_EQUAL_INT(-1, api_values_json(&v, NULL, sizeof(out)));
     TEST_ASSERT_EQUAL_INT(-1, api_values_json(&v, out, 0));

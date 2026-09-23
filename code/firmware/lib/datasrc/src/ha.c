@@ -45,6 +45,23 @@ int ha_search_query_valid(const char *q)
 
 datasrc_status_t ha_classify_state(const char *state, double *out_value)
 {
+    /* Numeric-only view, kept for the callers that need a number. Implemented on top of the
+     * full classifier so there is ONE copy of the rules: a non-numeric state (the strings a
+     * binary_sensor reports) is UNAVAILABLE here, which is what the numeric contract promises. */
+    datasrc_value_t v;
+    const datasrc_status_t st = ha_classify_state_text(state, &v);
+    if (out_value) *out_value = v.value;
+    if (st != DATASRC_OK || !v.is_numeric) return DATASRC_ERR_UNAVAILABLE;
+    return DATASRC_OK;
+}
+
+datasrc_status_t ha_classify_state_text(const char *state, datasrc_value_t *out)
+{
+    datasrc_value_t v;
+    memset(&v, 0, sizeof(v));
+    v.status = DATASRC_ERR_UNAVAILABLE;
+    v.is_numeric = 1;
+    if (out) *out = v;
     if (!state) return DATASRC_ERR_UNAVAILABLE;
 
     /* Skip leading/trailing whitespace: an HTTP body carries a trailing newline, and
@@ -55,24 +72,44 @@ datasrc_status_t ha_classify_state(const char *state, double *out_value)
                      state[n - 1] == '\r' || state[n - 1] == '\n')) n--;
     if (n == 0) return DATASRC_ERR_UNAVAILABLE;
 
+    /* A TRULY MISSING READING stays UNAVAILABLE, and carries NO text. This is the one case where
+     * the state word must not be shown: printing "unavailable" on the glass is worse than the
+     * widget's own fallback, and it would make a dead sensor look like a reading.
+     *
+     * This is NOT the same as a non-numeric state — an "on"/"off"/"open" sensor is reporting its
+     * real value, and that is text to be drawn, not a failure. Conflating the two is why a
+     * binary_sensor showed its fallback (FR-5b covered only the numeric case). */
     if ((n == 11 && strncmp(state, "unavailable", 11) == 0) ||
         (n == 7  && strncmp(state, "unknown", 7) == 0)) {
         return DATASRC_ERR_UNAVAILABLE;
     }
 
-    /* Copy so the numeric parse sees a NUL-terminated string even when the token was
-     * trimmed above. */
+    /* Copy so the parse sees a NUL-terminated string even when the token was trimmed above. */
     char tmp[64];
     if (n >= sizeof(tmp)) return DATASRC_ERR_UNAVAILABLE;
     memcpy(tmp, state, n); tmp[n] = '\0';
 
     char *end = NULL;
-    double v = strtod(tmp, &end);
+    double val = strtod(tmp, &end);
     /* strtod accepts leading whitespace, "inf" and "nan" — all of which would become a
      * plausible-looking number on screen. Reject anything that is not a plain number. */
-    if (end == tmp || *end != '\0') return DATASRC_ERR_UNAVAILABLE;
-    if (!isfinite(v)) return DATASRC_ERR_UNAVAILABLE;
-    if (out_value) *out_value = v;
+    if (end != tmp && *end == '\0' && isfinite(val)) {
+        v.value = val;
+        v.is_numeric = 1;
+        v.status = DATASRC_OK;
+        if (out) *out = v;
+        return DATASRC_OK;
+    }
+
+    /* NOT A NUMBER: this is a text-valued state (a binary_sensor's on/off, a climate's heat, a
+     * lock's locked), so the raw state is the reading. is_numeric = 0 makes the formatter draw it
+     * as text with no decimals — see value_format_widget(). No numeric field is set, so a
+     * threshold rule cannot fire on it, which is correct: there is no magnitude to compare. */
+    v.is_numeric = 0;
+    v.status = DATASRC_OK;
+    snprintf(v.text, sizeof(v.text), "%s", tmp);
+    v.value = 0.0;
+    if (out) *out = v;
     return DATASRC_OK;
 }
 
@@ -100,6 +137,34 @@ int ha_parse_template_line(const char *line, double *out,
     for (int i = count; i < n_out; i++) {
         status[i] = DATASRC_ERR_UNAVAILABLE;
         out[i] = 0.0;
+    }
+    return count;
+}
+
+int ha_parse_template_line_text(const char *line, datasrc_value_t *out, int n_out)
+{
+    if (!line || !out || n_out <= 0) return 0;
+
+    /* Same bounded copy as the numeric parser — a response larger than any real layout cannot
+     * run past the buffer. */
+    char buf[512];
+    size_t n = strlen(line);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, line, n); buf[n] = '\0';
+
+    int count = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, "|", &save); tok && count < n_out;
+         tok = strtok_r(NULL, "|", &save)) {
+        ha_classify_state_text(tok, &out[count]);
+        count++;
+    }
+    /* Missing fields are UNAVAILABLE, not zeros — the same rule as the numeric parser, and the
+     * reason a shorter response cannot make a later widget show a stale or invented value. */
+    for (int i = count; i < n_out; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        out[i].status = DATASRC_ERR_UNAVAILABLE;
+        out[i].is_numeric = 1;
     }
     return count;
 }

@@ -93,3 +93,24 @@ typedef struct {
  * rule layout_config_parse() applies to its own fields. */
 int layout_widgets_parse(const char *json, int page_index,
                          layout_widget_t *out, int cap);
+
+/* Parse the widgets of page `page_index` from an ALREADY-PARSED cJSON root (`void *` so cJSON
+ * stays out of this header — the caller owns the tree and must keep it alive).
+ *
+ * WHY THIS EXISTS: the refresh tick resolves EVERY page so the editor can preview any of them
+ * (FR-27), and that would otherwise mean parsing the whole document once per page. Parsing the
+ * document is the expensive part on this part (cJSON's tree is several times the document), so
+ * the tree is parsed ONCE and each page is read out of it. */
+int layout_widgets_from_root(void *root, int page_index,
+                             layout_widget_t *out, int cap);
+
+/* Scan EVERY page of an already-parsed root and report what the whole document needs fetched, so
+ * one set of fetches serves every page rather than the tick fetching per page.
+ *
+ * `ha_out`/`ha_cap`/`ha_n` collect the DISTINCT Home Assistant entity ids across all pages, in
+ * first-seen order — the same order the template request and the per-widget slot lookup use, so a
+ * page's widget still finds its token. Any output pointer may be NULL. */
+void layout_scan_all_pages(void *root, int npages,
+                           int *need_current, int *need_daily, int *need_alert,
+                           int *need_ha, int *max_day,
+                           char (*ha_out)[48], int ha_cap, int *ha_n);

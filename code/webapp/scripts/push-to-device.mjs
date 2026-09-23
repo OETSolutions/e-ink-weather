@@ -44,13 +44,14 @@ async function main() {
 
   const layers = doc.pages.map((p, i) => {
     const art = artworkForPage(i);
-    /* RULES COME FROM THE PAGE, falling back to the art table — the same rule buildPageLayer()
-     * in main.ts applies. Using the art table alone would push the ORIGINAL line positions and
-     * silently undo a divider the user had moved, which is the divergence this script exists to
-     * avoid. */
+    /* BOTH LABELS AND RULES COME FROM THE PAGE, falling back to the art table — the same rule
+     * buildPageLayer() in main.ts applies. Using the art table alone would push the ORIGINAL
+     * positions and silently undo a divider or a heading the user had moved, which is the
+     * divergence this script exists to avoid. */
     const rules = p.rules ?? art.rules;
+    const labels = p.labels ?? art.labels;
     return buildStaticLayer(
-      art.labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
+      labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
       rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
     ).data;
   });

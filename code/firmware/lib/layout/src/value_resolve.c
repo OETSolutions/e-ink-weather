@@ -153,18 +153,22 @@ static datasrc_value_t resolve_value(const layout_widget_t *w, const value_sourc
             const int slot = ha_slot_of(w, ids, n_ids);
             if (slot < 0) return v;
             /* Parse the WHOLE line, then take THIS widget's token. Passing slot+1 as the count
-             * asks for only the prefix, but ha_parse_template_line() writes token i into
-             * out[i] — so reading out[0] would return the FIRST entity's value for every HA
-             * widget on the page. The arrays must be indexed by the slot, not by 0. */
-            double vals[LAYOUT_MAX_FIELDS];
-            datasrc_status_t sts[LAYOUT_MAX_FIELDS];
-            const int got = ha_parse_template_line(src->ha_line, vals, sts, slot + 1);
+             * asks for only the prefix, but the parser writes token i into out[i] — so reading
+             * out[0] would return the FIRST entity's value for every HA widget on the page. The
+             * arrays must be indexed by the slot, not by 0.
+             *
+             * THE TEXT-AWARE PARSE, not the numeric one: a Home Assistant state is a STRING, and
+             * plenty of real ones are words — a binary_sensor's "on"/"off", a lock's "locked".
+             * The numeric parser rejected those as UNAVAILABLE, so the widget fell back and the
+             * user saw "--" for a sensor that was reporting fine. This parser keeps both the
+             * number (for a threshold rule) and the word (for the glass); is_numeric says which
+             * ones can be compared, and value_format_widget() draws the rest as text. */
+            datasrc_value_t parsed[LAYOUT_MAX_FIELDS];
+            const int got = ha_parse_template_line_text(src->ha_line, parsed, slot + 1);
             if (got < slot + 1) return v;      /* the response was shorter than this widget's slot */
-            v.status = sts[slot];
-            v.value = vals[slot];
-            v.is_numeric = 1;
-            v.observed_at = now_unix;
-            return v;
+            datasrc_value_t r = parsed[slot];
+            r.observed_at = now_unix;
+            return r;
         }
 
         default:
@@ -224,9 +228,16 @@ int value_format_widget(const layout_widget_t *w, const value_sources_t *src,
             snprintf(buf, cap, "%s", v.text);
             return 1;
         }
-        /* A text reading (conditions). No decimals apply, and the affixes still do, so a
-         * widget could render "scattered clouds" unchanged. */
-        snprintf(buf, cap, "%s%s%s", w->format.prefix, v.text, w->format.suffix);
+        /* A text reading — an OWM condition word, or a non-numeric Home Assistant state such as a
+         * binary_sensor's "on"/"off". The affixes and the fallback do not apply: the state IS the
+         * reading, and it resolved successfully, so neither a prefix nor a suffix belongs on it.
+         *
+         * WHY THE SUFFIX IS DROPPED HERE rather than appended as before: a widget bound to a door
+         * sensor would otherwise draw "on°F" — the degree affix is a temperature's, and it reads as
+         * a broken number rather than as a state. A user who genuinely wants one can bind the
+         * widget's own text; the format fields describe NUMBERS (decimals, prefix, suffix), and a
+         * word has no decimals to format. */
+        snprintf(buf, cap, "%s", v.text);
         return 1;
     }
 

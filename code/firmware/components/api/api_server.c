@@ -113,19 +113,54 @@ void api_record_page(int page)
     unlock();
 }
 
-/* The last resolved values, for GET /api/values (FR-27). Static rather than allocated: it is a
- * fixed 24 entries and the endpoint must be answerable without a malloc that could fail and
- * turn a preview into an error. */
-static struct {
+/* The last resolved values, for GET /api/values (FR-27), KEYED BY PAGE.
+ *
+ * WHY PER PAGE RATHER THAN ONE SNAPSHOT. The editor edits one page; the device rotates through
+ * them on its own schedule. One snapshot meant the endpoint could only answer for the page the
+ * device last DREW, so every other page previewed as "--" until the user saved and the device
+ * happened to draw it — the exact complaint this fixes ("the values show blank til you save";
+ * "switching pages doesn't update with current values"). Resolving EVERY page in the tick and
+ * keeping the per-page results makes ?page=N answerable for the page being EDITED, whatever the
+ * glass shows.
+ *
+ * ON THE HEAP, SIZED TO THE CONFIG'S PAGE COUNT — NOT A FIXED .bss ARRAY. LAYOUT_MAX_PAGES(8) x
+ * 24 entries x 68 bytes is ~13 KB, and on this part .bss is DRAM the heap never gets: measured
+ * before, a 9 KB static here dropped the largest free block below what the static layer needs and
+ * NOTHING could be drawn. A config with two pages needs ~3.3 KB, so allocating to the actual page
+ * count keeps the common case small and only a genuinely many-page layout pays for all of them.
+ * The allocation is made once per config (see api_values_reserve) AFTER the tick's fetch buffers
+ * are freed, which is when the heap has the room. */
+static struct page_values_s {
     int  count;
-    int  page;
-    int  page_count;
+    int  resolved_at;
+    int  valid;
     char ids[API_VALUES_MAX][API_VALUES_ID_LEN];
     char texts[API_VALUES_MAX][API_VALUES_TEXT_LEN];
     int  has_value[API_VALUES_MAX];
-    long resolved_at;
-    int  valid;
-} s_values;
+} *s_values;
+static int s_values_pages;        /* how many entries s_values holds; 0 = none */
+static int s_values_pages_count;  /* the config's page count, as last reported to the API */
+
+/* Make sure the per-page store can hold `page_count` pages. Called once per refresh, from the
+ * tick, AFTER the forecast buffer is freed — see the allocation note above. A count already
+ * within the current block is a no-op, so this only allocates when the config grows. A failure
+ * leaves the store as it was: the endpoint then answers for whatever pages it still holds rather
+ * than erroring, because a partial preview is useful and cannot affect the glass. */
+void api_values_reserve(int page_count)
+{
+    if (page_count <= 0 || page_count > LAYOUT_MAX_PAGES) return;
+    if (s_values && s_values_pages >= page_count) return;
+
+    lock();
+    if (s_values_pages >= page_count) { unlock(); return; }
+    struct page_values_s *next = calloc((size_t)page_count, sizeof(*next));
+    if (next) {
+        free(s_values);
+        s_values = next;
+        s_values_pages = page_count;
+    }
+    unlock();
+}
 
 void api_record_values(const char (*ids)[24], const char (*texts)[40],
                        const int *has_value, int count, int page, int page_count)
@@ -133,19 +168,22 @@ void api_record_values(const char (*ids)[24], const char (*texts)[40],
     if (!ids || !texts || !has_value || count < 0) return;
 
     lock();
+    if (!s_values || page < 0 || page >= s_values_pages) { unlock(); return; }
     const int n = count > API_VALUES_MAX ? API_VALUES_MAX : count;
+    struct page_values_s *pv = &s_values[page];
     for (int i = 0; i < n; i++) {
-        strncpy(s_values.ids[i], ids[i], API_VALUES_ID_LEN - 1);
-        s_values.ids[i][API_VALUES_ID_LEN - 1] = '\0';
-        strncpy(s_values.texts[i], texts[i], API_VALUES_TEXT_LEN - 1);
-        s_values.texts[i][API_VALUES_TEXT_LEN - 1] = '\0';
-        s_values.has_value[i] = has_value[i] ? 1 : 0;
+        strncpy(pv->ids[i], ids[i], API_VALUES_ID_LEN - 1);
+        pv->ids[i][API_VALUES_ID_LEN - 1] = '\0';
+        strncpy(pv->texts[i], texts[i], API_VALUES_TEXT_LEN - 1);
+        pv->texts[i][API_VALUES_TEXT_LEN - 1] = '\0';
+        pv->has_value[i] = has_value[i] ? 1 : 0;
     }
-    s_values.count = n;
-    s_values.page = page;
-    s_values.page_count = page_count;
-    s_values.resolved_at = (long)(esp_timer_get_time() / 1000000LL);
-    s_values.valid = 1;
+    pv->count = n;
+    pv->resolved_at = (long)(esp_timer_get_time() / 1000000LL);
+    pv->valid = 1;
+    /* The page count is a property of the config, not of one page's record, so any page can
+     * report it. Kept here so the endpoint does not need a separate accessor. */
+    s_values_pages_count = page_count > 0 ? page_count : s_values_pages_count;
     unlock();
 }
 
@@ -591,6 +629,13 @@ static esp_err_t h_status(httpd_req_t *req)
  * parts (fallback, decimals default, alert replacement, HA slot indexing), and in the embedded
  * case the browser has neither the credentials nor, on the setup network, any internet.
  *
+ * `?page=N` SELECTS WHICH PAGE'S VALUES TO RETURN. The device rotates on its own schedule, so
+ * without this the editor could only ever preview whichever page happened to be on the glass —
+ * a different page's boxes read "--" and the user concluded the data was broken (the reported
+ * symptom). The tick now resolves every page, so any page N the config has is answerable; an
+ * absent `page` falls back to the page on the glass, which is what a caller that does not care
+ * wants and keeps the plain GET /api/values meaning what it always did.
+ *
  * BEFORE THE FIRST REFRESH there is nothing to report, and that is a 200 with an empty list
  * rather than a 404: the editor's question is "what will the panel show", and "the device has
  * not drawn yet" is a real answer to it. A 404 would read as a missing endpoint. */
@@ -603,18 +648,45 @@ static esp_err_t h_values(httpd_req_t *req)
     memset(&v, 0, sizeof(v));
     memset(items, 0, sizeof(items));
 
+    /* Which page to answer for: the requested one, else the one on the glass, else page 0. An
+     * out-of-range or unparseable request falls back rather than erroring — the editor is asking
+     * a question about a page, and answering with the page it can answer for is more useful than
+     * a 400 for a page that no longer exists after a config change mid-session. */
+    int want = -1;
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        uint32_t p = 0;
+        if (api_query_u32(query, "page", &p) == 0) want = (int)p;
+    }
+
     lock();
-    const int n = s_values.count;
-    for (int i = 0; i < n; i++) {
-        items[i].id = s_values.ids[i];
-        items[i].text = s_values.texts[i];
-        items[i].has_value = s_values.has_value[i];
+    const int drawn = s_have_last_page ? s_last_page : -1;
+    if (want < 0) want = drawn >= 0 ? drawn : 0;
+    const int pages = s_values_pages_count > 0 ? s_values_pages_count : 1;
+
+    int n = 0;
+    long resolved_at = 0;
+    if (s_values && want >= 0 && want < s_values_pages && s_values[want].valid) {
+        const struct page_values_s *pv = &s_values[want];
+        n = pv->count;
+        resolved_at = pv->resolved_at;
+        for (int i = 0; i < n; i++) {
+            items[i].id = pv->ids[i];
+            items[i].text = pv->texts[i];
+            items[i].has_value = pv->has_value[i];
+        }
+    } else if (want < 0 || want >= pages) {
+        /* The request is for a page this device does not have. Report page 0's values so the
+         * caller sees a well-formed document, but name the page it asked for so the editor can
+         * tell the answer is not for what it wanted. */
+        want = 0;
     }
     v.items = items;
     v.count = n;
-    v.page = s_values.page;
-    v.page_count = s_values.page_count;
-    v.resolved_at = s_values.resolved_at;
+    v.page = want;
+    v.drawn_page = drawn;
+    v.page_count = pages;
+    v.resolved_at = resolved_at;
     unlock();
 
     const int len = api_values_json(&v, out, sizeof(out));

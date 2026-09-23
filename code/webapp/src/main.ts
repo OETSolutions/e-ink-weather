@@ -22,7 +22,7 @@ import { previewTextWithLive } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
 import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement';
-import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, type Config, type Page, type Selection, type Widget } from './model/config';
+import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, LABEL_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
 import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, type AuthState } from './transfer/device';
@@ -34,6 +34,16 @@ const API = '';
 /** How long to wait for the device before running offline. Long enough for a slow wifi
  *  association, short enough that a dead device does not look like a broken app. */
 const LOAD_TIMEOUT_MS = 5000;
+
+/**
+ * The most pages the display can rotate through, mirrored from the firmware's LAYOUT_MAX_PAGES
+ * (lib/layout/include/layout_model.h).
+ *
+ * A TRUE MIRROR: the device's layout_config_t holds exactly this many page entries and TRUNCATES
+ * the rest without a word, so a document with more would preview more pages than the glass ever
+ * shows. Enforced while editing so the limit is visible rather than discovered on the panel.
+ */
+const MAX_PAGES = 8;
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -167,7 +177,33 @@ async function saveConfig(doc: Config): Promise<SaveResult> {
  */
 function ensurePageRules(p: Page, index: number): void {
   if (!Array.isArray(p.rules)) {
-    p.rules = artworkForPage(index).rules.map((r) => ({ ...r }));
+    p.rules = starterPage(index).rules?.map((r) => ({ ...r }))
+      ?? artworkForPage(index).rules.map((r) => ({ ...r }));
+  }
+}
+
+/**
+ * Seed a page's LABELS from the same starter page its widgets would come from.
+ *
+ * A page authored before labels moved into the document has no `labels` key, but something still
+ * DRAWS its headings — so without this the user would see headings on the preview that cannot be
+ * selected, renamed or moved, which is the most confusing possible version of "the heading will
+ * not move".
+ *
+ * THE SAME SOURCE AS THE WIDGETS, deliberately: switchPage seeds an unarranged page's widgets from
+ * starterPage(), and a page beyond the shipped presets gets the first page's widgets. Taking the
+ * labels from artworkForPage() instead (which is empty past the presets) would give such a page
+ * eighteen boxes and no headings — a layout whose readings are unlabelled. `starterPage(0)` and
+ * `starterPage(1)` carry exactly the labels `artworkForPage` does, so pages 0 and 1 are unchanged.
+ *
+ * AN EMPTY ARRAY IS RESPECTED, NOT RE-SEEDED: a page whose headings the user deliberately deleted
+ * must stay blank. `undefined` means "never authored", `[]` means "the user chose none", and
+ * conflating the two would make a deletion undo itself on the next visit.
+ */
+function ensurePageLabels(p: Page, index: number): void {
+  if (!Array.isArray(p.labels)) {
+    p.labels = starterPage(index).labels?.map((l) => ({ ...l }))
+      ?? artworkForPage(index).labels.map((l) => ({ ...l }));
   }
 }
 
@@ -177,17 +213,19 @@ function ensurePageRules(p: Page, index: number): void {
  * MODULE SCOPE, not inside mount(), because both the editor (which draws the page being edited)
  * and the upload path need it, and the upload runs for every page in the document.
  *
- * LABELS COME FROM THE ART TABLE, RULES FROM THE CONFIG. That split is deliberate: a label is
- * ART with no data behind it, while a rule is something the user moves, so it belongs in the
- * document. A page with no art entry yields a blank label set rather than another page's — see
- * artworkForPage() — and falls back to that table's rules only when the config carries none,
- * which is the case for a page authored before rules moved into the document.
+ * BOTH LABELS AND RULES COME FROM THE CONFIG, falling back to the art table only when the page
+ * carries none — which is the case for a document authored before each moved into the config.
+ * Labels used to be drawn from the art table alone, which is exactly why a hard-coded heading
+ * could not be renamed: the picture on the preview was not the document, it was a preset. A page
+ * with no art entry and no labels yields a blank layer rather than another page's — a missing
+ * picture is honest, the wrong picture is a lie about which page you are looking at.
  */
 function buildPageLayer(page: Page, pageIndex: number): Uint8Array {
   const art = artworkForPage(pageIndex);
   const rules = page.rules ?? art.rules;
+  const labels = page.labels ?? art.labels;
   return buildStaticLayer(
-    art.labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
+    labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
     rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
   ).data;
 }
@@ -233,6 +271,7 @@ async function mount(root: HTMLElement): Promise<void> {
   const seededPages = new Set<number>();
   if (page.widgets.length === 0) { page.widgets = starterPage(pageIndex).widgets; seededPages.add(pageIndex); }
   ensurePageRules(page, pageIndex);
+  ensurePageLabels(page, pageIndex);
 
   let alertProbe = NaN; /* no alert previewed until the toggle is ticked */
   /* The device's last resolved values, keyed by widget id (FR-27). Empty until asked for, and
@@ -347,8 +386,174 @@ async function mount(root: HTMLElement): Promise<void> {
     status.textContent = 'Added a divider. Drag it on the panel, or set its Y exactly here.';
   }
 
+  function addLabel(): void {
+    if (!page.labels) page.labels = [];
+    /* A NEW HEADING LANDS IN THE CLEAR, not at 0,0 — stacked headings would be indistinguishable
+     * and one would hide the others. findPlacement() is for widgets (it respects widgets AND
+     * rules); a heading is one short line of body text, so a simpler rule is enough: try the left
+     * margin down the panel at a few anchor Ys and take the first that does not overlap an
+     * existing heading. This is deliberately in main.ts rather than geometry.ts: it is a
+     * placement POLICY for a new object, not hit-testing arithmetic the tests exercise.
+     *
+     * The size is the body size the shipped headings use, so a new one looks like the rest. */
+    const FONT = 20;
+    const used = page.labels;
+    const overlaps = (y: number): boolean =>
+      used.some((l) => Math.abs(l.y - y) < FONT);
+    let y = 40;
+    for (const candidate of [40, 100, 200, 300, 400, 500, 600]) {
+      if (!overlaps(candidate)) { y = candidate; break; }
+    }
+    page.labels.push({ x: 40, y, text: 'HEADING', font: FONT });
+    editor.setLayer(rebuildEditedLayer());
+    editorState.selection = { kind: 'label', id: LABEL_ID, index: page.labels.length - 1 };
+    panel.show(editorState.selection, page);
+    describe(editorState.selection);
+    editor.redraw();
+    status.classList.remove('err');
+    status.textContent = 'Added a heading. Type its text here or drag it on the panel.';
+  }
+
   const addBoxBtn = button('Add box', addWidget);
   const addRuleBtn = button('Add divider', addRule);
+  const addLabelBtn = button('Add heading', addLabel);
+
+  /* ---- pages: add, delete, rename, and the two intervals (FR-15, FR-25) ----
+   *
+   * WHY THIS IS HERE: the device and the document always supported several pages, but the UI had
+   * no way to create or remove one — the shipped layout's two pages were the only pages a user
+   * could ever have, and the rotation interval could only be changed by hand-editing JSON. Two
+   * model fields were worse than useless without a control: `updateSeconds` (how often the display
+   * wakes and re-fetches — FR-9) and each page's `refreshSeconds` (how long that page stays up —
+   * FR-15) were written by the app, stored by the device and IGNORED by the UI, which is exactly
+   * the "a setting that only changes a label" defect class this project has hit before.
+   *
+   * THE LIMIT IS THE DEVICE'S. layout_config_t holds LAYOUT_MAX_PAGES (8) pages and truncates the
+   * rest silently, so the button refuses past 8 with an explanation rather than adding a page the
+   * display would never rotate to. */
+
+  /** A fresh page for "Add page": empty, so the next switch seeds it from the starter layout. */
+  function newPage(existing: Page[]): Page {
+    const n = existing.length + 1;
+    return {
+      id: `page${n}-${Date.now().toString(36).slice(-4)}`,
+      name: `Page ${n}`,
+      refreshSeconds: 900,
+      weight: 1,
+      widgets: [],
+      rules: [],
+      labels: [],
+    };
+  }
+
+  function addPage(): void {
+    if (doc.pages.length >= MAX_PAGES) {
+      status.textContent =
+        `The display rotates at most ${MAX_PAGES} pages. Remove one to add another.`;
+      status.classList.add('err');
+      return;
+    }
+    doc.pages.push(newPage(doc.pages));
+    seededPages.delete(doc.pages.length - 1);   /* a brand-new page may be seeded if left empty */
+    buildPageOptions();
+    switchPage(doc.pages.length - 1);
+    status.classList.remove('err');
+    status.textContent = `Added ${doc.pages[doc.pages.length - 1]!.name}. Save to put it on the display.`;
+  }
+
+  function deletePage(): void {
+    if (doc.pages.length <= 1) {
+      status.textContent = 'The display needs at least one page.';
+      status.classList.add('err');
+      return;
+    }
+    const removed = page.name;
+    doc.pages.splice(pageIndex, 1);
+    /* THE DEVICE'S SCHEDULE IS NOT RENUMBERED — it is the config's page ARRAY that changes, and
+     * the device re-derives its rotation from the new array on the next refresh. So the edited
+     * index just clamps back into range; a saved document with a shorter page list is what the
+     * device needs, and it takes effect when the user saves. */
+    pageIndex = Math.min(pageIndex, doc.pages.length - 1);
+    page = pageAt(pageIndex);
+    if (!Array.isArray(page.widgets)) page.widgets = [];
+    ensurePageRules(page, pageIndex);
+    ensurePageLabels(page, pageIndex);
+    liveValues = {};
+    editorState.page = page;
+    editorState.selection = undefined;
+    editorState.values = previewValues(page, alertProbe, liveValues);
+    editor.setLayer(rebuildEditedLayer());
+    panel.show(undefined, page);
+    editor.redraw();
+    describe(undefined);
+    buildPageOptions();
+    describePage();
+    pageSettings.refresh();
+    status.classList.remove('err');
+    status.textContent = `Removed “${removed}”. Save to update the display.`;
+  }
+
+  const addPageBtn = button('Add page', addPage);
+  const delPageBtn = button('Delete this page', deletePage);
+
+  /* ---- page settings: name, rotation dwell, and the refresh interval ----
+   *
+   * The name and the two numbers are edited into the DOCUMENT's own fields, so Save carries them
+   * with the rest of the config and the device acts on them — see the block comment above. */
+  const pageNameInput = el('input', { type: 'text', id: 'pageName', autocomplete: 'off' }) as HTMLInputElement;
+  pageNameInput.addEventListener('input', () => {
+    page.name = pageNameInput.value;
+    /* Keep the selector's label in step so the page list does not name a page the user just
+     * renamed. Only the edited page's option is touched — rebuilding the whole list on each
+     * keystroke would reset the select and lose the caret. */
+    const opt = pageSel.options[pageIndex];
+    if (opt) opt.textContent = `${pageIndex + 1}. ${page.name || '(unnamed)'}`;
+  });
+
+  const pageDwellInput = el('input', {
+    type: 'number', id: 'pageDwell', min: '30', max: '604800', step: '30',
+  }) as HTMLInputElement;
+  pageDwellInput.addEventListener('input', () => {
+    const n = Number(pageDwellInput.value);
+    /* The device clamps to [30, 604800] (LAYOUT_MIN/MAX_INTERVAL_SECONDS) and refuses a document
+     * whose sum would overflow. Clamping HERE keeps the number shown equal to the number stored —
+     * the same rule every other control follows. */
+    if (!Number.isFinite(n)) return;
+    page.refreshSeconds = Math.min(604800, Math.max(30, Math.round(n)));
+  });
+  pageDwellInput.addEventListener('blur', () => {
+    pageDwellInput.value = String(page.refreshSeconds);
+  });
+
+  const refreshInput = el('input', {
+    type: 'number', id: 'refreshSeconds', min: '30', max: '604800', step: '30',
+  }) as HTMLInputElement;
+  refreshInput.addEventListener('input', () => {
+    const n = Number(refreshInput.value);
+    if (!Number.isFinite(n)) return;
+    doc.updateSeconds = Math.min(604800, Math.max(30, Math.round(n)));
+  });
+  refreshInput.addEventListener('blur', () => {
+    refreshInput.value = String(doc.updateSeconds);
+  });
+
+  /** Repoint the settings fields at the page now being edited. Called from switchPage and after a
+   *  page is added or removed; without it the fields would keep the previous page's values while
+   *  editing the new one — a control showing a number the document does not hold. */
+  const pageSettings = {
+    refresh(): void {
+      pageNameInput.value = page.name ?? '';
+      pageDwellInput.value = String(page.refreshSeconds ?? 900);
+      refreshInput.value = String(doc.updateSeconds ?? 900);
+      delPageBtn.disabled = doc.pages.length <= 1;
+      addPageBtn.disabled = doc.pages.length >= MAX_PAGES;
+    },
+  };
+
+  const rotationHint = el('p', { className: 'hint' },
+    'Rotation is per page: the display shows each page for its own dwell time, then moves on. '
+    + 'With 2 pages at 900 s each, it turns every 15 minutes.');
+
 
   /* ---- which page is being edited ----
    *
@@ -396,12 +601,15 @@ async function mount(root: HTMLElement): Promise<void> {
       pageHint.textContent = `The display is on this page (${devicePage + 1}. ${devName}).`;
       return;
     }
-    /* The placeholders are expected here, and saying so is the whole point: otherwise "--" reads
-     * as a broken fetch rather than "you are looking at a page the display is not on". */
-    pageHint.classList.add('warn');
+    /* The values here are REAL and current — the device resolves every page, not just the one it
+     * is drawing — so this is a note about the glass, not a warning that the preview is stale. It
+     * still earns a mention because a change saved now reaches the panel only when that page's
+     * rotation slot comes round (or when the user asks for the page explicitly). */
+    pageHint.classList.remove('warn');
     pageHint.textContent =
-      `The display is showing page ${devicePage + 1} (${devName}), not the page you are editing. `
-      + 'It rotates on its own, so readings only fill in here while it is on the page you edit.';
+      `You are editing page ${pageIndex + 1}; the display is showing page ${devicePage + 1} `
+      + `(${devName}). Readings here are live. To see this page on the glass now, use the button `
+      + 'below.';
   }
 
   /**
@@ -422,6 +630,7 @@ async function mount(root: HTMLElement): Promise<void> {
       seededPages.add(i);
     }
     ensurePageRules(page, i);
+    ensurePageLabels(page, i);
     /* Drop the previous page's readings. Ids can recur across pages, and a stale value under a
      * reused id would be another page's number drawn as if it were this page's. */
     liveValues = {};
@@ -433,6 +642,7 @@ async function mount(root: HTMLElement): Promise<void> {
     editor.redraw();
     describe(undefined);
     pageSel.value = String(i);
+    pageSettings.refresh();
     describePage();
     /* Ask again: the device may already be on this page, in which case the boxes fill in now; if
      * it is not, the poll's own page guard keeps the placeholders honest. */
@@ -499,6 +709,7 @@ async function mount(root: HTMLElement): Promise<void> {
          * table's lines — so an empty array would show dividers that cannot be grabbed, exactly the
          * state ensurePageRules() exists to prevent. */
         ensurePageRules(page, 0);
+        ensurePageLabels(page, 0);
         editorState.page = page;
         editorState.selection = undefined;
         editorState.values = previewValues(page, alertProbe, liveValues);
@@ -508,6 +719,7 @@ async function mount(root: HTMLElement): Promise<void> {
         panel.show(undefined, page);
         editor.redraw();
         describe(undefined);
+        pageSettings.refresh();
         describePage();
         pollValues();
         status.textContent = `Loaded “${f.name}”. Review it, then Save to device.`;
@@ -685,11 +897,16 @@ async function mount(root: HTMLElement): Promise<void> {
       sel.textContent = r ? `divider: y=${Math.round(r.y)} thickness=${r.thickness}` : '';
       return;
     }
+    if (s?.kind === 'label') {
+      const l = page.labels?.[s.index];
+      sel.textContent = l ? `heading: “${l.text}” x=${Math.round(l.x)} y=${Math.round(l.y)}` : '';
+      return;
+    }
     const w = s?.kind === 'widget' ? page.widgets.find((x) => x.id === s.id) : undefined;
     if (!w) {
       sel.textContent = s
         ? ''
-        : 'Nothing selected. Click a value box or a divider to move or resize it.';
+        : 'Nothing selected. Click a value box, a divider or a heading to move it.';
       return;
     }
     sel.textContent =
@@ -726,9 +943,20 @@ async function mount(root: HTMLElement): Promise<void> {
        * stores. */
       editor.setLayer(rebuildEditedLayer());
     },
+    onLabelChange: () => {
+      /* Exactly the same reason as onRuleChange: a heading is drawn FROM the layer, so renaming
+       * or moving one must rebuild it — otherwise the text field would show the new name while the
+       * canvas went on painting the old, which is the "control shows a value it did not store"
+       * defect in its most confusing form. */
+      editor.setLayer(rebuildEditedLayer());
+      describe(editorState.selection);
+    },
     onDelete: (s) => {
       if (s.kind === 'rule') {
         page.rules = (page.rules ?? []).filter((_, i) => i !== s.index);
+        editor.setLayer(rebuildEditedLayer());
+      } else if (s.kind === 'label') {
+        page.labels = (page.labels ?? []).filter((_, i) => i !== s.index);
         editor.setLayer(rebuildEditedLayer());
       } else {
         const i = page.widgets.findIndex((w) => w.id === s.id);
@@ -783,6 +1011,9 @@ async function mount(root: HTMLElement): Promise<void> {
     onRuleUpdate: (y) => {
       sel.textContent = `divider: y=${Math.round(y)}`;
     },
+    onLabelUpdate: (l) => {
+      sel.textContent = `heading: “${l.text}” x=${Math.round(l.x)} y=${Math.round(l.y)}`;
+    },
   });
 
   alertBox.addEventListener('change', () => {
@@ -809,9 +1040,11 @@ async function mount(root: HTMLElement): Promise<void> {
    * the fast cadence whenever a value is still missing — which is the case right after Save, when
    * a widget the user just added has no resolved value yet.
    *
-   * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
-   * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
-   * other page's numbers into this page's boxes the moment the scheduler moved. */
+   * THE PAGE IS RESOLVED ON THE DEVICE, so the editor no longer has to WAIT for the glass to
+   * reach the page it is editing: it asks for that page explicitly. What still has to be checked
+   * is the DRAWN page, which drives the "the display is showing page N" readout and is the page
+   * the device would have answered with before — so a device that reports values for the edited
+   * page but is drawing another one is described honestly rather than passed off as live. */
   const editedPageIndex = (): number => pageIndex;
   let valuesTimer = 0;
   let valuesSlow = false;   /* true once every widget has resolved and the heartbeat is in force */
@@ -826,13 +1059,19 @@ async function mount(root: HTMLElement): Promise<void> {
       /* The hard stop is a backstop for a device that never answers: without it a tab left open
        * would poll a dead address forever. It is generous because the heartbeat is legitimate. */
       if (tries > 600) { window.clearInterval(valuesTimer); valuesTimer = 0; return; }
-      void getValuesInfo({ baseUrl: API }).then((info) => {
+      /* ASK FOR THE PAGE BEING EDITED, not just whatever is on the glass. A device too old to
+       * understand `?page=` answers with its own page, which the guard below still accepts when it
+       * matches — so this degrades to the old behaviour rather than breaking against one. */
+      void getValuesInfo({ baseUrl: API }, editedPageIndex()).then((info) => {
         if (!info) return;
-        /* Record the device's page on EVERY answer, even a non-matching one, so the selector's
-         * readout can tell the user which page the glass is showing. */
-        if (info.page !== devicePage) { devicePage = info.page; describePage(); }
+        /* Record the DEVICE's page on EVERY answer, independent of the page we asked about, so
+         * the selector's readout keeps telling the user where the glass is. */
+        if (info.drawnPage !== devicePage) { devicePage = info.drawnPage; describePage(); }
+        /* A device that echoed back a page other than the one asked for cannot be trusted to have
+         * answered our question, so its values are dropped rather than painted into the wrong
+         * page's boxes. On a current device info.page === editedPageIndex() by construction. */
         if (info.page !== editedPageIndex()) return;
-        if (Object.keys(info.values).length === 0) return;   /* nothing drawn yet; try again */
+        if (Object.keys(info.values).length === 0) return;   /* nothing resolved yet; try again */
         liveValues = info.values;
         editorState.values = previewValues(editorState.page, alertProbe, liveValues);
         editor.redraw();
@@ -950,14 +1189,26 @@ async function mount(root: HTMLElement): Promise<void> {
     el('h2', {}, 'Layout'),
     el('p', { className: 'sub' },
        'Drag a value box to move it, or drag its edge to resize. Drag a divider to move the ' +
-       'line. This is the real 1-bit output the panel will show.'),
+       'line, or a heading to move it. This is the real 1-bit output the panel will show.'),
     el('div', { className: 'fields' },
        el('div', {}, el('label', { htmlFor: 'editPage' }, 'Editing page'), pageSel)),
     pageHint,
     el('div', { className: 'actions' }, showPageBtn),
+    el('h3', {}, 'Pages'),
+    el('p', { className: 'sub' },
+       'The display rotates through these pages on its own. Each page has its own boxes, ' +
+       'dividers and headings.'),
+    el('div', { className: 'pGrid' },
+       el('div', {}, el('label', { htmlFor: 'pageName' }, 'Page name'), pageNameInput),
+       el('div', {}, el('label', { htmlFor: 'pageDwell' }, 'Show this page for (seconds)'), pageDwellInput)),
+    el('div', { className: 'fields' },
+       el('div', {}, el('label', { htmlFor: 'refreshSeconds' }, 'Refresh all values every (seconds)'),
+          refreshInput)),
+    rotationHint,
+    el('div', { className: 'actions' }, addPageBtn, delPageBtn),
     el('div', { className: 'toolbar' },
        zoomOut, zoomIn, zoomFit, bitBadge, zoomLabel),
-    el('div', { className: 'actions' }, addBoxBtn, addRuleBtn),
+    el('div', { className: 'actions' }, addBoxBtn, addRuleBtn, addLabelBtn),
     el('div', { className: 'editorLayout' },
        el('div', { className: 'editorWrap' }, canvasEl),
        panelHost),
@@ -996,6 +1247,7 @@ async function mount(root: HTMLElement): Promise<void> {
   describe(undefined);
   panel.show(undefined, page);
   buildPageOptions();
+  pageSettings.refresh();
   describePage();
   picker.invalidate();
 

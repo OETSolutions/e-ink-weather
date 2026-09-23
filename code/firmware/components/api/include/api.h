@@ -89,11 +89,20 @@ void api_record_page(int page);
  * it: it runs each widget through value_format_widget(), the same path that puts the string on
  * the glass. The refresh path hands the result here; the HTTP handler only serialises it.
  *
- * `ids` and `texts` are parallel arrays of `count` entries. The call is a no-op for a count of 0
- * or one beyond the fixed cap — a page larger than the cap previews the first page's worth
- * rather than failing, since a partial preview is still useful and cannot affect the glass. */
+ * `ids` and `texts` are parallel arrays of `count` entries, for page number `page`. The call is a
+ * no-op for a count of 0, a count beyond the fixed cap, or a page index the store does not hold. */
 void api_record_values(const char (*ids)[24], const char (*texts)[40],
                        const int *has_value, int count, int page, int page_count);
+
+/* Make sure the per-page value store can hold `page_count` pages, allocating it on first use.
+ *
+ * WHY THE CALLER SAYS HOW MANY: the store is sized to the config's page count rather than a fixed
+ * maximum, because a fixed array of LAYOUT_MAX_PAGES(8) x 24 entries is ~13 KB and .bss on this
+ * part is DRAM the heap never gets — measured before, a static of that order dropped the largest
+ * free block below what the static layer needs and nothing could be drawn. Called from the refresh
+ * tick AFTER the fetch buffers are freed, which is when the heap has room; a failure is non-fatal
+ * (the endpoint answers for whatever pages it holds). */
+void api_values_reserve(int page_count);
 
 /* The partial budget in force, from the stored config. 0 means every refresh is full. */
 int api_partial_limit(void);
