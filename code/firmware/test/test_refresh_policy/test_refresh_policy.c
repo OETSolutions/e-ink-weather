@@ -93,6 +93,40 @@ static void test_nothing_on_glass_beats_an_unspent_budget(void)
     TEST_ASSERT_EQUAL_INT(REFRESH_FULL, refresh_decide(1, 0, 5, 23));
 }
 
+/* ---- the pre-fetch boot draw (FR-29 vs FR-10…FR-13) ----
+ *
+ * On battery the device deep-sleeps with an image on the glass and wakes on a timer to update it.
+ * The boot path drew a values-less last-good frame EVERY time, which on a timer wake replaced the
+ * frame that had readings with the bare layer, forced a full flashing update on a device that had
+ * just woken to save power, and made the next tick paint the numbers back — two panel updates per
+ * wake instead of one. The panel's refresh budget is what FR-10…FR-13 exist to conserve.
+ */
+
+/* A COLD BOOT MUST STILL DRAW: the firmware cannot know what a power cut left on the glass, so
+ * FR-29's "an image immediately, before the network" is the only safe behaviour. */
+static void test_a_cold_boot_draws_the_last_good_image(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, boot_needs_last_good_draw(0));
+}
+
+/* A TIMER WAKE MUST NOT: the frame the device slept with is still up, it is already the last good
+ * image, and redrawing it would only replace it with the values-less layer. */
+static void test_a_timer_wake_keeps_the_frame_already_on_the_glass(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, boot_needs_last_good_draw(1));
+}
+
+/* The decision is exactly "was this a deliberate deep-sleep wake", with no third state and no
+ * dependence on anything else — so a caller cannot get a half-answer from it. */
+static void test_the_boot_draw_decision_is_boolean(void)
+{
+    for (int woke = 0; woke <= 1; woke++) {
+        const int draw = boot_needs_last_good_draw(woke);
+        TEST_ASSERT_TRUE(draw == 0 || draw == 1);
+        TEST_ASSERT_EQUAL_INT(woke ? 0 : 1, draw);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -108,5 +142,8 @@ int main(void)
     RUN_TEST(test_one_below_the_limit_is_still_partial);
     RUN_TEST(test_limit_of_one_alternates);
     RUN_TEST(test_nothing_on_glass_beats_an_unspent_budget);
+    RUN_TEST(test_a_cold_boot_draws_the_last_good_image);
+    RUN_TEST(test_a_timer_wake_keeps_the_frame_already_on_the_glass);
+    RUN_TEST(test_the_boot_draw_decision_is_boolean);
     return UNITY_END();
 }

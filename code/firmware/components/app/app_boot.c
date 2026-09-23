@@ -300,9 +300,32 @@ void app_boot_run(void)
         ESP_LOGE(TAG, "panel did not respond (BUSY timeout) — skipping draw, continuing");
         api_note_error("boot: panel not responding");
     } else {
-        const esp_err_t r = app_render_last_good();
-        if (r != ESP_OK) {
-            ESP_LOGW(TAG, "no last-good image to show: %s", esp_err_to_name(r));
+        /* DO NOT REDRAW THE IMAGE THAT IS ALREADY THERE AFTER A TIMER WAKE (FR-10…FR-13).
+         *
+         * This draw is for the FR-29 case: something must be on the glass immediately, before the
+         * network, and on a cold boot the firmware cannot know what a power cut left there. After a
+         * deliberate deep sleep it CAN know, and drawing then costs two things for nothing — the
+         * frame on the glass is already the last good image (the panel is bistable), and this draw
+         * paints the bare static layer, because the readings did not survive the sleep. So it would
+         * REPLACE a frame with readings by one without, force a full flashing update on a device
+         * that just woke to save power, and make the next tick put the numbers back.
+         *
+         * See boot_needs_last_good_draw() for the full reasoning; the decision is a tested function
+         * rather than an `if` here so the panel-life rule lives with the other refresh policy. */
+        const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        const int woke_from_timer = (cause == ESP_SLEEP_WAKEUP_TIMER);
+        if (boot_needs_last_good_draw(woke_from_timer)) {
+            const esp_err_t r = app_render_last_good();
+            if (r != ESP_OK) {
+                ESP_LOGW(TAG, "no last-good image to show: %s", esp_err_to_name(r));
+            }
+        } else {
+            /* The frame the device slept with is still up. Record nothing about it: the refresh
+             * tick re-derives whether it can diff against the glass from its own state, and
+             * s_have_prev_values is 0 here precisely because this boot did not draw — which is the
+             * honest answer, since the values stamped on that frame are not recoverable. */
+            ESP_LOGI(TAG, "woke from timer; the frame on the glass is still the last good image, "
+                          "so the pre-fetch draw is skipped (one panel update this wake)");
         }
         epd_sleep();
     }

@@ -83,6 +83,53 @@ static int read_schema_version(const char *json, int *out)
     return 0;
 }
 
+/* Is the stored document already byte-for-byte this one? Returns 1 when it certainly is,
+ * 0 otherwise (including "cannot tell" — see below).
+ *
+ * WHY THIS EXISTS: NVS APPENDS a fresh entry for a rewritten blob and reclaims the old one only
+ * later, by garbage collection. So every save of the config costs a multi-page write to the flash
+ * even when the document has not changed by a byte — and the config app's Save button, the
+ * verification scripts and any retry all write the same document again. Pressing Save twice with
+ * nothing edited doubles the write for no reason, and the reclaim path in the NVS backend exists
+ * precisely because a long run of these fills the partition. Skipping the write entirely when the
+ * content is identical removes that wear at the source; a no-op save then costs one read.
+ *
+ * FAILS OPEN, DELIBERATELY. Every uncertainty — a store with no size hook, a different stored
+ * length, a failed read, a failed allocation — returns 0, which writes the document exactly as the
+ * code did before. A missed dedup costs one write; a WRONG dedup would silently discard the user's
+ * change, which is far worse, so nothing here may guess.
+ *
+ * THE ORDER OF THE TWO TESTS IS LOAD-BEARING. Comparing lengths first means a changed document
+ * almost always answers in O(1) with no allocation at all — the common case is an edit, and this
+ * must not make it more expensive than it was.
+ *
+ * NO PEAK MEMORY IS ADDED. The comparison buffer is allocated and freed BEFORE the parse, so the
+ * peak while comparing is (body + buffer) and the peak while parsing is (body + tree); the two do
+ * not stack. That matters on this part, where a second contiguous document-sized block alongside
+ * cJSON's tree is exactly what makes a full-size config unparseable. */
+static int stored_is_identical(const cfg_store_t *store, const char *json)
+{
+    if (!store->size || !store->read) return 0;
+
+    /* `size` reports the stored blob's length, which INCLUDES the NUL the writer stored, and a
+     * stored length of 0 means nothing is there. A document of a different length cannot be equal,
+     * which is the answer for the common case (an edit) with no allocation at all. */
+    const size_t len = store->size(store->ctx, CFG_KEY);
+    if (len == 0 || len != strlen(json) + 1) return 0;
+
+    /* ONE BYTE MORE THAN THE BLOB. The backends refuse a read whose buffer the blob exactly fills,
+     * because they append the terminator themselves — so a comparison buffer sized to the bare
+     * length could never be read back, and the dedup would silently never fire. */
+    char *buf = malloc(len + 1);
+    if (!buf) return 0;                    /* fail open: write it, as before */
+
+    size_t got = 0;
+    const int rc = store->read(store->ctx, CFG_KEY, buf, len + 1, &got);
+    const int same = (rc == 0 && got == len && memcmp(buf, json, len) == 0);
+    free(buf);
+    return same;
+}
+
 int cfg_store_put(const cfg_store_t *store, const char *json)
 {
     if (!store || !store->write || !json) return -1;
@@ -90,6 +137,13 @@ int cfg_store_put(const cfg_store_t *store, const char *json)
     /* 1. must be JSON with a numeric schemaVersion */
     int ver = 0;
     if (read_schema_version(json, &ver) != 0) return -2;
+
+    /* 1b. AN UNCHANGED DOCUMENT IS NOT WRITTEN AGAIN — see stored_is_identical(). Checked here,
+     * before the migrate and the parse, so a no-op save costs neither a cJSON tree nor a flash
+     * write. It is safe AFTER the schema check (the document is known parseable-shaped), and its
+     * equality implies the stored copy already passed every check below when it was first stored,
+     * so skipping cannot admit anything that would have been refused. */
+    if (stored_is_identical(store, json)) return 0;
 
     /* 2. migrate to current — BUT ONLY WHEN A MIGRATION IS ACTUALLY NEEDED.
      *

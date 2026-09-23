@@ -50,6 +50,17 @@ static cfg_store_t store(void)
     return s;
 }
 
+/* The same backend WITH a size hook, which is what the real NVS backend has and what the
+ * unchanged-document check needs to answer. `stub_size` (defined below, beside the read-sizing
+ * tests) reports the stored length, exactly nvs_size()'s contract. */
+static size_t stub_size(void *ctx, const char *key);
+
+static cfg_store_t store_with_size(void)
+{
+    cfg_store_t s = { .read = stub_read, .write = stub_write, .size = stub_size, .ctx = NULL };
+    return s;
+}
+
 static void reset(void) { memset(g_blob, 0, sizeof(g_blob)); g_len = 0; g_writes = 0; g_read_fails = 0; }
 
 /* A valid document is stored. */
@@ -346,6 +357,147 @@ static void test_read_leaves_room_for_the_terminator(void)
     free(json);
 }
 
+/* ---- flash wear: an unchanged document is not written again ----
+ *
+ * NVS appends a fresh entry for a rewritten blob, so every save costs a multi-page write even when
+ * nothing changed — and Save is pressed repeatedly (a retry, a second look at the page, a
+ * verification script). The store now compares first and skips the write when the document is
+ * byte-for-byte what is already there. These tests pin both halves: the skip, and the fail-open
+ * behaviour on anything it cannot be sure about.
+ */
+
+static const char *DOC =
+    "{\"schemaVersion\":1,\"updateSeconds\":600,"
+    "\"partialRefreshLimit\":10,"
+    "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+
+/* THE WEAR CASE: saving the identical document twice writes flash ONCE. */
+static void test_an_unchanged_document_is_not_written_again(void)
+{
+    reset();
+    cfg_store_t s = store_with_size();
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+    TEST_ASSERT_EQUAL_INT(1, g_writes);
+
+    /* The same bytes again, and again: a no-op save must cost no flash write. */
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+    TEST_ASSERT_EQUAL_INT(1, g_writes);
+
+    /* And the stored document is still exactly the one saved — a skip must not have disturbed it. */
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_EQUAL_STRING(DOC, json);
+    free(json);
+}
+
+/* A CHANGED DOCUMENT IS STILL WRITTEN. The guard must not turn into "never save twice". */
+static void test_a_changed_document_is_written(void)
+{
+    reset();
+    cfg_store_t s = store_with_size();
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+    TEST_ASSERT_EQUAL_INT(1, g_writes);
+
+    const char *edited =
+        "{\"schemaVersion\":1,\"updateSeconds\":300,"
+        "\"partialRefreshLimit\":10,"
+        "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, edited));
+    TEST_ASSERT_EQUAL_INT(2, g_writes);
+
+    char *json = NULL;
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+    TEST_ASSERT_EQUAL_STRING(edited, json);
+    free(json);
+}
+
+/* A DOCUMENT THAT DIFFERS ONLY IN LENGTH IS WRITTEN — including one that is a PREFIX of the
+ * stored one, which is the case a sloppy memcmp of the shorter length would wrongly call equal. */
+static void test_a_prefix_of_the_stored_document_is_not_treated_as_equal(void)
+{
+    reset();
+    cfg_store_t s = store_with_size();
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+    const char *shorter =
+        "{\"schemaVersion\":1,\"updateSeconds\":600,"
+        "\"partialRefreshLimit\":10,"
+        "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300}]}";   /* trailing field dropped */
+    TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, shorter));
+    TEST_ASSERT_EQUAL_INT(2, g_writes);
+}
+
+/* FAIL OPEN ON UNCERTAINTY, ALL FOUR WAYS. A wrong "identical" silently discards the user's edit,
+ * so anything the check cannot prove must fall through to the write. */
+static void test_uncertainty_always_writes(void)
+{
+    reset();
+
+    /* 1. No size hook: the store cannot say how long the stored blob is, so it must not guess. */
+    {
+        cfg_store_t s = store();
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+        TEST_ASSERT_EQUAL_INT(2, g_writes);
+    }
+
+    /* 2. The stored length matches but the READ fails: no comparison is possible. */
+    {
+        reset();
+        cfg_store_t s = store_with_size();
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+        g_read_fails = 1;
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+        TEST_ASSERT_EQUAL_INT(2, g_writes);
+    }
+
+    /* 3. Nothing stored yet but the size hook claims a match: a fresh device must still write. */
+    {
+        reset();
+        cfg_store_t s = store_with_size();
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, DOC));
+        TEST_ASSERT_EQUAL_INT(1, g_writes);   /* not a no-op on the first save */
+    }
+
+    /* 4. A same-length but DIFFERENT document: same byte count is not sameness. */
+    {
+        reset();
+        cfg_store_t s = store_with_size();
+        const char *a =
+            "{\"schemaVersion\":1,\"updateSeconds\":600,"
+            "\"partialRefreshLimit\":10,"
+            "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+        const char *b =
+            "{\"schemaVersion\":1,\"updateSeconds\":700,"
+            "\"partialRefreshLimit\":10,"
+            "\"pages\":[{\"name\":\"a\",\"refreshSeconds\":300,\"weight\":1}]}";
+        TEST_ASSERT_EQUAL_UINT32(strlen(a), strlen(b));
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, a));
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_put(&s, b));
+        TEST_ASSERT_EQUAL_INT(2, g_writes);
+        char *json = NULL;
+        TEST_ASSERT_EQUAL_INT(0, cfg_store_get(&s, &json));
+        TEST_ASSERT_EQUAL_STRING(b, json);
+        free(json);
+    }
+}
+
+/* THE GUARD IS AFTER THE SCHEMA CHECK, NOT BEFORE IT. A malformed document must still be refused
+ * with its own code even when the store is holding identical bytes — the dedup must not become a
+ * way to accept a document the validator would have rejected. */
+static void test_the_dedup_does_not_bypass_validation(void)
+{
+    reset();
+    /* A store whose "read" hands back exactly what is asked, so a naive check would match. */
+    cfg_store_t s = store_with_size();
+    const char *bad = "{not json}";
+    memcpy(g_blob, bad, strlen(bad) + 1);
+    g_len = strlen(bad) + 1;
+    g_writes = 0;
+    TEST_ASSERT_NOT_EQUAL(0, cfg_store_put(&s, bad));
+    TEST_ASSERT_EQUAL_INT(0, g_writes);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -358,6 +510,11 @@ int main(void)
     RUN_TEST(test_unconfigured_device_returns_default);
     RUN_TEST(test_stored_config_round_trips);
     RUN_TEST(test_out_of_range_values_are_not_silently_stored_as_written);
+    RUN_TEST(test_an_unchanged_document_is_not_written_again);
+    RUN_TEST(test_a_changed_document_is_written);
+    RUN_TEST(test_a_prefix_of_the_stored_document_is_not_treated_as_equal);
+    RUN_TEST(test_uncertainty_always_writes);
+    RUN_TEST(test_the_dedup_does_not_bypass_validation);
     RUN_TEST(test_null_arguments_are_rejected);
     RUN_TEST(test_read_sizes_from_stored_length_not_the_maximum);
     RUN_TEST(test_read_without_size_hook_falls_back_to_the_maximum);

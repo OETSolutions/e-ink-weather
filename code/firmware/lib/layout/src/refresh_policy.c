@@ -15,3 +15,8 @@ refresh_kind_t refresh_decide(int nothing_on_glass, int partials_since_full,
     if (hours_since_full >= 24)                return REFRESH_FULL;   /* datasheet rule */
     return REFRESH_PARTIAL;
 }
+
+int boot_needs_last_good_draw(int woke_from_timer)
+{
+    return woke_from_timer ? 0 : 1;
+}
