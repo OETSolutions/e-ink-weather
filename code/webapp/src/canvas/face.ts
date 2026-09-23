@@ -63,5 +63,16 @@ export function sizeFor(w: Pick<Widget, 'font'>): number {
   return FACES[fontIdFor(w)]?.px ?? 20;
 }
 
+/**
+ * The ladder size that a declared pixel size will ACTUALLY be drawn at.
+ *
+ * A heading stores a pixel size that the renderer resolves to the nearest face, so a control that
+ * echoed the raw stored number could read "48 px" while the panel drew the 54 px face. This returns
+ * the size really used, which is what every size control must display.
+ */
+export function sizeForPx(px: number): number {
+  return FACES[faceIdForPx(px)]?.px ?? 20;
+}
+
 /** Re-exported so callers can name the two role faces without reaching into atlas-data. */
 export { FONT_20, FONT_64 };

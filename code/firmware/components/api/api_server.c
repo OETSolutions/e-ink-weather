@@ -899,6 +899,47 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
     return fresh != old;
 }
 
+/* How long a config PUT waits for a refresh to finish before it even tries to parse.
+ *
+ * THE RENDER WINDOW IS THE ONE THING THAT MAKES A VALID DOCUMENT LOOK INVALID. Measured on
+ * hardware by polling /api/status across a single refresh: total free DRAM falls from ~100 KB to
+ * a floor of 26,276 B and stays there for roughly two seconds, because the render path holds the
+ * whole-panel static layer and the band buffers from one contiguous region. A config document's
+ * cJSON tree costs several times the document's size, so a 6.9 KB document needs ~25-30 KB of FREE
+ * heap that simply is not there during that window — cJSON_Parse returns NULL, layout_config_parse
+ * returns -2 (its own OOM), and cfg_store_put flattens every parse failure to -4.
+ *
+ * WHAT THE USER SAW: the artwork push and the config PUT are adjacent in the web app's save, and
+ * the artwork push ends by requesting a FULL REFRESH. So the save's own PUT landed inside the
+ * render window it had just triggered, and a perfectly valid document came back
+ * "invalid config: needs numeric schemaVersion and a valid layout" — an accusation about the
+ * DOCUMENT for what was a memory state. Reproduced on the bench at 1-2 failures per 12-20 PUTs.
+ *
+ * WAITING IS THE FIX, NOT A LONGER RETRY. Each failed attempt is another cJSON_Parse that has to
+ * walk the document, allocate, and fail — which churns the very heap it is waiting on. Waiting for
+ * free DRAM to recover, and only then parsing, makes the first attempt succeed. The budget is 6 s: a
+ * comfortable margin over the ~2 s measured window, and well inside the web app's request timeout.
+ *
+ * SAFE TO WAIT: nothing has been read from the socket yet on the body path, and on the store path
+ * the body is held in our own buffer, so the document is intact when the wait ends. */
+#define CONFIG_PUT_WAIT_MS      6000
+#define CONFIG_PUT_POLL_MS      50
+/* Free DRAM at or above which a document this size will parse. The render floor is 26,276 B, so a
+ * threshold above it distinguishes "a refresh is in progress" from "the heap is genuinely tight". */
+#define CONFIG_PUT_FREE_DRAM    (32 * 1024)
+
+/* Wait, bounded, for the free DRAM a parse needs. Returns immediately when it is already available,
+ * which is the normal case (idle heap reads ~37 KB). Returns 0 if the window elapsed, so the caller
+ * can still make its attempt and report a genuine failure. */
+static int wait_for_parse_room(void)
+{
+    for (int waited = 0; waited < CONFIG_PUT_WAIT_MS; waited += CONFIG_PUT_POLL_MS) {
+        if (esp_get_free_heap_size() >= CONFIG_PUT_FREE_DRAM) return 1;
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_PUT_POLL_MS));
+    }
+    return esp_get_free_heap_size() >= CONFIG_PUT_FREE_DRAM;
+}
+
 /* malloc a request body buffer, retrying briefly if the first attempt fails.
  *
  * WHY A RETRY AND NOT A SINGLE ATTEMPT: this part has no PSRAM and ONE big DRAM region, which
@@ -914,6 +955,9 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
  * retry succeeds. Returns NULL only after the window has elapsed, which is a genuine OOM. */
 static char *alloc_body_retry(size_t len)
 {
+    /* The same render window that starves the parser also refuses this allocation, so wait for it
+     * to clear before the first attempt rather than spending the retries inside the window. */
+    wait_for_parse_room();
     char *p = malloc(len);
     for (int i = 0; i < 40 && !p; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
@@ -970,21 +1014,35 @@ static esp_err_t h_config_put(httpd_req_t *req)
      * (-2/-3/-4) from a failed write (-5), and on this part those have completely different
      * causes — one is the user's fault, the other is the heap's.
      *
-     * RETRIED BRIEFLY, for the same transient-fragmentation reason as alloc_body_retry(): the
-     * store allocates a cJSON tree and then writes NVS, and either can fail for a few hundred
-     * milliseconds while the heap is split by a refresh the artwork push just triggered. This was
-     * observed as HTTP 400 on a valid document that stored without complaint moments later. A
-     * GENUINELY bad document simply fails every attempt, so retrying costs nothing and cannot
-     * admit something invalid. */
+     * WAIT FOR THE RENDER WINDOW FIRST, THEN RETRY. A refresh — including the full refresh this
+     * very save triggers via the artwork push — pins the free heap at its 26 KB floor for ~2 s,
+     * and a cJSON tree for a document this size needs more than that. Parsing during the window can
+     * only fail, and each attempt churns the heap it is waiting on. wait_for_parse_room() waits for
+     * the window to clear so the first attempt succeeds; the retry below then covers the ordinary
+     * fragmentation this function was written for. THE ORDER IS THE FIX: the old code retried 20 x
+     * 25 ms = 500 ms, which expires well inside a 2 s window, so a VALID document was reported as
+     * invalid. A GENUINELY bad document still fails every attempt, so this cannot admit something
+     * invalid. */
+    wait_for_parse_room();
     int store_rc = cfg_store_put(cfg_store_nvs(), body);
-    for (int i = 0; i < 20 && store_rc != 0; i++) {
+    for (int i = 0; i < 40 && store_rc != 0; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
         store_rc = cfg_store_put(cfg_store_nvs(), body);
     }
     if (store_rc != 0) {
-        ESP_LOGW(TAG, "rejected config (%d bytes, code %d)", n, store_rc);
+        /* SAY WHAT ACTUALLY HAPPENED. cfg_store_put collapses every layout_config_parse failure to
+         * -4, and that includes its -2 for cJSON OOM — so the old message accused the DOCUMENT
+         * ("needs numeric schemaVersion and a valid layout") for a memory failure, sending the user
+         * to check JSON that was fine. When DRAM is still short after the wait, the honest answer is
+         * a 503 the client can retry, not a 400 that reads as "your config is broken". */
+        const uint32_t now_free = esp_get_free_heap_size();
+        ESP_LOGW(TAG, "rejected config (%d bytes, code %d, free %u)", n, store_rc, (unsigned)now_free);
         api_note_error("api: config rejected");
         free(body);
+        if (now_free < CONFIG_PUT_FREE_DRAM) {
+            return api_send_err(req, "503 Service Unavailable",
+                            "the display is busy refreshing; try saving again in a moment");
+        }
         return api_send_err(req, "400 Bad Request",
                         "invalid config: needs numeric schemaVersion and a valid layout");
     }
@@ -1775,6 +1833,12 @@ esp_err_t api_start(void)
     cfg.max_uri_handlers = 18;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;      /* the OTA handler needs TLS headroom, like net_http */
+    /* RAISED FROM THE DEFAULT 5. PUT /api/config waits for the render window to clear BEFORE it
+     * reads the request body (see wait_for_parse_room — parsing a document during a refresh cannot
+     * succeed, and the wait is what keeps a valid config from being reported as invalid). That wait
+     * is budgeted at up to 6 s, so leaving recv_wait_timeout at 5 s would let the socket time out
+     * while we are deliberately not reading from it, turning the fix into a dropped connection. */
+    cfg.recv_wait_timeout = 15;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
 
     e = httpd_start(&s_server, &cfg);

@@ -20,7 +20,7 @@ import {
 import { describeRule } from '../alerts/rules';
 import { describeBinding } from '../data/binding';
 import { formatPlaceholder } from '../data/format';
-import { FACES_AVAILABLE, sizeFor } from '../canvas/face';
+import { FACES_AVAILABLE, sizeFor, sizeForPx } from '../canvas/face';
 import { PANEL_WIDTH, PANEL_HEIGHT } from '../model/canvas-consts';
 
 export interface PropertyPanelOptions {
@@ -264,19 +264,34 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
       host.append(el('h3', {}, `Heading: ${l.text || '(empty)'}`));
       const idx = currentSel.index;
       const geo = el('div', { className: 'pGrid' });
-      for (const [label, key, min] of [['X', 'x', 0], ['Y', 'y', 0], ['Size', 'font', 16]] as const) {
+      /* X AND Y ONLY AS NUMBERS. The SIZE is a face-ladder select, exactly like a widget's —
+       * the device rasterises glyphs at the ladder's fixed sizes (FR-4a) and a label's size is
+       * resolved to the nearest face, so a free number would be a control mostly doing nothing and
+       * the displayed number would not be the size actually drawn. */
+      for (const [label, key, min] of [['X', 'x', 0], ['Y', 'y', 0]] as const) {
         geo.append(
           el('div', {},
              el('label', {}, label),
              numberInput(l[key] as number, (n) => {
                const clampMin = Math.max(min, Math.round(n));
                const v = key === 'y' ? Math.min(PANEL_HEIGHT - 1, clampMin)
-                       : key === 'x' ? Math.min(PANEL_WIDTH - 1, clampMin)
-                       : Math.min(256, clampMin);
+                       : Math.min(PANEL_WIDTH - 1, clampMin);
                commitLabel({ [key]: v } as Partial<Label>);
              }, 1, () => (currentPage?.labels?.[idx]?.[key] as number) ?? 0)),
         );
       }
+      geo.append(
+        el('div', {},
+           el('label', {}, 'Size'),
+           /* THE SELECTED VALUE IS THE FACE ACTUALLY DRAWN. A label stores a pixel size; the
+            * device resolves it to the nearest ladder face. Showing the raw stored number would
+            * let the field read "48 px" while the panel drew the 54 px face — a control showing a
+            * value that is not what happens, which is the defect class this panel keeps hitting.
+            * FACES[faceIdForPx(n)].px is exactly the size the renderer will use. */
+           select(String(sizeForPx(l.font)),
+             FACES_AVAILABLE.map((f) => ({ value: String(f.px), label: f.label })),
+             (v) => commitLabel({ font: Number(v) }))),
+      );
       host.append(el('fieldset', {}, el('legend', {}, 'Heading position and size'), geo,
         el('p', { className: 'hint' }, 'Drag the heading on the panel to move it.')));
       /* THE TEXT FIELD IS UPDATED IN PLACE, NO re-render — rebuilding the DOM mid-typing drops

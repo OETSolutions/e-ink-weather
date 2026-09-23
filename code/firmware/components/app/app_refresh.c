@@ -1511,6 +1511,11 @@ void app_refresh_tick(power_source_t source, int force_full)
      * Recorded even for a failed fetch: the widget then resolved to its fallback, and "the panel
      * will show --" IS the honest answer rather than a stale value from a previous refresh.
      *
+     * ONE PARSE FOR EVERY PAGE. The tree is several times the document on this part, so parsing it
+     * once per page would be the dominant cost of the pass — and the tree is safe to hold HERE
+     * because the fetch and the TLS handshake are already behind us (the hazard is holding it
+     * ACROSS the handshake, which the scan above avoids by freeing its tree before the fetch).
+     *
      * The drawn page is resolved LAST so its built fields/values are the ones the push below
      * stamps. Reading it through the same path means the preview and the glass cannot disagree —
      * a preview produced by different code is exactly the "preview is a confident lie" failure
@@ -1524,37 +1529,39 @@ void app_refresh_tick(power_source_t source, int force_full)
      * does not compete for the contiguous block the layer needs. */
     api_values_reserve(page_total);
 
-    {
-        cJSON *root = cfg_ok ? cJSON_Parse(cfg_json) : NULL;
-        for (int p = 0; p < page_total; p++) {
-            if (p == page_index) continue;          /* the drawn page is handled below */
-            if (!root) break;
-            memset(&page, 0, sizeof(page));
-            page.n = layout_widgets_from_root(root, p, page.widgets, LAYOUT_MAX_FIELDS);
-            if (page.n < 0) page.n = 0;
-            build_fields(&page, &src, ha_ids, n_ha, now_unix);
-            api_record_values(page.ids, page.values, page.has_value, page.n_fields,
-                              p, page_total);
-        }
-        if (root) cJSON_Delete(root);
-    }
-
-    /* Now the page that is actually drawn, into `page` for the render below. */
-    memset(&page, 0, sizeof(page));
     if (cfg_ok) {
         cJSON *root = cJSON_Parse(cfg_json);
         if (root) {
+            /* Every page EXCEPT the drawn one is recorded first; the drawn page is resolved last so
+             * its fields/values are what `page` holds for the push below. Resolving it in the same
+             * loop would let a later page overwrite it, and the panel would then stamp another
+             * page's readings into this page's boxes. */
+            for (int p = 0; p < page_total; p++) {
+                if (p == page_index) continue;
+                memset(&page, 0, sizeof(page));
+                page.n = layout_widgets_from_root(root, p, page.widgets, LAYOUT_MAX_FIELDS);
+                if (page.n < 0) page.n = 0;
+                build_fields(&page, &src, ha_ids, n_ha, now_unix);
+                api_record_values(page.ids, page.values, page.has_value, page.n_fields, p, page_total);
+            }
+
+            memset(&page, 0, sizeof(page));
             page.n = layout_widgets_from_root(root, page_index, page.widgets, LAYOUT_MAX_FIELDS);
+            if (page.n < 0) page.n = 0;
+            build_fields(&page, &src, ha_ids, n_ha, now_unix);
+            api_record_values(page.ids, page.values, page.has_value, page.n_fields,
+                              page_index, page_total);
             cJSON_Delete(root);
         }
+    } else {
+        /* No config: still stamp the fallbacks, so a page with no document resolves rather than
+         * keeping whatever a previous refresh left in `page`. */
+        memset(&page, 0, sizeof(page));
+        build_fields(&page, &src, ha_ids, n_ha, now_unix);
     }
-    if (page.n < 0) page.n = 0;
-    build_fields(&page, &src, ha_ids, n_ha, now_unix);
-    api_record_values(page.ids, page.values, page.has_value, page.n_fields,
-                      page_index, page_total);
 
-    /* The config string has been read twice more above; give it back now so the render window
-     * opens against the same heap it would have without the per-page pass. */
+    /* The config string has served every reader above; give it back now so the render window opens
+     * against the same heap it would have without the per-page pass. */
     free(cfg_json);
     cfg_json = NULL;
 

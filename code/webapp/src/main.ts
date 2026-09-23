@@ -130,13 +130,31 @@ type SaveResult =
   | { ok: true; restarting: boolean; warning?: string }
   | { ok: false; error: string };
 
+/** How many times a save re-sends the document when the device reports it is mid-refresh.
+ *
+ * The device refuses a config PUT with 503 while a refresh has its free DRAM pinned at the render
+ * floor, because a document that size cannot be parsed until the heap recovers — and the artwork
+ * push immediately before a save REQUESTS that refresh, so the save's own PUT is what lands in the
+ * window. The device already waits out most of it; this retry covers the remainder so the user's
+ * save still succeeds rather than surfacing a busy message for a self-inflicted, transient state. */
+const SAVE_RETRIES = 3;
+const SAVE_RETRY_MS = 1200;
+
+async function putConfigOnce(doc: Config): Promise<Response> {
+  return fetch(`${API}/api/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(doc),
+  });
+}
+
 async function saveConfig(doc: Config): Promise<SaveResult> {
   try {
-    const r = await fetch(`${API}/api/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(doc),
-    });
+    let r = await putConfigOnce(doc);
+    for (let i = 0; i < SAVE_RETRIES && r.status === 503; i++) {
+      await new Promise((res) => setTimeout(res, SAVE_RETRY_MS));
+      r = await putConfigOnce(doc);
+    }
     if (!r.ok) {
       const text = await r.text().catch(() => '');
       return { ok: false, error: text || `HTTP ${r.status}` };
@@ -432,7 +450,14 @@ async function mount(root: HTMLElement): Promise<void> {
    * rest silently, so the button refuses past 8 with an explanation rather than adding a page the
    * display would never rotate to. */
 
-  /** A fresh page for "Add page": empty, so the next switch seeds it from the starter layout. */
+  /** A fresh page for "Add page".
+   *
+   * WIDGETS, RULES AND LABELS ARE ALL OMITTED, so switchPage() seeds all three from the same
+   * starter page. An explicit `widgets: [] / labels: []` is the WRONG shape here: `[]` means "the
+   * user chose none" (the rule ensurePageLabels/ensurePageRules respect so a deletion is not
+   * undone), so an empty array would seed the boxes while leaving the headings out — a page of
+   * unlabelled readings, which is worse than the template it was meant to start from. Omitting them
+   * says "never authored", which is exactly what a brand-new page is. */
   function newPage(existing: Page[]): Page {
     const n = existing.length + 1;
     return {
@@ -440,10 +465,7 @@ async function mount(root: HTMLElement): Promise<void> {
       name: `Page ${n}`,
       refreshSeconds: 900,
       weight: 1,
-      widgets: [],
-      rules: [],
-      labels: [],
-    };
+    } as Page;
   }
 
   function addPage(): void {
