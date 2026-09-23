@@ -48,30 +48,40 @@ async function putConfig(doc) {
   return text;
 }
 
-/** Photograph the panel through the bench camera and return a dark-pixel count in a panel box. */
+/** Photograph the panel through the bench camera and return a dark-pixel count in a panel box.
+ *
+ * THE MEDIAN OF SEVERAL FRAMES, not one. An e-ink panel CYCLES through black and white during its
+ * waveform, so a single capture can land mid-refresh and report a wildly inflated dark count (the
+ * whole panel momentarily dark) — which is exactly how a settled 64 px frame read 176,344 against
+ * its true ~48,000. The median of a handful of frames rejects those transient flash frames, and a
+ * real image, being stable, has them all agree. */
 function glassInk(box) {
-  if (!cam) return null;
-  const png = '/tmp/upscale-glass.png';
-  execFileSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error',
-    '-f', 'avfoundation', '-framerate', '15', '-pixel_format', 'uyvy422',
-    '-video_size', '1280x960', '-i', '0', '-frames:v', '1', png], { stdio: 'ignore' });
-  /* Count dark pixels with a tiny Pillow call — no other image decoder is guaranteed present.
-   * The box is in PANEL coordinates and mapped onto the frame, which the bench rig frames to the
-   * panel (see the bench-camera notes). Only the RATIO between frames matters here, and every
-   * frame is measured the same way, so an imperfect camera mapping cannot manufacture a pass. */
+  if (!cam) return Promise.resolve(null);
   const [x0, y0, x1, y1] = box;
-  const out = execFileSync('python3', ['-c', `
+  const counts = [];
+  return (async () => {
+    for (let i = 0; i < 5; i++) {
+      const png = `/tmp/upscale-glass-${i}.png`;
+      execFileSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'avfoundation', '-framerate', '15', '-pixel_format', 'uyvy422',
+        '-video_size', '1280x960', '-i', '0', '-frames:v', '1', png], { stdio: 'ignore' });
+      const out = execFileSync('python3', ['-c', `
 from PIL import Image
 im = Image.open(${JSON.stringify(png)}).convert('L')
 w, h = im.size
 x0, y0, x1, y1 = ${JSON.stringify([x0, y0, x1, y1])}
 x0 = int(x0 * w / 920); x1 = int(x1 * w / 920)
 y0 = int(y0 * h / 680); y1 = int(y1 * h / 680)
-px = im.crop((max(0,x0), max(0,y0), min(w,x1), min(h,y1))).getdata()
-n = sum(1 for p in px if p < 110)
-print(n)
+px = list(im.crop((max(0,x0), max(0,y0), min(w,x1), min(h,y1))).getdata())
+print(sum(1 for p in px if p < 110))
 `], { encoding: 'utf8' });
-  return Number(out.trim());
+      counts.push(Number(out.trim()));
+      /* Small gap so the five captures straddle any flash rather than sampling one instant. */
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    counts.sort((a, b) => a - b);
+    return counts[Math.floor(counts.length / 2)];   /* median */
+  })();
 }
 
 const original = await getConfig();
@@ -107,12 +117,12 @@ let ok = true;
 try {
   /* Baseline: the ORIGINAL size, in the same box, so only the SIZE differs between frames. */
   await applySize(64);
-  const inkSmall = glassInk(CROP);
+  const inkSmall = await glassInk(CROP);
   if (inkSmall !== null) console.log(`64 px box ink: ${inkSmall}`);
 
   for (const px of [256, 512]) {
     await applySize(px);
-    const ink = glassInk(CROP);
+    const ink = await glassInk(CROP);
     console.log(`${px} px box ink: ${ink}`);
 
     /* The device must accept the size (a PUT that failed would have thrown) and draw ink. */
