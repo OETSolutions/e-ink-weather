@@ -104,6 +104,17 @@ void api_record_values(const char (*ids)[24], const char (*texts)[40],
  * (the endpoint answers for whatever pages it holds). */
 void api_values_reserve(int page_count);
 
+/* Give the per-page value store's memory back.
+ *
+ * WHY A SAVE NEEDS THIS: the store is a preview cache the editor reads, and it costs ~1.6 KB per
+ * page resident for the life of the process. A config PUT has to build a cJSON tree costing several
+ * times the document's size out of the same heap, and at idle this part has only ~41 KB free — so a
+ * document around 8 KB sat exactly on the boundary and was refused while a 7 KB one stored. Dropping
+ * the cache for the duration of the parse buys back the room for a page or two of headroom. It is
+ * rebuilt by the next refresh tick (api_values_reserve), leaving only the preview briefly stale,
+ * which cannot affect the glass. */
+void api_values_forget(void);
+
 /* The partial budget in force, from the stored config. 0 means every refresh is full. */
 int api_partial_limit(void);
 

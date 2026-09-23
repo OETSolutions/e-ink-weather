@@ -162,6 +162,15 @@ void api_values_reserve(int page_count)
     unlock();
 }
 
+void api_values_forget(void)
+{
+    lock();
+    free(s_values);
+    s_values = NULL;
+    s_values_pages = 0;
+    unlock();
+}
+
 void api_record_values(const char (*ids)[24], const char (*texts)[40],
                        const int *has_value, int count, int page, int page_count)
 {
@@ -924,20 +933,61 @@ static int power_mode_differs(const char *new_json, power_mode_t *fresh_out)
  * the body is held in our own buffer, so the document is intact when the wait ends. */
 #define CONFIG_PUT_WAIT_MS      6000
 #define CONFIG_PUT_POLL_MS      50
-/* Free DRAM at or above which a document this size will parse. The render floor is 26,276 B, so a
- * threshold above it distinguishes "a refresh is in progress" from "the heap is genuinely tight". */
-#define CONFIG_PUT_FREE_DRAM    (32 * 1024)
+/* HOW MUCH FREE DRAM A DOCUMENT'S PARSE ACTUALLY NEEDS, AND A BOUNDED WAIT FOR IT.
+ *
+ * MEASURED, NOT GUESSED — by pushing a size ladder of otherwise-identical documents at an idle
+ * device and watching where it flips. At a pre-PUT free heap of ~41.5 KB the body buffer takes the
+ * document first, leaving ~34.5 KB, and then:
+ *
+ *     7,012 bytes STORED      (tree fits in ~34.5 KB)
+ *     8,012 bytes REFUSED     (serial: "rejected config (8012 bytes, code -4, free 33208)")
+ *
+ * Fitting tree = a + k*doc to the two observations gives a SMALL BASE and k ≈ 4, i.e. the tree costs
+ * ROUGHLY FOUR TIMES THE DOCUMENT — consistent with a node per member (1184 nodes for an 8.9 KB
+ * document) plus a copy of every string. The model below uses a = 2048, k = 4.
+ *
+ * WHY A FIXED THRESHOLD CANNOT WORK: the body is allocated first and holds the document, so what is
+ * left for the tree depends on the document's own size. An earlier "free >= 32 KB" gate was wrong in
+ * both directions — it let a small document through and then blamed it for the resulting OOM, and it
+ * could refuse one document while a LARGER one stored a moment earlier, which is exactly the
+ * size-independent-looking confusion this is meant to remove.
+ *
+ * THE MODEL ONLY DECIDES HOW LONG TO WAIT, NEVER WHETHER TO TRY. Returning 0 skips the rest of the
+ * wait but still makes the attempt, so a document that fits for a reason the model does not capture is
+ * never refused on the model's say-so — a wrong estimate costs latency, not correctness. */
+#define CONFIG_TREE_BASE        2048
+#define CONFIG_TREE_FACTOR      4
 
-/* Wait, bounded, for the free DRAM a parse needs. Returns immediately when it is already available,
- * which is the normal case (idle heap reads ~37 KB). Returns 0 if the window elapsed, so the caller
- * can still make its attempt and report a genuine failure. */
-static int wait_for_parse_room(void)
+/* How long to wait for the render window to clear. A refresh pins free DRAM near its 26 KB floor for
+ * ~2 s (measured), so 6 s is a comfortable margin — and well inside the web app's request timeout. */
+#define CONFIG_PUT_WAIT_MS      6000
+#define CONFIG_PUT_POLL_MS      50
+
+/* Wait, bounded, for the free DRAM a parse needs — for a document of `doc_len` whose body buffer
+ * will still be held when the parse runs. `already_allocated` is nonzero when that buffer is ALREADY
+ * on the heap, so its size must not be required a second time.
+ *
+ * Returns 1 as soon as the heap is big enough, which is the NORMAL case: at idle this part has ~41 KB
+ * free and the shipped 6.9 KB document needs ~31 KB, so the wait returns without sleeping at all. It
+ * only actually waits when a render is holding the region, which is the case it exists for.
+ *
+ * NO EARLY BAIL. It is tempting to give up once the heap stops improving, but during a render the
+ * free heap sits LOW AND STABLE for the whole ~2 s window — that is precisely the state the wait must
+ * sit through, so any "no progress" rule would fire exactly when waiting matters most. The bounded
+ * budget is the correct limit; the worst case is a document too large for this part, which costs one
+ * 6 s wait before the same refusal it would always have got.
+ *
+ * Returning 0 is NOT itself a failure: the caller still makes its attempt, so a document that fits
+ * for a reason this model does not capture is never refused on the model's say-so. */
+static int wait_for_parse_room(size_t doc_len, int already_allocated)
 {
-    for (int waited = 0; waited < CONFIG_PUT_WAIT_MS; waited += CONFIG_PUT_POLL_MS) {
-        if (esp_get_free_heap_size() >= CONFIG_PUT_FREE_DRAM) return 1;
+    const size_t tree = CONFIG_TREE_BASE + doc_len * CONFIG_TREE_FACTOR;
+    const size_t need = already_allocated ? tree : tree + doc_len;
+    for (int waited = 0; ; waited += CONFIG_PUT_POLL_MS) {
+        if (esp_get_free_heap_size() >= need) return 1;
+        if (waited >= CONFIG_PUT_WAIT_MS) return 0;
         vTaskDelay(pdMS_TO_TICKS(CONFIG_PUT_POLL_MS));
     }
-    return esp_get_free_heap_size() >= CONFIG_PUT_FREE_DRAM;
 }
 
 /* malloc a request body buffer, retrying briefly if the first attempt fails.
@@ -956,8 +1006,9 @@ static int wait_for_parse_room(void)
 static char *alloc_body_retry(size_t len)
 {
     /* The same render window that starves the parser also refuses this allocation, so wait for it
-     * to clear before the first attempt rather than spending the retries inside the window. */
-    wait_for_parse_room();
+     * to clear before the first attempt rather than spending the retries inside the window. The body
+     * is not allocated yet, so the requirement includes its own size. */
+    wait_for_parse_room(len, 0);
     char *p = malloc(len);
     for (int i = 0; i < 40 && !p; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
@@ -1014,32 +1065,60 @@ static esp_err_t h_config_put(httpd_req_t *req)
      * (-2/-3/-4) from a failed write (-5), and on this part those have completely different
      * causes — one is the user's fault, the other is the heap's.
      *
-     * WAIT FOR THE RENDER WINDOW FIRST, THEN RETRY. A refresh — including the full refresh this
-     * very save triggers via the artwork push — pins the free heap at its 26 KB floor for ~2 s,
-     * and a cJSON tree for a document this size needs more than that. Parsing during the window can
-     * only fail, and each attempt churns the heap it is waiting on. wait_for_parse_room() waits for
-     * the window to clear so the first attempt succeeds; the retry below then covers the ordinary
-     * fragmentation this function was written for. THE ORDER IS THE FIX: the old code retried 20 x
-     * 25 ms = 500 ms, which expires well inside a 2 s window, so a VALID document was reported as
-     * invalid. A GENUINELY bad document still fails every attempt, so this cannot admit something
-     * invalid. */
-    wait_for_parse_room();
+     * FREE THE EDITOR'S PREVIEW CACHE FIRST, THEN WAIT FOR THE ROOM THE PARSE NEEDS.
+     *
+     * The per-page value store is a preview cache the editor reads; it costs ~1.6 KB per page
+     * resident for the whole process, and the cJSON tree this store is about to build costs several
+     * times the document. At idle this part has only ~41 KB free, so the cache is the difference
+     * between a document fitting and not — measured on the bench: 7,012 bytes stored and 8,012 was
+     * refused, both against the same ~41.5 KB idle heap. Dropping the cache buys back its whole size
+     * for the parse; the next refresh tick rebuilds it, so the only cost is a briefly stale preview,
+     * which cannot affect the glass.
+     *
+     * THE WAIT IS SIZE-AWARE. A fixed threshold cannot work here: the body is already allocated and
+     * holds the document, so what is left for the tree depends on the document's own size. See
+     * wait_for_parse_room for the measured ~5x factor. Parsing during the render window (free heap
+     * pinned near its 26 KB floor for ~2 s) can only fail, and each attempt churns the heap it is
+     * waiting on, so waiting for the room makes the first attempt succeed. THE ORDER IS THE FIX: the
+     * old code retried 20 x 25 ms = 500 ms, which expires well inside a 2 s window, so a VALID
+     * document was reported as invalid. A GENUINELY bad document still fails every attempt, so none
+     * of this can admit something invalid. */
+    api_values_forget();
+    wait_for_parse_room((size_t)n, 1);
     int store_rc = cfg_store_put(cfg_store_nvs(), body);
     for (int i = 0; i < 40 && store_rc != 0; i++) {
         vTaskDelay(pdMS_TO_TICKS(25));
         store_rc = cfg_store_put(cfg_store_nvs(), body);
     }
     if (store_rc != 0) {
-        /* SAY WHAT ACTUALLY HAPPENED. cfg_store_put collapses every layout_config_parse failure to
-         * -4, and that includes its -2 for cJSON OOM — so the old message accused the DOCUMENT
-         * ("needs numeric schemaVersion and a valid layout") for a memory failure, sending the user
-         * to check JSON that was fine. When DRAM is still short after the wait, the honest answer is
-         * a 503 the client can retry, not a 400 that reads as "your config is broken". */
-        const uint32_t now_free = esp_get_free_heap_size();
-        ESP_LOGW(TAG, "rejected config (%d bytes, code %d, free %u)", n, store_rc, (unsigned)now_free);
+        /* SAY WHAT ACTUALLY HAPPENED. The code the store returns names the real cause, and the old
+         * handler ignored it and always answered 400 "invalid config: needs numeric schemaVersion and
+         * a valid layout" — an accusation about the DOCUMENT that was wrong for TWO of the three
+         * failure codes:
+         *
+         *   -4  the document did not parse. THAT includes layout_config_parse's own -2 for cJSON
+         *       OOM, which cfg_store_put flattens into it, so the check is whether the heap ever
+         *       reached what this document needs — a document whose tree could not be allocated is
+         *       answered with a retryable 503.
+         *   -5  the NVS WRITE failed. The document was valid and parsed; the flash refused it. That
+         *       is also transient (a full or briefly busy NVS), so it is a 503 as well.
+         *   -2/-3  no numeric schemaVersion, or a migration that failed — genuinely the document,
+         *       and the only case that should read as one.
+         *
+         * THE HEAP TEST IS THE DOCUMENT'S OWN REQUIREMENT, NOT A FIXED NUMBER. "free < 32 KB" was
+         * wrong in both directions: a small document can fail while the heap reads comfortably above
+         * it, and the answer then blamed the document. */
+        const size_t now_free = esp_get_free_heap_size();
+        const size_t needed = CONFIG_TREE_BASE + (size_t)n * CONFIG_TREE_FACTOR;
+        ESP_LOGW(TAG, "rejected config (%d bytes, code %d, free %u, need %u)",
+                 n, store_rc, (unsigned)now_free, (unsigned)needed);
         api_note_error("api: config rejected");
         free(body);
-        if (now_free < CONFIG_PUT_FREE_DRAM) {
+        if (store_rc == -5) {
+            return api_send_err(req, "503 Service Unavailable",
+                            "the display could not save just now; try saving again in a moment");
+        }
+        if (store_rc == -4 && now_free < needed) {
             return api_send_err(req, "503 Service Unavailable",
                             "the display is busy refreshing; try saving again in a moment");
         }

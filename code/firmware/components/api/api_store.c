@@ -65,6 +65,31 @@ static int nvs_write(void *ctx, const char *key, const void *data, size_t len)
      * two-slot dance the bitmap does. */
     esp_err_t e = nvs_set_blob(h, key, data, len);
     if (e == ESP_OK) e = nvs_commit(h);
+
+    /* RECLAIM AND RETRY WHEN THE PARTITION IS FULL.
+     *
+     * A blob of this size spans several NVS pages, and REWRITING the same key appends fresh entries
+     * rather than overwriting in place — the old copy is only reclaimed later, by garbage collection
+     * that itself needs a free page to compact into. The config partition is 24 KB (6 pages) and a
+     * config is up to 16 KB, so after enough saves the old copies leave no page for GC to work with
+     * and every subsequent write fails with ESP_ERR_NVS_NOT_ENOUGH_SPACE. OBSERVED ON HARDWARE: after
+     * a long run of saves (mixed document sizes), every PUT began failing with
+     * `api_store: nvs write failed: ESP_ERR_NVS_NOT_ENOUGH_SPACE` and continued to fail until the
+     * device was rebooted — i.e. saving silently stopped working for good.
+     *
+     * ERASING THE KEY FIRST is what breaks that deadlock: it frees the old entries immediately, so
+     * the retry has room regardless of GC. This is done ONLY on the failure path, deliberately —
+     * erase-then-write gives up the atomicity above (a power cut in the window loses the config and
+     * the device falls back to its built-in default), so the normal path stays set_blob/commit and
+     * only the already-broken state takes that risk. */
+    if (e == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        ESP_LOGW(TAG, "nvs full; reclaiming the old config and retrying");
+        if (nvs_erase_key(h, key) == ESP_OK) {
+            e = nvs_set_blob(h, key, data, len);
+            if (e == ESP_OK) e = nvs_commit(h);
+        }
+    }
+
     nvs_close(h);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "nvs write failed: %s", esp_err_to_name(e));
