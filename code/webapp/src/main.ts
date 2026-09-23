@@ -802,25 +802,30 @@ async function mount(root: HTMLElement): Promise<void> {
    * asked again — so the user saw placeholders for a display that was in fact showing real
    * readings, and concluded the data was broken.
    *
-   * IT STOPS ONCE VALUES ARRIVE, so it does not become a background load on a small embedded
-   * server — and it is RESTARTED after a save, because a widget the user just added has no value
-   * until the device has resolved it, and without the restart its box would keep the placeholder
-   * for the life of the tab.
+   * IT SETTLES TO A SLOW HEARTBEAT rather than stopping. Stopping left the "the display is on this
+   * page" readout asserting a fact it had learned once: the device rotates on its own, so minutes
+   * after the last fetch that line would be describing where the panel WAS. The heartbeat keeps it
+   * honest at a cost the embedded server can afford (one small GET every 15 s), and drops back to
+   * the fast cadence whenever a value is still missing — which is the case right after Save, when
+   * a widget the user just added has no resolved value yet.
    *
    * THE PAGE IS CHECKED BEFORE APPLYING. The device serves the page it is currently showing and
    * rotates on its own; the editor edits one page. Applying whatever came back would stamp the
    * other page's numbers into this page's boxes the moment the scheduler moved. */
-  /* The page being edited, as an index. The device serves the page it is currently showing and
-   * rotates on its own, so the poll compares its answer against THIS index and only applies a
-   * match — applying whatever came back would stamp the other page's numbers into these boxes. */
   const editedPageIndex = (): number => pageIndex;
   let valuesTimer = 0;
+  let valuesSlow = false;   /* true once every widget has resolved and the heartbeat is in force */
+  const FAST_MS = 2000;
+  const HEARTBEAT_MS = 15000;
   function pollValues(): void {
     if (valuesTimer) window.clearInterval(valuesTimer);
     let tries = 0;
+    valuesSlow = false;
     const tick = (): void => {
       tries++;
-      if (tries > 30) { window.clearInterval(valuesTimer); valuesTimer = 0; return; }
+      /* The hard stop is a backstop for a device that never answers: without it a tab left open
+       * would poll a dead address forever. It is generous because the heartbeat is legitimate. */
+      if (tries > 600) { window.clearInterval(valuesTimer); valuesTimer = 0; return; }
       void getValuesInfo({ baseUrl: API }).then((info) => {
         if (!info) return;
         /* Record the device's page on EVERY answer, even a non-matching one, so the selector's
@@ -831,17 +836,20 @@ async function mount(root: HTMLElement): Promise<void> {
         liveValues = info.values;
         editorState.values = previewValues(editorState.page, alertProbe, liveValues);
         editor.redraw();
-        /* Enough: the device has resolved this page, and the readings only change when IT
-         * refreshes. Keep the timer running only while something is still missing — a widget the
-         * user just added will be absent from the response until the device has seen it. */
+        /* Every widget resolved: slow down to the heartbeat ONCE. If one is still missing — a
+         * widget the user just added, which the device has not seen yet — stay fast. */
         const allPresent = editorState.page.widgets
           .filter((w) => w.role === 'dynamic')
           .every((w) => liveValues[w.id] !== undefined);
-        if (allPresent) { window.clearInterval(valuesTimer); valuesTimer = 0; }
+        if (allPresent && !valuesSlow) {
+          valuesSlow = true;
+          window.clearInterval(valuesTimer);
+          valuesTimer = window.setInterval(tick, HEARTBEAT_MS);
+        }
       });
     };
     tick();
-    valuesTimer = window.setInterval(tick, 2000);
+    valuesTimer = window.setInterval(tick, FAST_MS);
   }
   pollValues();
   window.addEventListener('beforeunload', () => window.clearInterval(valuesTimer));
