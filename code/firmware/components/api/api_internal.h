@@ -44,3 +44,12 @@ int api_auth_enabled(void);
 
 /* The stored token, or "" when unset. For the settings endpoint to show the owner. */
 const char *api_auth_token(void);
+
+/* Release the render layer's DRAM for the duration of a fetch this component makes (the OTA
+ * endpoints are the only callers), and give it back. No-ops when nothing has been registered.
+ *
+ * ALWAYS PAIR THEM. See api_set_fetch_pause() in api.h for why the layer has to be released at
+ * all — without it every TLS fetch from an HTTP handler fails with ALLOC_FAILED because the
+ * render task holds the one contiguous region the handshake needs. */
+void api_fetch_pause(void);
+void api_fetch_resume(void);

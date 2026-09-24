@@ -256,6 +256,31 @@ void api_set_refresh_task(void *task)
     unlock();
 }
 
+/* The render layer's pause/resume, registered from main.c. See api.h for why this is a hook
+ * rather than a direct call into the app component.
+ *
+ * NO LOCK HERE: api_set_fetch_pause() runs once, from the boot path, before api_start() begins
+ * serving, and the pointers are never written again — so a read cannot tear against a write.
+ * Locking would only add a second lock to reason about against the render layer's own. */
+static void (*s_fetch_pause)(void);
+static void (*s_fetch_resume)(void);
+
+void api_set_fetch_pause(void (*pause)(void), void (*resume)(void))
+{
+    s_fetch_pause = pause;
+    s_fetch_resume = resume;
+}
+
+void api_fetch_pause(void)
+{
+    if (s_fetch_pause) s_fetch_pause();
+}
+
+void api_fetch_resume(void)
+{
+    if (s_fetch_resume) s_fetch_resume();
+}
+
 void api_request_full_refresh(void)
 {
     lock();

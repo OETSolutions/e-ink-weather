@@ -16,6 +16,12 @@
 
 static const char *TAG = "main";
 
+/* Thin adapters: app_fetch_pause() returns whether a layer was held, which the API does not
+ * need, and casting a function pointer across return types is undefined behaviour even where it
+ * happens to work on this ABI. */
+static void fetch_pause(void) { (void)app_fetch_pause(); }
+static void fetch_resume(void) { app_fetch_resume(); }
+
 /* app_main runs on the IDF main task, whose stack is CONFIG_ESP_MAIN_TASK_STACK_SIZE =
  * 3584 bytes on this board. The boot path does a TLS handshake (net_http.c), an OTA, an
  * NVS write and a 4 KB body parse — the Arduino loopTask overflow at ~8 KB is the exact
@@ -40,6 +46,13 @@ static void app_task(void *arg)
     /* Home Assistant is optional: an empty .env value compiles to "" and this no-ops. */
     app_seed_ha(NET_VERIFY_HA_URL, NET_VERIFY_HA_TOKEN);
 #endif
+    /* Give the API component a way to release the render layer's DRAM around its own TLS
+     * fetches (the OTA endpoints). It cannot call into `app` itself — `app` REQUIRES `api`, so
+     * that would be a dependency cycle — and without this the OTA handshake fails with
+     * ALLOC_FAILED, because the render task holds the one contiguous region it needs. See
+     * api_set_fetch_pause() and app_fetch_pause(). Registered before api_start(), which is the
+     * only thing that reads it. */
+    api_set_fetch_pause(fetch_pause, fetch_resume);
     app_boot_run();
     /* app_boot_run() returns only on USB power, where the device must stay awake to serve
      * the API. The task parks rather than exiting: a FreeRTOS task that returns from its

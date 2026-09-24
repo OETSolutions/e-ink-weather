@@ -67,6 +67,18 @@ static void http_worker(void *arg)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 10000,
         .keep_alive_enable = false,
+        /* THE TX BUFFER MUST HOLD A REDIRECT TARGET, NOT JUST THIS REQUEST. GitHub's release
+         * download URL 302s to a CDN URL carrying a long signed query string — measured at 921
+         * bytes for a release asset — and esp_http_client re-issues the request with THAT path
+         * and query. At the 512-byte default it fails with `HTTP_CLIENT: Out of buffer` after a
+         * SUCCESSFUL handshake (observed on the bench: "Certificate validated" then "Out of
+         * buffer", so the failure looks like the network but is the buffer).
+         *
+         * 2048 covers the observed 921 with room for a longer path or a chunkier signature; the
+         * cost is 2 KB of DRAM for the life of one request, taken inside the fetch window when
+         * the render layer is already released. */
+        .buffer_size = 2048,
+        .buffer_size_tx = 2048,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {

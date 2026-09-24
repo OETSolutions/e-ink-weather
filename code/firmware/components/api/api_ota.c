@@ -42,10 +42,22 @@ esp_err_t api_ota_install_and_reboot(httpd_req_t *req, const char *url)
         .crt_bundle_attach = esp_crt_bundle_attach,   /* verify the server's chain */
         .timeout_ms = 20000,
         .keep_alive_enable = false,
+        /* A GitHub release asset 302s to a CDN URL with a long signed query string, and
+         * esp_https_ota re-issues the request against THAT url — measured 921 bytes for a release
+         * asset, against a 512-byte default TX buffer, which fails with "HTTP_CLIENT: Out of
+         * buffer" after a successful handshake. See the same note in net_http.c. */
+        .buffer_size = 2048,
+        .buffer_size_tx = 2048,
     };
     esp_https_ota_config_t cfg = { .http_config = &http };
 
+    /* The download is the LONGEST TLS connection this firmware makes, and it needs the same
+     * contiguous room the handshake does — with the render layer held it cannot even start.
+     * Held for the whole download and write, then given back before the response is sent. */
+    api_fetch_pause();
     const esp_err_t e = esp_https_ota(&cfg);
+    api_fetch_resume();
+
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(e));
         api_note_error("ota: update failed");
@@ -190,9 +202,22 @@ static esp_err_t fetch_release_manifest(otarelease_manifest_t *out, const char *
     release_manifest_url(murl, sizeof(murl));
 
     char *manifest = ota_manifest_buf();
+    /* THE LAYER MUST BE OUT OF THE WAY FIRST. This runs on the httpd task, and the render task
+     * holds its 78,200-byte static layer resident between ticks (USB/mains). The TLS handshake
+     * needs the one contiguous DRAM region large enough for that layer, so with it held the
+     * handshake fails outright — measured on the bench: `mbedtls_ssl_setup returned -0x7F00`
+     * (ALLOC_FAILED), every check answering 502 in ~0.12 s. The pair is a no-op when nothing is
+     * registered, which is what the host tests run against. */
+    api_fetch_pause();
+
     /* OTA_MANIFEST_MAX, NOT sizeof(manifest): manifest is a pointer, so sizeof is the pointer's
      * size (8) and the fetch would be capped at 8 bytes and always overflow. */
     const esp_err_t e = net_http_get_json(murl, NULL, manifest, OTA_MANIFEST_MAX);
+
+    /* Resume BEFORE the early returns below: the layer lock is still held on the way out of a
+     * paused fetch, so a return that skipped this would wedge every later render. */
+    api_fetch_resume();
+
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "manifest fetch failed: %s", esp_err_to_name(e));
         *err_msg = "could not fetch release manifest";
@@ -318,9 +343,19 @@ int api_ota_auto_update_if_enabled(int enabled)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 20000,
         .keep_alive_enable = false,
+        /* Same redirect-buffer requirement as the handler path above. */
+        .buffer_size = 2048,
+        .buffer_size_tx = 2048,
     };
     esp_https_ota_config_t oc = { .http_config = &http };
+    /* Same reason as the handler path: the layer must be out of the way for the handshake and
+     * the download. On this boot path the layer is normally already released (see the boot
+     * ordering), so this is typically a no-op — it is here so the pair is not silently missing
+     * if that ordering ever changes. */
+    api_fetch_pause();
     const esp_err_t e = esp_https_ota(&oc);
+    api_fetch_resume();
+
     if (e != ESP_OK) {
         /* DO NOT reboot on failure: the last good image is already good, and a failed update must
          * leave the device running rather than in a boot loop. Report and continue this boot. */

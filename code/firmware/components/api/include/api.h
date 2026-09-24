@@ -43,6 +43,21 @@ void api_request_full_refresh(void);
  * is woken with a task notification; a NULL handle just clears the registration. */
 void api_set_refresh_task(void *task);
 
+/* Register the render layer's pause/resume pair, called around any fetch this component makes
+ * on its own behalf.
+ *
+ * WHY A HOOK RATHER THAN A DIRECT CALL: the OTA endpoints open TLS connections, and the
+ * handshake needs the ONE contiguous DRAM region large enough for a framebuffer — which the
+ * render task holds, as its 78,200-byte static layer, between ticks on USB/mains power. Left
+ * alone, every OTA fetch fails with `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED);
+ * measured on the bench 2026-09-24, `GET /api/ota/check` returned 502 in ~0.12 s.
+ *
+ * `api` cannot call into `app` directly — `app` REQUIRES `api`, so the reverse dependency would
+ * be a cycle — so the pair is registered once from main.c, exactly like api_set_refresh_task.
+ * Both are NULL-safe: with no registration the calls are no-ops, which is what the host tests
+ * rely on. */
+void api_set_fetch_pause(void (*pause)(void), void (*resume)(void));
+
 /* Take the pending full-refresh request. Returns 1 if one was pending (and clears it), 0
  * otherwise. Safe to call from a different task than api_request_full_refresh(). */
 int api_take_full_refresh(void);

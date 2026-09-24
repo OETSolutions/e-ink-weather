@@ -190,6 +190,51 @@ static int      s_shown_slot = SLOT_NONE;
  * glass to diff against". */
 static int      s_glass_present;
 
+/**
+ * Static layer ownership: one mutex guarding the 78,200-byte resident layer.
+ *
+ * WHY THIS EXISTS. The OTA path opens a TLS connection from an HTTP handler — the httpd task —
+ * while the render task holds the layer resident between ticks. The handshake needs the ONE
+ * contiguous DRAM region large enough for a framebuffer (see the release reasoning below), so
+ * with the layer held it fails outright:
+ *
+ *     esp-tls-mbedtls: mbedtls_ssl_setup returned -0x7F00   (ALLOC_FAILED)
+ *     api_ota: manifest fetch failed: ESP_ERR_HTTP_CONNECT
+ *
+ * measured on the bench 2026-09-24 — every OTA check returned 502 in ~0.12 s, which is the
+ * tell that no handshake was ever attempted. The refresh path avoids this by releasing the
+ * layer before its own fetches; the OTA handlers cannot, because they run on a DIFFERENT task
+ * and must not free memory the render task is in the middle of reading.
+ *
+ * So ownership is explicit: the whole tick holds this lock, and a fetcher outside the render
+ * path takes it (waiting for any tick in flight), drops the layer, does its TLS work, and gives
+ * it back. One lock, one rule — see app_fetch_pause().
+ */
+static SemaphoreHandle_t s_layer_mutex;
+
+static void layer_lock(void)
+{
+    /* Created on first use rather than in app_main: this file has no init function and the
+     * first caller may be either task. xSemaphoreCreateMutex has no failure mode worth
+     * branching on here beyond allocation, and a failure to allocate a mutex on a heap that
+     * must hold a 78 KB framebuffer means the device has far larger problems. */
+    if (!s_layer_mutex) {
+        static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+        portENTER_CRITICAL(&mux);
+        if (!s_layer_mutex) s_layer_mutex = xSemaphoreCreateMutex();
+        portEXIT_CRITICAL(&mux);
+    }
+    if (s_layer_mutex) xSemaphoreTake(s_layer_mutex, portMAX_DELAY);
+}
+
+static void layer_unlock(void)
+{
+    if (s_layer_mutex) xSemaphoreGive(s_layer_mutex);
+}
+
+/* Every return in the tick must land here so the layer is never left un-released on an error
+ * path — a layer held by a returned tick would block every later fetch pause. */
+
 /* The values that were stamped into the frame now on the glass, so the PREVIOUS frame can be
  * recomposed for a partial. This is the whole reason a partial is possible here: the previous
  * frame is not stored (two frames do not fit), it is REPRODUCED from the resident static layer
@@ -673,6 +718,10 @@ static int thermal_blocks_render(void)
 
 esp_err_t app_render_last_good(void)
 {
+    /* BOOT PATH ONLY, and therefore deliberately unlocked. This runs before api_start(), which
+     * is the only thing that can reach app_fetch_pause(), so no pause can overlap it and the
+     * lock would only add a call that can never contend. Do NOT call this once the API is
+     * serving — use app_refresh_tick() (which holds the lock) instead. */
     if (ensure_static() != 0) return ESP_ERR_NO_MEM;
 
     /* Page 0: the boot path shows the last-good image before the network, and it cannot know
@@ -1058,30 +1107,79 @@ static int fetch_ha(const fetch_creds_t *c, char (*ids)[48], int n_ids,
     return 0;
 }
 
+/* Return the layer's DRAM to the heap, WITH the lock already held. Memory only — it does NOT
+ * touch the glass-identity flags, because those describe what is ON THE GLASS, which freeing
+ * RAM does not change. See release_glass_locked() for the callers that must also forget the
+ * picture. Defined here rather than beside layer_lock() because it frees s_static_contig, which
+ * is declared with the setup-screen code below. */
+static void free_layer_locked(void)
+{
+    segbuf_free(&s_layer, layer_seg_free);
+    artwork_inflate_release(s_inflate); s_inflate = NULL;
+    free(s_static_contig); s_static_contig = NULL;
+}
+
+/* Forget which picture is on the glass, so the next push must be a FULL refresh.
+ *
+ * WHY A PARTIAL WOULD BE WRONG AFTERWARDS: a partial diffs the new frame against the previous
+ * one, which is REPRODUCED from the layer plus the recorded values. Once either is gone, the
+ * firmware cannot rebuild the frame that is actually up there, so it would diff against a frame
+ * that was never displayed and leave ghosted fragments. Clearing BOTH the identity and the
+ * presence flag is what makes refresh_decide() see "nothing on the glass" and choose a full. */
+static void release_glass_locked(void)
+{
+    free_layer_locked();
+    s_shown_slot = SLOT_NONE;
+    s_glass_present = 0;
+    s_have_prev_values = 0;
+}
+
 esp_err_t app_fbs_reserve(void)
 {
+    esp_err_t r;
+    layer_lock();
     /* ONE buffer, and it holds the static layer. An earlier version reserved TWO 78,200-byte
      * framebuffers here, which starved the radio: measured, the device had 2.9 KiB left after the
      * two framebuffers, the linker's static DRAM and esp_wifi_init(), so the driver aborted with
      * ESP_ERR_NO_MEM and the device could not be provisioned. The band buffers the push needs are
      * acquired inside the render window and are two orders of magnitude smaller (see push_banded). */
-    return ensure_static() == 0 ? ESP_OK : ESP_ERR_NO_MEM;
+    r = ensure_static() == 0 ? ESP_OK : ESP_ERR_NO_MEM;
+    layer_unlock();
+    return r;
 }
 
 void app_fbs_release(void)
 {
-    segbuf_free(&s_layer, layer_seg_free);
-    artwork_inflate_release(s_inflate); s_inflate = NULL;
-    free(s_static_contig); s_static_contig = NULL;
-    /* The picture this firmware could reproduce is gone with the layer, so the next push must be
-     * a FULL refresh: a partial would diff the new frame against a frame it cannot rebuild and
-     * leave ghosted fragments on the glass. Clearing BOTH the identity and the presence flag is
-     * what makes that happen — refresh_decide() then sees nothing on the glass and chooses a full
-     * push. */
-    s_shown_slot = SLOT_NONE;
-    s_glass_present = 0;
-    s_have_prev_values = 0;
+    layer_lock();
+    release_glass_locked();
+    layer_unlock();
     ESP_LOGI(TAG, "static layer released (%u bytes back to the heap)", (unsigned)EPD_FB_BYTES);
+}
+
+int app_fetch_pause(void)
+{
+    /* Take the layer away from the render path for the duration of a fetch on THIS task (the
+     * httpd task, normally). Waiting for the lock means a tick already in flight finishes first,
+     * and the tick's own acquisition of the same lock (below) means no render starts while the
+     * layer is gone.
+     *
+     * MEMORY ONLY — the glass-identity flags are deliberately left alone. The fetch does not
+     * change what is on the panel, and the layer is reproducible from flash, so the next tick
+     * reloads it and can still take FR-11's partial rather than being forced into a full flash
+     * for a check that may well have found nothing newer. */
+    layer_lock();
+    const int had = (s_layer.n > 0) || s_static_contig != NULL;
+    free_layer_locked();
+    if (had) {
+        ESP_LOGI(TAG, "static layer released for an out-of-band fetch (%u bytes)",
+                 (unsigned)EPD_FB_BYTES);
+    }
+    return had;
+}
+
+void app_fetch_resume(void)
+{
+    layer_unlock();
 }
 
 /* Draw the "how to set this up" screen: the AP name, the BLE PoP, and QR codes for the setup
@@ -1163,7 +1261,11 @@ void app_render_setup_screen(void)
  * visually — the image is on the glass, not in RAM.
  * ------------------------------------------------------------------------------------- */
 
-void app_refresh_tick(power_source_t source, int force_full)
+/* The tick body, run with the layer lock held. Split from app_refresh_tick() so the lock is
+ * taken and given back in ONE place: this function has many early returns (a failed layer
+ * acquire, a panel that will not wake, a thermal block, a failed push), and releasing the lock
+ * on each of them by hand is exactly the kind of bookkeeping that rots. */
+static void refresh_tick_locked(power_source_t source, int force_full)
 {
     /* The render window's heap profile, printed at the four points that bracket it. With
      * HEAP_TRACE unset these expand to nothing (see heap_trace.h) — they exist so a bench round
@@ -1191,6 +1293,9 @@ void app_refresh_tick(power_source_t source, int force_full)
      * THE RE-ACQUIRE IS NOW RELIABLE WHERE IT USED TO RACE: the layer is held as SEGMENTS, so it no
      * longer needs the ONE contiguous 78,200-byte block that the live API fragments below size. See
      * ensure_static(). */
+    /* The SAME release app_fetch_pause() uses, so "the layer is not resident" has one definition.
+     * The identity flags are deliberately NOT cleared here (see the note below), which is why this
+     * cannot simply call app_fbs_release(). */
     segbuf_free(&s_layer, layer_seg_free);
     /* The strip decoder is released at tick entry too, so a tick that failed after reserving it
      * cannot carry the ~11 KB into the next tick's fetch. It is re-reserved by ensure_static(). */
@@ -1799,4 +1904,15 @@ void app_refresh_tick(power_source_t source, int force_full)
      * controller powered costs current for no benefit. On battery the device deep-sleeps
      * immediately after this anyway, so this only matters for the USB serve loop. */
     epd_sleep();
+}
+
+void app_refresh_tick(power_source_t source, int force_full)
+{
+    /* THE WHOLE TICK HOLDS THE LAYER LOCK. That is what makes app_fetch_pause() (used by the
+     * OTA path) correct: a pause waits for a tick in flight to finish, and no tick can start
+     * while the layer is paused. Without it the OTA fetch would free memory this task is
+     * mid-way through reading, and the render would compose from freed segments. */
+    layer_lock();
+    refresh_tick_locked(source, force_full);
+    layer_unlock();
 }

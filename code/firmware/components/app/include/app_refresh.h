@@ -47,6 +47,22 @@ esp_err_t app_fbs_reserve(void);
  * frame, and a partial refresh needs it (see the two-framebuffer note in app_refresh.c). */
 void app_fbs_release(void);
 
+/* Hand the static layer's DRAM back for the duration of a fetch that runs on ANOTHER task, and
+ * keep the render task out of it until app_fetch_resume().
+ *
+ * WHY THIS IS NEEDED AT ALL: the layer is 78,200 bytes and the TLS handshake needs the ONE
+ * contiguous DRAM region large enough to hold a framebuffer. On USB/mains the render keeps the
+ * layer resident between ticks, so a fetch issued from an HTTP handler finds no room and fails
+ * with `mbedtls_ssl_setup returned -0x7F00` (ALLOC_FAILED) — measured on the bench: every OTA
+ * check returned 502 in ~0.12 s. The refresh path releases the layer around its OWN fetches; a
+ * fetch outside that path has to ask for the same treatment, which is what these two calls are.
+ *
+ * ALWAYS PAIR THEM. app_fetch_pause() returns holding the layer lock, so a missing
+ * app_fetch_resume() wedges every later render and every later pause. Safe to call when nothing
+ * is held (returns 0). */
+int app_fetch_pause(void);
+void app_fetch_resume(void);
+
 /* Compose the stored static layer with the last known values and push it, without touching
  * the network.
  *
