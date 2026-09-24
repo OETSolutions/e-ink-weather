@@ -1,6 +1,8 @@
 #include "owm.h"
 #include "cJSON.h"
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 /* Distinguish "this response does not contain that field" from "this response is not
  * JSON". Both used to collapse into ERR_PARSE, which meant a caller could not tell a
@@ -209,6 +211,56 @@ unsigned owm_forecast_buf_bytes(int blocks)
 #define OWM_F_CONDITION_ 5
 #define OWM_F_ICON_      6
 #define OWM_F_CITY_      7
+#define OWM_F_TIME_      8
+
+/* Format an absolute Unix time as the LOCATION's local wall clock, e.g. "Sep 3, 2:45 PM".
+ *
+ * `tz_offset` is seconds east of UTC, exactly as OWM reports it. gmtime_r ON A SHIFTED EPOCH,
+ * not localtime_r: the device's own timezone is UTC (nothing sets TZ) while the location being
+ * displayed may be anywhere, so shifting the epoch by OWM's offset and reading it as UTC yields
+ * that location's wall clock without touching the process timezone.
+ *
+ * THE FORMAT IS FIXED, and deliberately: every knob on it would be another way for the web app's
+ * preview and the glass to disagree, and this is a single short stamp rather than a reading the
+ * user formats. It is short enough for the value buffer at any face. */
+static int format_local_time(long epoch, long tz_offset, char *out, size_t cap)
+{
+    const time_t t = (time_t)(epoch + tz_offset);
+    struct tm tmv;
+    if (!gmtime_r(&t, &tmv)) return 0;
+
+    char tmp[48];
+    if (strftime(tmp, sizeof(tmp), "%b %d, %I:%M %p", &tmv) == 0) return 0;
+
+    /* "Sep 03" reads worse than "Sep 3", so drop the padding zero. The month is always three
+     * letters and a space, so the day begins at index 4. */
+    if (tmp[4] == '0' && tmp[5] >= '0' && tmp[5] <= '9') {
+        char fixed[48];
+        memcpy(fixed, tmp, 4);
+        memcpy(fixed + 4, tmp + 5, strlen(tmp + 5) + 1);
+        snprintf(out, cap, "%s", fixed);
+    } else {
+        snprintf(out, cap, "%s", tmp);
+    }
+    return 1;
+}
+
+/* The location's UTC offset in seconds, which OWM reports under a DIFFERENT KEY PER PRODUCT:
+ * One Call 3.0 carries `timezone_offset` at the top level, 2.5/weather carries `timezone` there,
+ * and 2.5/forecast nests it under `city`. All three are tried rather than branching on the
+ * product, because the shape of the DOCUMENT is what is actually known here — and a response
+ * that carries the offset under an unexpected key still gets the right local time. A document
+ * with none of them yields 0 (UTC), which is a real, if unshifted, reading. */
+static long tz_offset_of(cJSON *root)
+{
+    cJSON *z = obj_item(root, "timezone_offset");
+    if (cJSON_IsNumber(z)) return (long)z->valuedouble;
+    z = obj_item(root, "timezone");
+    if (cJSON_IsNumber(z)) return (long)z->valuedouble;
+    z = obj_item(obj_item(root, "city"), "timezone");
+    if (cJSON_IsNumber(z)) return (long)z->valuedouble;
+    return 0;
+}
 
 /* Copy `src` into out.text as a TEXT result. A string too long for the 64-byte field is
  * TRUNCATED rather than rejected: a long place name or condition is still worth showing, and
@@ -273,6 +325,30 @@ datasrc_value_t owm_parse_current_field(const char *json, int field, long now_un
          * show, and inventing one (from the zip, say) would be a different, stale value. */
         cJSON *n = obj_item(root, "name");
         out = text_result(out, cJSON_IsString(n) ? n->valuestring : NULL, obs);
+        cJSON_Delete(root);
+        return out;
+    }
+    if (field == OWM_F_TIME_) {
+        /* The observation time as a LOCAL wall-clock stamp, in the location's own timezone. `obs`
+         * is OWM's "dt" when the response carries it, so this reports when the READING was taken
+         * — which is what a heading like "UPDATED" means — rather than when this device drew.
+         *
+         * A response with no "dt" (and so no real observation time) reports NOT_FOUND rather than
+         * substituting now_unix, which on this board is seconds since BOOT and would print as a
+         * 1970 date. `obs` already falls back to now_unix for the numeric fields, so the check is
+         * whether the document carried a "dt" at all. */
+        if (!cJSON_IsNumber(dt)) {
+            out.status = DATASRC_ERR_NOT_FOUND;
+            cJSON_Delete(root);
+            return out;
+        }
+        char stamp[40];
+        if (!format_local_time((long)dt->valuedouble, tz_offset_of(root), stamp, sizeof(stamp))) {
+            out.status = DATASRC_ERR_NOT_FOUND;
+            cJSON_Delete(root);
+            return out;
+        }
+        out = text_result(out, stamp, obs);
         cJSON_Delete(root);
         return out;
     }

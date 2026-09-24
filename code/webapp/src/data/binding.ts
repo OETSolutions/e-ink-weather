@@ -17,6 +17,7 @@ const OWM_FIELD_NAMES: Record<string, string> = {
   condition: 'conditions',
   icon: 'icon',
   city: 'location',
+  time: 'last updated',
 };
 
 /** Ordinal-ish day label, 1-based for humans: dayIndex 0 reads as "day 1". */

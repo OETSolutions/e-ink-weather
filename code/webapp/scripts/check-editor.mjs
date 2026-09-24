@@ -197,7 +197,35 @@ const ruleY = async () => Number(await page.inputValue('.panelHost input[type=nu
   await page.waitForTimeout(200);
 }
 
-/* --- the preview is drawing real values, not placeholders --- */
+/* --- the "last updated" stamp is reachable, and the panel says where the time comes from ---
+ *
+ * Same defect class as the icon above: a binding the firmware and the device both support but the
+ * Value menu never offers, so the only way to use it is to hand-edit JSON. The hint is asserted
+ * with it because the stamp is the one value whose provenance is NOT obvious — a user who reads a
+ * clock in a box and goes looking for a time-zone setting would never find one, and the sentence
+ * is the only place that says so. */
+{
+  await page.getByRole('button', { name: 'Add box' }).click();
+  await page.waitForTimeout(200);
+  const dataSel = page.locator('fieldset', { hasText: 'Data' }).locator('select').nth(1);
+  await dataSel.selectOption({ label: 'Last updated (date and time)' });
+  await page.waitForTimeout(250);
+  check('the Value menu offers the last-updated stamp', true);
+  check('choosing the stamp explains it is not a clock in the display',
+        /not a clock in the display/.test(await panelHost()));
+  /* A forecast box must NOT offer it: a forecast document carries no observation time, so the box
+   * would draw its fallback forever. A selectable value that cannot work is the defect class this
+   * project already hit with a product toggle that only changed a label. */
+  const srcSel = page.locator('fieldset', { hasText: 'Data' }).locator('select').nth(0);
+  await srcSel.selectOption({ label: 'Forecast' });
+  await page.waitForTimeout(250);
+  const opts = await dataSel.locator('option').allTextContents();
+  check('a forecast box does not offer the last-updated stamp',
+        !opts.some((t) => /Last updated/.test(t)), opts.join(' | '));
+  await page.getByRole('button', { name: 'Delete box' }).click();
+  await page.waitForTimeout(200);
+}
+
 {
   const dark = await page.evaluate(() => {
     const c = document.querySelector('canvas.panel');

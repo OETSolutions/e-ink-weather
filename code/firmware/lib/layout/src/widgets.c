@@ -54,6 +54,7 @@ static owm_field_t owm_field_of(const char *s)
     if (strcmp(s, "condition") == 0) return OWM_F_CONDITION;
     if (strcmp(s, "icon") == 0) return OWM_F_ICON;
     if (strcmp(s, "city") == 0) return OWM_F_CITY;
+    if (strcmp(s, "time") == 0) return OWM_F_TIME;
     return OWM_F_TEMP;
 }
 

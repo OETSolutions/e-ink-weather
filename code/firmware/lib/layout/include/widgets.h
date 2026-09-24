@@ -41,7 +41,19 @@ typedef enum {
     OWM_F_ICON,
     /* The place name OWM resolved the coordinates to (FR-17's "location/zip display"). Text,
      * like CONDITION — a widget bound to it draws words, not a number. */
-    OWM_F_CITY
+    OWM_F_CITY,
+    /* WHEN the current conditions were observed, as OWM reports it ("dt" in the current
+     * response), rendered in the location's own local time.
+     *
+     * WHY THIS COMES FROM OWM AND NOT FROM A CLOCK: this board has no RTC and the firmware never
+     * syncs one — the `now` threaded through the value path is esp_timer_get_time(), i.e. seconds
+     * since boot. A local clock would therefore print a time near 1970. OWM's response already
+     * carries a real Unix timestamp AND the location's UTC offset, so a genuine local date/time
+     * needs no new hardware and no timezone setting: the device reads both from the document it
+     * was already fetching. The value is the OBSERVATION time, which is the honest thing to put
+     * under a heading like "updated" — it advances when OWM refreshes its reading, not merely when
+     * this device last drew a frame. */
+    OWM_F_TIME
 } owm_field_t;
 
 typedef struct {

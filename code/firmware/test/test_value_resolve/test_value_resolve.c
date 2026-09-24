@@ -539,6 +539,71 @@ static void test_the_flag_does_not_change_what_is_drawn(void)
     TEST_ASSERT_TRUE(v1.value == v2.value);
 }
 
+
+/* ---- the "last updated" box on the glass ----
+ *
+ * THIS TEST EXISTS FOR THE DRAWN STRING, not for the parser: test_owm_parse proves the stamp's
+ * TEXT, and this proves the RENDER PATH does not decorate it. A time box is almost always dropped
+ * into a page whose neighbours are temperatures, so it inherits a format with a "°F" suffix the
+ * moment the user copies a box — and the text branch of value_format_widget() is the only thing
+ * standing between "Sep 18, 11:27 PM" and "Sep 18, 11:27 PM°F". The same class of bug shipped
+ * once already as "off°F" on a door sensor.
+ */
+static void test_time_stamp_renders_as_a_bare_string(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TIME;
+    w.format.decimals = 0;
+    strcpy(w.format.prefix, "at ");
+    strcpy(w.format.suffix, "\xc2\xb0""F");
+    strcpy(w.format.fallback, "--");
+
+    value_sources_t src = { .owm_current = CURRENT };   /* dt 1758300000; this fixture carries NO timezone, so the stamp is UTC */
+    char ids[1][48]; int n_ids = 0;
+    char buf[64];
+    datasrc_value_t v;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget(&w, &src, ids, n_ids, 0, &v, buf, sizeof(buf)));
+    /* No "at ", no "°F": the stamp is the reading. */
+    TEST_ASSERT_EQUAL_STRING("Sep 19, 04:40 PM", buf);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_EQUAL_INT(0, v.is_numeric);
+}
+
+/* The editor re-formats a reading locally ONLY when the device says the drawn text is that
+ * number's plain rendering. A stamp must say NO, or the editor would print a formatted number
+ * over the time — so this asserts the flag as well as the string. */
+static void test_time_stamp_is_not_reported_as_a_rendered_number(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TIME;
+    w.format.decimals = 1;
+    strcpy(w.format.suffix, "\xc2\xb0""F");
+    value_sources_t src = { .owm_current = CURRENT };
+    char ids[1][48]; int n_ids = 0;
+    char buf[64];
+    datasrc_value_t v;
+    int rendered = 1;
+    TEST_ASSERT_EQUAL_INT(1, value_format_widget_rendered(&w, &src, ids, n_ids, 0, &v, &rendered,
+                                                          buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(0, rendered);
+}
+
+/* A page of stamps must not ask for a value it cannot draw: with no current document there is no
+ * observation time, so the widget falls back rather than drawing a time invented from uptime. */
+static void test_time_stamp_without_a_current_document_shows_the_fallback(void)
+{
+    layout_widget_t w = mk(BIND_OWM_CURRENT);
+    w.binding.owm_field = OWM_F_TIME;
+    strcpy(w.format.fallback, "--");
+    value_sources_t src = { .owm_current = NULL };
+    char ids[1][48]; int n_ids = 0;
+    char buf[64];
+    datasrc_value_t v;
+    value_format_widget(&w, &src, ids, n_ids, 0, &v, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("--", buf);
+    TEST_ASSERT_TRUE(v.status != DATASRC_OK);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -570,5 +635,8 @@ int main(void)
     RUN_TEST(test_an_alert_word_is_not_flagged_as_a_number);
     RUN_TEST(test_a_fallback_is_not_flagged_as_a_number);
     RUN_TEST(test_the_flag_does_not_change_what_is_drawn);
+    RUN_TEST(test_time_stamp_renders_as_a_bare_string);
+    RUN_TEST(test_time_stamp_is_not_reported_as_a_rendered_number);
+    RUN_TEST(test_time_stamp_without_a_current_document_shows_the_fallback);
     return UNITY_END();
 }

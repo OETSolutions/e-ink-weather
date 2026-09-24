@@ -52,7 +52,10 @@ export interface DataBinding {
   entityId?: string;
   /** For 'owm-daily', the 0-based forecast day and which value. */
   dayIndex?: number;
-  owmField?: 'temp' | 'min' | 'max' | 'wind' | 'humidity' | 'condition' | 'icon' | 'city';
+  /** `time` is the "last updated" stamp: OWM's own observation time for the current reading,
+   *  rendered in the location's local clock. Current-only — a forecast document has no observation
+   *  time, so the field is absent. */
+  owmField?: 'temp' | 'min' | 'max' | 'wind' | 'humidity' | 'condition' | 'icon' | 'city' | 'time';
 }
 
 export interface AlertRule {

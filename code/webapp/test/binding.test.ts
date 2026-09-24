@@ -48,6 +48,13 @@ describe('binding descriptions', () => {
       .toBe('Forecast day 3: high');
   });
 
+  /* The "last updated" stamp is a current-conditions field, and the label has to read as a TIME
+   * rather than as one more reading — a box whose panel says "Current weather: last updated"
+   * would suggest this codebase knows what time it is, which it does not (no RTC, no SNTP). */
+  it('names the last-updated stamp', () => {
+    expect(describeBinding(b({ owmField: 'time' }))).toBe('Current weather: last updated');
+  });
+
   it('names an HA entity, and says so when it is missing', () => {
     expect(describeBinding(b({ kind: 'ha', entityId: 'sensor.x' }))).toBe('Home Assistant: sensor.x');
     expect(describeBinding(b({ kind: 'ha' }))).toBe('Home Assistant: (no entity chosen)');

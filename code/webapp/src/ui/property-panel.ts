@@ -104,6 +104,25 @@ const OWM_FIELDS: { value: NonNullable<DataBinding['owmField']>; label: string }
   { value: 'city', label: 'Location name' },
 ];
 
+/** The fields a FORECAST box may read. Separate from OWM_FIELDS because `time` is not one of them:
+ *  a forecast document carries no observation timestamp, so the firmware reports NOT_FOUND for it
+ *  and the box would draw its fallback forever. Offering it in the forecast dropdown would be a
+ *  setting that cannot work — the same defect class as a toggle that only changes a label. */
+const OWM_DAILY_FIELDS = OWM_FIELDS;
+
+/** The fields a CURRENT-conditions box may read: the forecast ones plus the "last updated" stamp. */
+const OWM_CURRENT_FIELDS: { value: NonNullable<DataBinding['owmField']>; label: string }[] = [
+  ...OWM_FIELDS,
+  { value: 'time', label: 'Last updated (date and time)' },
+];
+
+/* The `time` value is special in the same way `icon` is, and the editor has to say so out loud: the
+ * stamp comes from OWM's response, NOT from a clock in the box. This board has no RTC and never
+ * syncs one, so there is nothing to set and nothing the user can fix if it reads oddly — it is
+ * simply the time the observation was made, in the location's own time zone. A user who saw a
+ * time box and went looking for a time-zone setting would otherwise never find one. */
+const TIME_FIELD: NonNullable<DataBinding['owmField']> = 'time';
+
 /** The `icon` value is special: the box draws a PICTURE from the icon code rather than the code as
  *  text (see canvas/widget-kind.ts). The panel says so, because a user who picked it and saw "01n"
  *  in the box would otherwise have no way to know a picture will appear on the glass. */
@@ -417,12 +436,12 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
         field('Day', select(String(binding.dayIndex ?? 0),
           [0, 1, 2, 3, 4].map((d) => ({ value: String(d), label: d === 0 ? 'Today' : `Day ${d + 1}` })),
           (v) => commit({ binding: { ...binding, dayIndex: Number(v) } }))),
-        field('Value', select(binding.owmField ?? 'max', OWM_FIELDS,
+        field('Value', select(binding.owmField ?? 'max', OWM_DAILY_FIELDS,
           (v) => { commit({ binding: { ...binding, owmField: v } }); render(); })),
       );
     } else if (binding.kind === 'owm-current') {
       bset.append(
-        field('Value', select(binding.owmField ?? 'temp', OWM_FIELDS,
+        field('Value', select(binding.owmField ?? 'temp', OWM_CURRENT_FIELDS,
           (v) => { commit({ binding: { ...binding, owmField: v } }); render(); })),
       );
       /* Say what the icon option will actually do. The editor's preview draws the picture, but a
@@ -432,6 +451,12 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
         bset.append(el('p', { className: 'hint' },
           'This box draws the current weather icon as a PICTURE, not as text. Make it square so the '
           + 'icon is not distorted. It needs a rounded, square-ish box of at least 48 px to read.'));
+      }
+      if (binding.owmField === TIME_FIELD) {
+        bset.append(el('p', { className: 'hint' },
+          'The time the weather was last observed, from the service’s own report and shown in '
+          + 'the location’s local time — not a clock in the display. There is no time zone '
+          + 'to set: it follows the location above, and updates with every refresh.'));
       }
     }
 

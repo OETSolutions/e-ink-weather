@@ -11,6 +11,9 @@ void tearDown(void) {}
  * reason owm_parse_current_field() takes an int. If this drifts from the enum, the city test
  * below fails rather than silently reading a different field. */
 #define OWM_FIELD_CITY_TEST 7
+/* The value OWM_F_TIME carries. Bumped alongside the enum for the same reason as the city
+ * constant above: if the two drift, these tests fail rather than silently reading another field. */
+#define OWM_FIELD_TIME_TEST 8
 
 /* A realistic One Call 3.0 fragment (imperial units, so values are degF/mph). */
 static const char *FIX =
@@ -318,6 +321,95 @@ static void test_forecast_size_clamps_and_rejects(void)
     TEST_ASSERT_EQUAL_UINT32(0, owm_forecast_buf_bytes(-8));
 }
 
+
+/* ---- the "last updated" stamp (OWM_F_TIME) ----
+ *
+ * EVERY EXPECTED STRING BELOW WAS COMPUTED INDEPENDENTLY IN PYTHON from the fixture's own dt and
+ * tz, not from this parser — otherwise the test would only assert that the code agrees with
+ * itself. The format is ctime-ish local wall clock: "%b %d, %I:%M %p" with a leading zero
+ * stripped from the day.
+ */
+
+/* 2.5/weather carries the offset at the TOP LEVEL as `timezone`, and its dt is a real epoch. */
+static void test_25_time_is_the_observation_time_in_local_clock(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX25_CURRENT, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_FALSE(v.is_numeric);                 /* text, like a city name */
+    TEST_ASSERT_EQUAL_STRING("Sep 18, 11:27 PM", v.text);
+}
+
+/* The stamp is the DOCUMENT's dt, not `now`. That matters because on this board `now` is seconds
+ * since BOOT, so a fallback to it would print a 1970 date — the whole reason this field reads the
+ * time from OWM instead of from a clock. */
+static void test_time_uses_the_documents_dt_not_now(void)
+{
+    /* A "now" far from the fixture's dt must not change the string. */
+    datasrc_value_t v = owm_parse_current_field(FIX25_CURRENT, OWM_FIELD_TIME_TEST, 999999999);
+    TEST_ASSERT_EQUAL_STRING("Sep 18, 11:27 PM", v.text);
+    TEST_ASSERT_EQUAL_INT32(1789795661, (int32_t)v.observed_at);
+}
+
+/* One Call 3.0 carries `timezone_offset` (a number). This fixture instead carries the string
+ * name "America/Denver", which is NOT a useable offset — so the parser must fall back to UTC
+ * rather than treat the string as a number, and must still render. */
+static void test_one_call_time_renders_without_a_numeric_offset(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_EQUAL_STRING("Sep 18, 12:53 PM", v.text);
+}
+
+/* A real One Call offset shifts the clock by exactly that many seconds. */
+static void test_one_call_timezone_offset_shifts_the_clock(void)
+{
+    static const char *OC =
+      "{\"timezone_offset\":-21600,"
+      "\"current\":{\"dt\":1758200000,\"temp\":68.4,"
+      "\"weather\":[{\"id\":800,\"main\":\"Clear\",\"description\":\"clear sky\"}]}}";
+    datasrc_value_t v = owm_parse_current_field(OC, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_EQUAL_STRING("Sep 18, 06:53 AM", v.text);
+}
+
+/* A single-digit day loses its padding: "Sep 03" would read worse than "Sep 3". */
+static void test_time_strips_the_padding_zero_from_the_day(void)
+{
+    static const char *SEP3 =
+      "{\"main\":{\"temp\":57.0},\"dt\":1756915200,\"timezone\":-21600,\"name\":\"X\",\"cod\":200}";
+    datasrc_value_t v = owm_parse_current_field(SEP3, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_OK, v.status);
+    TEST_ASSERT_EQUAL_STRING("Sep 3, 10:00 AM", v.text);
+}
+
+/* A response with NO dt cannot show a real observation time. It must report NOT_FOUND — which
+ * makes the widget draw its own fallback — rather than substitute now_unix, which on this device
+ * is uptime and would render as a 1970 timestamp. */
+static void test_time_without_a_dt_is_not_found_rather_than_a_1970_date(void)
+{
+    static const char *NO_DT =
+      "{\"main\":{\"temp\":57.0},\"timezone\":-21600,\"name\":\"X\",\"cod\":200}";
+    datasrc_value_t v = owm_parse_current_field(NO_DT, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_NOT_FOUND, v.status);
+    TEST_ASSERT_EQUAL_STRING("", v.text);
+}
+
+/* The forecast product is not a current reading, so it has no current-time stamp either. */
+static void test_25_forecast_has_no_current_time(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX25_FORECAST, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_EQUAL_INT(DATASRC_ERR_NOT_FOUND, v.status);
+}
+
+/* The stamp must fit the device's per-widget value buffer (40 bytes, LAYOUT_VALUE_BUF's
+ * predecessors and page_render_t.values). A stamp that silently truncated on the glass is the
+ * same failure class as the over-long alert message this codebase already hit. */
+static void test_time_stamp_fits_the_value_buffer(void)
+{
+    datasrc_value_t v = owm_parse_current_field(FIX25_CURRENT, OWM_FIELD_TIME_TEST, 0);
+    TEST_ASSERT_TRUE(strlen(v.text) < 24);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -344,5 +436,13 @@ int main(void)
     RUN_TEST(test_forecast_buffer_holds_every_request_the_firmware_makes);
     RUN_TEST(test_every_selectable_day_fits);
     RUN_TEST(test_forecast_size_clamps_and_rejects);
+    RUN_TEST(test_25_time_is_the_observation_time_in_local_clock);
+    RUN_TEST(test_time_uses_the_documents_dt_not_now);
+    RUN_TEST(test_one_call_time_renders_without_a_numeric_offset);
+    RUN_TEST(test_one_call_timezone_offset_shifts_the_clock);
+    RUN_TEST(test_time_strips_the_padding_zero_from_the_day);
+    RUN_TEST(test_time_without_a_dt_is_not_found_rather_than_a_1970_date);
+    RUN_TEST(test_25_forecast_has_no_current_time);
+    RUN_TEST(test_time_stamp_fits_the_value_buffer);
     return UNITY_END();
 }
