@@ -309,6 +309,39 @@ static void test_owm_product_defaults_to_auto(void)
     TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, c.owm_product);
 }
 
+/* FR-33: the boot-time auto-update opt-in. Only a literal boolean true enables it — this decides
+ * whether the device replaces its own firmware unattended, so anything ambiguous must be OFF. */
+static void test_firmware_auto_update_opt_in(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"firmwareAutoUpdate\":true}", &c));
+    TEST_ASSERT_EQUAL_INT(1, c.firmware_auto_update);
+}
+
+static void test_firmware_auto_update_defaults_off(void)
+{
+    layout_config_t c;
+    /* Absent. */
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse("{\"schemaVersion\":1}", &c));
+    TEST_ASSERT_EQUAL_INT(0, c.firmware_auto_update);
+    /* Explicitly false. */
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"firmwareAutoUpdate\":false}", &c));
+    TEST_ASSERT_EQUAL_INT(0, c.firmware_auto_update);
+    /* A truthy-LOOKING value that is not a JSON boolean must NOT enable an unattended firmware
+     * replacement. The string "true", the number 1 and null are all OFF. */
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"firmwareAutoUpdate\":\"true\"}", &c));
+    TEST_ASSERT_EQUAL_INT(0, c.firmware_auto_update);
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"firmwareAutoUpdate\":1}", &c));
+    TEST_ASSERT_EQUAL_INT(0, c.firmware_auto_update);
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"firmwareAutoUpdate\":null}", &c));
+    TEST_ASSERT_EQUAL_INT(0, c.firmware_auto_update);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -334,5 +367,7 @@ int main(void)
     RUN_TEST(test_power_mode_defaults_to_auto);
     RUN_TEST(test_owm_product_override_is_parsed);
     RUN_TEST(test_owm_product_defaults_to_auto);
+    RUN_TEST(test_firmware_auto_update_opt_in);
+    RUN_TEST(test_firmware_auto_update_defaults_off);
     return UNITY_END();
 }

@@ -23,6 +23,7 @@
 #include "api_internal.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -593,9 +594,13 @@ int api_auth_gate(httpd_req_t *req)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
-    const char *ver = "0.1.0";
+    /* The COMPILED-IN version (version.txt -> PROJECT_VER -> esp_app_desc_t), not a literal.
+     * A literal here drifts from the binary the moment it is bumped: the OTA check compares the
+     * version the device REPORTS against the release it is offered, so a stale literal makes the
+     * device either re-install the same build forever or refuse a genuine update. */
+    const esp_app_desc_t *desc = esp_app_get_description();
     char version[API_STATUS_VERSION_LEN];
-    snprintf(version, sizeof(version), "%s", ver);
+    snprintf(version, sizeof(version), "%s", desc ? desc->version : "?");
 
     lock();
     api_status_t s;
@@ -2043,8 +2048,11 @@ esp_err_t api_start(void)
     cfg.max_open_sockets = 7;
     /* RAISED FROM THE DEFAULT 8, which the API alone now fills (8 endpoints), leaving no slot
      * for the web UI's catch-all — it failed to register with ESP_ERR_HTTPD_HANDLERS_FULL and
-     * the device served 404s for its own page while the API worked fine. Measured need: 10 API
-     * routes + 1 for the UI, with headroom for the next endpoint. */
+     * the device served 404s for its own page while the API worked fine. Measured need: 15 API
+     * routes (the two /api/ota/… release endpoints included) + 1 for the UI, with headroom for
+     * the next endpoint. A too-small value here fails the extra handlers with
+     * ESP_ERR_HTTPD_HANDLERS_FULL while the ones that DID register keep working — the same
+     * silent-404 trap this comment was originally written for. */
     cfg.max_uri_handlers = 18;
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;      /* the OTA handler needs TLS headroom, like net_http */
@@ -2079,6 +2087,8 @@ esp_err_t api_start(void)
         { .uri = "/api/secrets",  .method = HTTP_GET,  .handler = h_secrets_get },
         { .uri = "/api/secrets",  .method = HTTP_PUT,  .handler = h_secrets_put },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },
+        { .uri = "/api/ota/check",  .method = HTTP_GET,  .handler = api_ota_check_handler },
+        { .uri = "/api/ota/update", .method = HTTP_POST, .handler = api_ota_update_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         e = httpd_register_uri_handler(s_server, &uris[i]);

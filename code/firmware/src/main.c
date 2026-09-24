@@ -22,8 +22,10 @@ static const char *TAG = "main";
  * crash class this project exists to avoid (spec §9.1). So the work runs on a SIZED worker
  * task and app_main only starts it and returns; IDF keeps the main task alive afterwards.
  *
- * 16 KB matches NET_TLS_TASK_STACK, because the boot path's deepest frame is the same
- * handshake net_http.c already sized for. */
+ * 16 KB, not NET_TLS_TASK_STACK (=8 KB): the boot path's deepest frame is that handshake
+ * PLUS everything else boot does around it, and this task lives for the whole session rather
+ * than only the request. net_http.h sized the worker from a measured high-water mark (3.5 KB
+ * worst case); this task has no such measurement, so it keeps the handshake-era figure. */
 #define APP_TASK_STACK 16384
 #define APP_TASK_PRIO  5
 

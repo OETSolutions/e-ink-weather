@@ -88,6 +88,12 @@ int layout_config_parse(const char *json, layout_config_t *out)
         out->owm_product = owm_product_from_string(op->valuestring);
     }
 
+    /* FR-33: the boot-time firmware auto-update opt-in. Strict `true` only — a "true" string or a
+     * 1 is not the user ticking the box, and defaulting anything ambiguous to ON would update an
+     * unattended device's firmware on a guess. */
+    const cJSON *fa = cJSON_GetObjectItemCaseSensitive(root, "firmwareAutoUpdate");
+    out->firmware_auto_update = cJSON_IsBool(fa) && cJSON_IsTrue(fa) ? 1 : 0;
+
     cJSON *pages = cJSON_GetObjectItemCaseSensitive(root, "pages");
     if (pages && !cJSON_IsArray(pages)) {
         /* Present but the wrong type is a SERIALIZATION BUG, not a user choice — e.g. the

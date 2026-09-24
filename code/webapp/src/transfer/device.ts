@@ -260,3 +260,38 @@ export function putSecrets(
     body: JSON.stringify(body),
   }, opts);
 }
+
+/**
+ * Firmware updates published as GitHub releases (FR-33).
+ *
+ * The device owns this, not the browser: it fetches the release manifest over HTTPS itself and
+ * compares the advertised version against the one compiled into its running image. The browser
+ * only asks and reports, because it usually cannot reach GitHub (embedded on the setup network)
+ * and never knows the true running version.
+ */
+export interface FirmwareCheck {
+  current: string;
+  latest: string;
+  update_available: boolean;
+}
+
+/** Ask the device whether a newer release exists. Ungated — it changes nothing. Returns the
+ *  device's own error (e.g. "no WiFi", "could not fetch release manifest") on failure. */
+export function checkFirmware(opts: DeviceOptions = {}): Promise<JsonResult<FirmwareCheck>> {
+  /* LONGER TIMEOUT: this call makes the device fetch a manifest over HTTPS from GitHub, which is
+   *  a handshake plus a redirect the default 8 s occasionally loses to. */
+  return jsonCall<FirmwareCheck>('/api/ota/check', { method: 'GET', cache: 'no-store' },
+    { ...opts, timeoutMs: opts.timeoutMs ?? 30000 });
+}
+
+/**
+ * Tell the device to download and install the latest release, then reboot.
+ *
+ * EXPECT THIS FETCH TO REJECT. On success the device sends the response and reboots ~500 ms
+ * later, so the connection is often reset before the body is read — a network error here is
+ * the EXPECTED result and not a failure. The caller reports "the display is updating and will
+ * restart", and the person confirms on the panel. Do not surface this rejection as an error.
+ */
+export function installFirmware(opts: DeviceOptions = {}): Promise<JsonResult<unknown>> {
+  return jsonCall('/api/ota/update', { method: 'POST' }, { ...opts, timeoutMs: opts.timeoutMs ?? 120000 });
+}

@@ -366,6 +366,20 @@ void app_boot_run(void)
      * while they hold. */
     if (factory_reset_check_hold()) return;
 
+    /* ---- 3c. Boot-time auto-update, if the owner opted in (FR-33) ----
+     * ON USB ONLY. A battery wake is on a timer to save power and may be a device far from any
+     * network; spending its radio budget — and risking a half-downloaded image on a pack that
+     * browns out — to chase an update is the wrong trade. On mains the device is awake and on the
+     * network anyway, and an update that reboots it costs only a few seconds of an always-on
+     * device. This is also the earliest point the radio can be used: the panel already has an
+     * image, so an update/reboot here is never a blank screen.
+     *
+     * A FAILED update returns 0 and the boot continues on the current image — never a boot loop. */
+    if (source == POWER_SOURCE_USB && cfg.firmware_auto_update) {
+        /* Never returns on success (it reboots into the new image). */
+        (void)api_ota_auto_update_if_enabled(cfg.firmware_auto_update);
+    }
+
     /* ---- 3c. Provisioning is deferred to step 8 ---- */
 
     /* ---- 4-6. Network, fetch, render, push ---- */

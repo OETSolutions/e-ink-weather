@@ -28,7 +28,7 @@ import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement
 import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, LABEL_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, type AuthState } from './transfer/device';
+import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, checkFirmware, installFirmware, getConfig, getStatus, putConfig, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -1010,6 +1010,90 @@ async function mount(root: HTMLElement): Promise<void> {
     describeAuth();
   }
 
+  /* ---- firmware updates from GitHub releases (FR-33) ----
+   *
+   * The DEVICE does the checking and the installing (see transfer/device.ts): it holds the
+   * credentials, it can reach the internet, and it alone knows the version it is actually running —
+   * a browser on the setup network can do none of those. This section only asks and reports.
+   *
+   * THE CHECK NEEDS NO TOKEN, but the INSTALL does when the device has protection on, so the token
+   * held in memory for the auth toggle is passed through. Without it, the button would fail on
+   * exactly the devices where it matters. */
+  const fwBox = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const fwLabel = el('label', { className: 'toggle' }) as HTMLLabelElement;
+  fwLabel.append(fwBox, el('span', {}, 'Check for firmware updates automatically'));
+  const fwStatusEl = el('p', { className: 'hint' }, 'Not checked yet.');
+  const fwCheckBtn = button('Check for updates', () => void doCheckFirmware());
+  const fwInstallBtn = button('Install update', () => void doInstallFirmware());
+  fwInstallBtn.disabled = true;
+
+  function fwSet(msg: string, isErr = false): void {
+    fwStatusEl.textContent = msg;
+    fwStatusEl.classList.toggle('err', isErr);
+  }
+
+  async function doCheckFirmware(): Promise<void> {
+    fwCheckBtn.disabled = true;
+    fwInstallBtn.disabled = true;
+    fwSet('Checking the latest release…');
+    const r = await checkFirmware({ token: authToken });
+    fwCheckBtn.disabled = false;
+    if (!r.ok) {
+      fwSet(`Could not check: ${r.error}`, true);
+      return;
+    }
+    const { current, latest, update_available } = r.value;
+    if (update_available) {
+      fwSet(`A newer version is available: ${latest} (this display runs ${current}).`);
+      fwInstallBtn.disabled = false;
+    } else {
+      fwSet(`This display is up to date (${current}).`);
+    }
+  }
+
+  async function doInstallFirmware(): Promise<void> {
+    fwInstallBtn.disabled = true;
+    fwCheckBtn.disabled = true;
+    fwSet('Downloading the update. The display will restart when it is done — do not unplug it.');
+    /* The device reboots ~500 ms after it starts sending the response, so this promise REJECTING is
+     * the normal outcome, not a failure. Whatever it returns, the honest thing to say is that the
+     * device is updating; the panel is the confirmation. */
+    await installFirmware({ token: authToken }).catch(() => undefined);
+    fwSet('The update was sent. If the display goes dark and comes back, it worked.');
+    setTimeout(() => {
+      fwCheckBtn.disabled = false;
+      fwInstallBtn.disabled = true;
+    }, 15000);
+  }
+
+  /* Prefill from the LAST status read, which already carries both the version and the interval. The
+   * device stores the interval; this checkbox only mirrors it, so nothing is written until the user
+   * changes it. */
+  function applyFirmwareState(ver: string | undefined, auto: boolean | undefined): void {
+    fwBox.checked = !!auto;
+    if (ver) fwSet(`This display runs firmware ${ver}.`);
+  }
+
+  fwBox.addEventListener('change', () => {
+    void (async () => {
+      /* No dedicated endpoint: auto-check is a key in the config document, which the device stores
+       * verbatim. Preserving the rest of the document means GET it, set one key, PUT it back. */
+      const g = await getConfig();
+      if (!g.ok || typeof g.value !== 'object' || g.value === null) {
+        fwBox.checked = !fwBox.checked;
+        fwSet(`Could not change the setting: ${g.ok ? 'the config was not an object' : g.error}`, true);
+        return;
+      }
+      const doc = g.value as Record<string, unknown>;
+      doc.firmwareAutoUpdate = fwBox.checked;
+      const p = await putConfig(doc, { token: authToken });
+      if (!p.ok) {
+        fwBox.checked = !fwBox.checked;
+        fwSet(`Could not change the setting: ${p.error}`, true);
+      }
+    })();
+  });
+
   function describe(s: Selection | undefined): void {
     if (s?.kind === 'rule') {
       const r = page.rules?.[s.index];
@@ -1437,6 +1521,14 @@ async function mount(root: HTMLElement): Promise<void> {
     el('h2', {}, 'Access'),
     authLabel,
     authRow,
+    el('h2', {}, 'Firmware update'),
+    el('p', { className: 'sub' },
+       'The display checks its own GitHub releases for a newer firmware and installs it over ' +
+       'the internet. It reboots when the update finishes; the panel going dark and drawing ' +
+       'again is the confirmation.'),
+    fwStatusEl,
+    el('div', { className: 'actions' }, fwCheckBtn, fwInstallBtn),
+    fwLabel,
   );
 
   describe(undefined);
@@ -1476,6 +1568,14 @@ async function mount(root: HTMLElement): Promise<void> {
       panel.setEntities([], 'Enter the Home Assistant token above (and Save) so the display can '
         + 'search Home Assistant for entities.');
     }
+  })();
+
+  /* Show the running firmware version (from the device's own /api/status — the compiled-in
+   * version, not a literal) and the auto-check preference from the config. */
+  applyFirmwareState(undefined, doc.firmwareAutoUpdate);
+  void (async () => {
+    const s = await getStatus();
+    if (s.ok && typeof s.value.version === 'string') applyFirmwareState(s.value.version, undefined);
   })();
 
   /* ---- Home Assistant entity search, through the DISPLAY (FR-23) ----

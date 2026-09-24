@@ -1,0 +1,104 @@
+name: Release
+
+# Publishes a GitHub Release whenever a version tag (vX.Y.Z) is pushed. The tag is the source
+# of truth for the version: it is injected into the build via version.txt so /api/status and
+# the OTA comparison report the SAME string the release is named, then the built image and a
+# manifest are attached. The manifest is what the device's OTA updater reads.
+#
+# WHY A MANIFEST AND NOT THE GITHUB API: GitHub's API returns a large JSON document, is rate
+# limited, and its shape changes. A two-line manifest at a STABLE url
+# (…/releases/latest/download/manifest.json) gives the device a tiny, flat document to parse
+# on a 3.5 KB stack, and the matching firmware sits beside it at
+# …/releases/latest/download/firmware.bin. Both URLs always resolve to the latest release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. v0.1.1), only for manual runs"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The tag (vX.Y.Z) without the leading "v" is the version compiled into the image.
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # Accept vX.Y.Z or X.Y.Z, emit both the tag and the bare semver.
+          VER="${TAG#v}"
+          if ! printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$TAG' is not vX.Y.Z"; exit 1
+          fi
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VER"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # version.txt is what ESP-IDF reads to fill esp_app_desc_t.version (PROJECT_VER), which
+      # is what /api/status returns and what the OTA updater compares. Writing it here ties the
+      # tagged release to the string the device reports — bumping the tag alone is enough.
+      - name: Stamp version into the build
+        working-directory: code/firmware
+        run: printf '%s' "${{ steps.ver.outputs.version }}" > version.txt
+
+      - name: Build firmware
+        working-directory: code/firmware
+        run: pio run -e esp32dev
+
+      - name: Package release assets
+        id: pkg
+        working-directory: code/firmware
+        run: |
+          set -euo pipefail
+          BIN=.pio/build/esp32dev/firmware.bin
+          OUT="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$OUT"
+          cp "$BIN" "$OUT/firmware.bin"
+          SHA="$(sha256sum "$OUT/firmware.bin" | cut -d' ' -f1)"
+          SIZE="$(stat -c%s "$OUT/firmware.bin")"
+          # Flat, dependency-free manifest — see the header comment for why not the GitHub API.
+          cat > "$OUT/manifest.json" <<JSON
+          {
+            "version": "${{ steps.ver.outputs.version }}",
+            "firmware": "firmware.bin",
+            "sha256": "$SHA",
+            "size": $SIZE
+          }
+          JSON
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "Built firmware.bin: $SIZE bytes, sha256 $SHA"
+
+      # Marked latest and named plainly, which is the standard gh release flow: the tag drives
+      # it, the title is the version, and --generate-notes writes the changelog from commits.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --latest \
+            --generate-notes \
+            dist/firmware.bin \
+            dist/manifest.json

@@ -1587,8 +1587,8 @@ void app_refresh_tick(power_source_t source, int force_full)
     HEAP_DIAG("after forecast free");
 
     /* The TLS worker's stack headroom, in the trace build only. net_http_stack_hwm() has existed
-     * since the TLS work but nothing ever READ it, so NET_TLS_TASK_STACK's 16 KB was never
-     * justified by the measurement its own comment demands — and that 16 KB is a contiguous DRAM
+     * since the TLS work but nothing ever READ it, so NET_TLS_TASK_STACK's former 16 KB was never
+     * justified by the measurement its own comment demands — and that 16 KB was a contiguous DRAM
      * allocation competing with the 78,200-byte framebuffer in this very window. Printing it here
      * is what makes shrinking the stack an evidence-based change rather than a gamble. */
 #if HEAP_TRACE

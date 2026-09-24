@@ -57,9 +57,18 @@ static void make_etag(const webui_asset_t *a, const uint8_t *start, size_t len,
 {
     const esp_app_desc_t *d = esp_app_get_description();
     (void)a;
-    snprintf(out, out_len, "\"%08lx-%u\"",
-             (unsigned long)(d ? d->version : 0) ^ (unsigned long)(uintptr_t)start,
-             (unsigned)len);
+    /* Hash the version STRING and the first 4 bytes of the ELF SHA-256. d->version is a char[32]
+     * array, so casting it to an integer would fold the ADDRESS, not the value — it looked like a
+     * build identity only because the address happens to move per build. The embedded SHA-256 is
+     * the honest build identity the comment above promises. */
+    uint32_t h = 2166136261u;
+    for (const char *p = d ? d->version : "?"; *p; p++) {
+        h = (h ^ (unsigned char)*p) * 16777619u;
+    }
+    if (d) {
+        for (int i = 0; i < 4; i++) h = (h ^ d->app_elf_sha256[i]) * 16777619u;
+    }
+    snprintf(out, out_len, "\"%08lx-%u\"", (unsigned long)h, (unsigned)len);
 }
 
 static esp_err_t serve_asset(httpd_req_t *req, const webui_asset_t *a)

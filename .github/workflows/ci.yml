@@ -1,0 +1,79 @@
+name: CI
+
+# Runs on every push and pull request. This is the correctness gate: the host unit suites
+# (firmware logic + web app) and the firmware build. The release workflow reuses the same
+# build so a tagged image is the exact one CI proved.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware-host-tests:
+    name: Firmware host tests (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PlatformIO provides `pio test -e native`, which compiles the pure-logic libraries
+      # with the host compiler and Unity. zlib is needed by test_artwork (-lz), which decodes
+      # the real webapp artwork fixture on the host exactly as the device does.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      - name: Run host unit tests
+        working-directory: code/firmware
+        run: pio test -e native
+
+  firmware-build:
+    name: Firmware build (esp32dev)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # The embedded web UI bundle is committed (components/webui/www/), so this needs no
+      # Node toolchain — a clean clone builds the exact firmware the web app was built into.
+      - name: Build firmware
+        working-directory: code/firmware
+        run: pio run -e esp32dev
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32dev
+          path: code/firmware/.pio/build/esp32dev/firmware.bin
+
+  webapp:
+    name: Web app (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: code/webapp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: code/webapp
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: code/webapp
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: code/webapp
+        run: npm test
