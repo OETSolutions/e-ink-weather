@@ -34,7 +34,23 @@ except ImportError:
 
 # 64 px at 198 dpi is ~8 mm — legible across a room, and the same visual weight as the body face
 # so an icon beside a condition word reads as a pair rather than as two unrelated marks.
-ICON_PX = 64
+#
+# RAISED TO 192 BECAUSE THE BOX IS DRAWN BIGGER THAN THIS. The renderer fits the icon to the
+# SMALLER side of its box and scales by NEAREST NEIGHBOUR (see draw_icon in lib/layout/src/render.c
+# and its TypeScript twin), so a box larger than this magnifies every source pixel into a block.
+# Reported as "the icons are very blocky" with the moon's crescent a staircase — the default
+# layout's box is 62 px and hid it, but a box at the panel scale (274 px) magnified 64 px by 4.3x.
+#
+# 192 IS THE MEASURED KNEE, not a taste call. Rendering the same crescent into a 274 px box from
+# 128 / 192 / 256 px sources showed the staircase essentially gone by 192, with 256 adding no
+# visible improvement for TWICE the flash (256 px costs 73,728 B against 41,472 B, and the app
+# image has ~101 KB of headroom in its OTA slot). The cost at 192 is +36 KB of .rodata, which is
+# read-only flash and costs no RAM.
+#
+# THE DOWNSCALE IS SAFE TOO: at the small 62 px box a 192 px source is point-sampled DOWN, and the
+# ink counts for every icon came out within ~2% of the 64 px source's — thin strokes (the sun's
+# rays, the snowflakes) survive either way, which a bigger source could plausibly have broken.
+ICON_PX = 192
 SS = 4                      # supersample factor for the downscale
 BLACK, WHITE = 0, 255
 

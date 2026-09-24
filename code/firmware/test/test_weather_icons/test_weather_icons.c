@@ -134,6 +134,45 @@ static void test_every_icon_has_ink(void)
     }
 }
 
+/* THE ICON SET MUST BE HIGH-RESOLUTION ENOUGH FOR THE BOX IT IS DRAWN INTO.
+ *
+ * Reported defect: "the icons are very blocky" with the crescent moon a staircase. The renderer
+ * fits an icon to the smaller side of its box and scales by NEAREST NEIGHBOUR, so a source smaller
+ * than the box magnifies each pixel into a block. At 64 px that was invisible in the default
+ * layout's 62 px box and obvious the moment a user drew a box at the panel's own scale.
+ *
+ * WHY THIS IS A TEST AND NOT A COMMENT: the size is a number in a generator, and nothing else in
+ * the build notices it — the icons render, the mapping is right, and the panel just looks worse.
+ * A silent quality regression is exactly what a threshold here catches. The bar is deliberately
+ * BELOW the chosen 192 so it does not fail on a future deliberate change, but far ABOVE 64 so
+ * reverting the fix cannot pass. */
+static void test_icons_are_high_resolution_enough_not_to_look_blocky(void)
+{
+    for (int i = 0; i < WEATHER_ICON_COUNT; i++) {
+        const weather_icon_t *ic = &weather_icons[i];
+        char msg[96];
+        snprintf(msg, sizeof(msg), "icon %d is %dx%d; a box drawn larger than this magnifies "
+                                   "every pixel into a block", i, ic->w, ic->h);
+        TEST_ASSERT_TRUE_MESSAGE(ic->w >= 128, msg);
+        TEST_ASSERT_TRUE_MESSAGE(ic->h >= 128, msg);
+        /* SQUARE, because the renderer fits by the SMALLER side: a non-square icon would be
+         * letterboxed in one direction and its drawing would sit off-centre from the box. */
+        TEST_ASSERT_EQUAL_INT(ic->w, ic->h);
+    }
+}
+
+/* The set is uniform, so the generator emitted one geometry. A single icon at a different size
+ * would render at a different scale from its neighbours in the same box — a sun visibly larger
+ * than the cloud beside it, with no cause the user could see. */
+static void test_every_icon_shares_one_size(void)
+{
+    const int w = weather_icons[0].w, h = weather_icons[0].h;
+    for (int i = 0; i < WEATHER_ICON_COUNT; i++) {
+        TEST_ASSERT_EQUAL_INT(w, weather_icons[i].w);
+        TEST_ASSERT_EQUAL_INT(h, weather_icons[i].h);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -145,5 +184,7 @@ int main(void)
     RUN_TEST(test_missing_suffix_defaults_to_day);
     RUN_TEST(test_generated_set_matches_the_enum);
     RUN_TEST(test_every_icon_has_ink);
+    RUN_TEST(test_icons_are_high_resolution_enough_not_to_look_blocky);
+    RUN_TEST(test_every_icon_shares_one_size);
     return UNITY_END();
 }
