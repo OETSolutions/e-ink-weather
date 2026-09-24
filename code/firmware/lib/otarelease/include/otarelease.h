@@ -18,13 +18,16 @@
 typedef struct {
     char version[32];       /* semver, the part compared for "is there an update"      */
     char firmware[128];     /* asset filename inside the release                       */
+    /* Parsed but NOT verified against the downloaded image. Integrity rests on TLS (the chain
+     * is checked against the CA bundle) and on the ESP image's own SHA-256, which the bootloader
+     * validates on boot. Kept so a future check has the field, and empty when absent/malformed. */
     char sha256[65];        /* lowercase hex, empty if the manifest omitted it          */
     long size;              /* bytes, or -1 if absent/unparseable                      */
 } otarelease_manifest_t;
 
 /* Parse `json` into `out`. Returns 0 on success. Fails (-1) on a null/empty document, a
  * missing or empty `version`, or a `firmware` that is not a bare filename — see the
- * traversal note in the implementation. `sha256` and `size` are optional. */
+ * traversal note in the implementation. `sha256` and `size` are optional and unverified. */
 int otarelease_parse(const char *json, otarelease_manifest_t *out);
 
 /* Compare two dotted decimal versions (1 to 4 components; a leading "v" is ignored). Returns

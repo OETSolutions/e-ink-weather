@@ -366,7 +366,7 @@ void app_boot_run(void)
      * while they hold. */
     if (factory_reset_check_hold()) return;
 
-    /* ---- 3c. Boot-time auto-update, if the owner opted in (FR-33) ----
+    /* ---- 3c. Boot-time auto-update, if the owner opted in (FR-32) ----
      * ON USB ONLY. A battery wake is on a timer to save power and may be a device far from any
      * network; spending its radio budget — and risking a half-downloaded image on a pack that
      * browns out — to chase an update is the wrong trade. On mains the device is awake and on the

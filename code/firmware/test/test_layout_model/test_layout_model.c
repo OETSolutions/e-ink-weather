@@ -309,7 +309,7 @@ static void test_owm_product_defaults_to_auto(void)
     TEST_ASSERT_EQUAL_INT(OWM_PRODUCT_AUTO, c.owm_product);
 }
 
-/* FR-33: the boot-time auto-update opt-in. Only a literal boolean true enables it — this decides
+/* FR-32: the boot-time auto-update opt-in. Only a literal boolean true enables it — this decides
  * whether the device replaces its own firmware unattended, so anything ambiguous must be OFF. */
 static void test_firmware_auto_update_opt_in(void)
 {

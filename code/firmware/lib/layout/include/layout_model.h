@@ -60,7 +60,7 @@ typedef struct {
                                            * degradation: only One Call 3.0 carries official
                                            * alerts, so on the free tier the alert bar must
                                            * say so rather than sit blank. */
-    int           firmware_auto_update;   /* 0/1: FR-33 opt-in for boot-time firmware updates
+    int           firmware_auto_update;   /* 0/1: FR-32 opt-in for boot-time firmware updates
                                            * from the project's GitHub releases. Parsed for
                                            * the same reason as power_mode and owm_product —
                                            * the app offers a checkbox, so the firmware must

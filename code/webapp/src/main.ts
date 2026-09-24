@@ -1010,7 +1010,7 @@ async function mount(root: HTMLElement): Promise<void> {
     describeAuth();
   }
 
-  /* ---- firmware updates from GitHub releases (FR-33) ----
+  /* ---- firmware updates from GitHub releases (FR-32) ----
    *
    * The DEVICE does the checking and the installing (see transfer/device.ts): it holds the
    * credentials, it can reach the internet, and it alone knows the version it is actually running —

@@ -128,7 +128,7 @@ void api_ota_mark_valid_if_pending(void)
     }
 }
 
-/* --------------------------------------------------- OTA from the GitHub release (FR-33) -- */
+/* --------------------------------------------------- OTA from the GitHub release (FR-32) -- */
 
 /* The stable "latest release" location. A GitHub release asset is served from this fixed path
  * (releases/latest/download/<name>), so the device never needs to know a tag: fetching it always
@@ -273,7 +273,7 @@ esp_err_t api_ota_check_handler(httpd_req_t *req)
     return api_send_json(req, body, "200 OK");
 }
 
-/* ---- boot-time auto-update (FR-33) ----
+/* ---- boot-time auto-update (FR-32) ----
  *
  * Runs from the boot worker task (not httpd), so it is a plain function with no req. Returns 1
  * when it COMMITTED to an update and the device is about to reboot; 0 to continue normally.

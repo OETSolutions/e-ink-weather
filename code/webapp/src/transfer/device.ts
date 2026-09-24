@@ -262,7 +262,7 @@ export function putSecrets(
 }
 
 /**
- * Firmware updates published as GitHub releases (FR-33).
+ * Firmware updates published as GitHub releases (FR-32).
  *
  * The device owns this, not the browser: it fetches the release manifest over HTTPS itself and
  * compares the advertised version against the one compiled into its running image. The browser

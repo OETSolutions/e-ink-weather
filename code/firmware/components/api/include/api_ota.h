@@ -13,7 +13,7 @@
 /* The POST /api/ota handler. Registered by api_start(). */
 esp_err_t api_ota_handler(httpd_req_t *req);
 
-/* OTA from the project's GitHub RELEASES (FR-33), as opposed to a URL the caller supplies.
+/* OTA from the project's GitHub RELEASES (FR-32), as opposed to a URL the caller supplies.
  *
  * GET  /api/ota/check   — reports {"current","latest","update_available"}. UNGATED: it only
  *                         reads and changes nothing, so the bearer token would make the "is

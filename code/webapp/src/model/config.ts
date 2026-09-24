@@ -243,7 +243,7 @@ export interface Config {
   /** Which OWM product to use; 'auto' probes One Call 3.0 and falls back (FR-6). */
   owmProduct: 'auto' | 'onecall3' | 'legacy';
   /**
-   * FR-33: let the device install newer GitHub releases on its own, on USB power at boot.
+   * FR-32: let the device install newer GitHub releases on its own, on USB power at boot.
    *
    * A JSON BOOLEAN only — the firmware treats anything else (including the string "true") as OFF,
    * because this decides whether the device replaces its own firmware unattended, so it must
