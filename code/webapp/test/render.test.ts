@@ -286,6 +286,53 @@ describe('headings are not clipped by a fixed box (reported defect)', () => {
   });
 });
 
+/* A PICTURE IS INK STAMPED ONTO THE LAYER, like a glyph — never a white rectangle punched through
+ * what is underneath. The user can drag an image box over a divider, and a picture that punched a
+ * white block would erase the line instead of sitting behind it. This is the same rule blitMasked()
+ * follows for glyphs, and the reason the patch is in the atlas convention (a set bit is ink). */
+describe('an image box in the static layer', () => {
+  const inkIn = (b: ReturnType<typeof buildStaticLayer>, x0: number, y0: number, x1: number, y1: number) => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (getPx(b, x, y)) n++;
+    return n;
+  };
+
+  /** A patch of solid ink, `w` x `h`, at (x, y). */
+  const solid = (x: number, y: number, w: number, h: number) => {
+    const pitch = (w + 7) >> 3;
+    const ink = new Uint8Array(pitch * h).fill(0xff);
+    return { x, y, w, h, pitch, ink };
+  };
+
+  it('draws the picture where it is placed', () => {
+    const b = buildStaticLayer([], [], [solid(100, 100, 80, 60)]);
+    expect(inkIn(b, 100, 100, 180, 160)).toBe(80 * 60);
+    /* And NOTHING outside it: a patch that leaked would draw a stray block elsewhere on the panel,
+     * which on the glass reads as a rendering fault with no obvious cause. */
+    expect(inkIn(b, 0, 0, 99, 680)).toBe(0);
+    expect(inkIn(b, 181, 0, 920, 680)).toBe(0);
+    expect(inkIn(b, 0, 161, 920, 680)).toBe(0);
+  });
+
+  /* WHITE IN THE PICTURE IS TRANSPARENT, not white paint. A patch is mostly white space around the
+   * subject, so a picture that painted white would erase any divider or heading it overlapped. */
+  it('leaves white source pixels transparent over a divider', () => {
+    /* A divider at y=50, and a patch straddling it whose top half is white and bottom half ink. */
+    const w = 40, h = 20, pitch = (w + 7) >> 3;
+    const ink = new Uint8Array(pitch * h);
+    for (let y = 10; y < 20; y++) for (let x = 0; x < w; x++) ink[y * pitch + (x >> 3)]! |= 0x80 >> (x & 7);
+    const b = buildStaticLayer([], [{ y: 50, thickness: 2, inset: 0 }], [{ x: 100, y: 40, w, h, pitch, ink }]);
+    /* The rule row inside the patch's WHITE upper half must still be there — proved by ink at a
+     * column the patch covers, where a white-painting blit would have cleared it. */
+    expect(getPx(b, 110, 50)).toBe(true);
+    expect(getPx(b, 110, 51)).toBe(true);
+    /* And the patch's own bottom half drew as ink. */
+    expect(getPx(b, 110, 58)).toBe(true);
+    /* Outside the rule and the patch's ink, the layer is white. */
+    expect(getPx(b, 110, 45)).toBe(false);
+  });
+});
+
 function blank(): Uint8Array {
   return new Uint8Array(FB_BYTES).fill(0xff);
 }

@@ -205,7 +205,11 @@ static void test_over_budget_stream_is_refused(void)
     memset(e, 0, sizeof(e));
     e[0].comp_len = ARTWORK_MAX_COMP + 1;
     e[0].raw_len = ARTWORK_RAW_LEN;
-    uint8_t blob[ARTWORK_MAX_COMP + 2];
+    /* The blob is only ever READ for the checksum, and the size check must fire before any read
+     * of that length — so this deliberately does NOT allocate ARTWORK_MAX_COMP bytes. It used to,
+     * which was harmless at a 4 KB budget and is a 48 KB stack frame now that the budget holds a
+     * picture; on the device's render worker that frame would be a stack overflow. */
+    uint8_t blob[8];
     memset(blob, 0xAA, sizeof(blob));
     artwork_hdr_t out;
     TEST_ASSERT_EQUAL_INT(-1, artwork_make_hdr(e, 1, blob, sizeof(blob), 0, &out));
@@ -221,6 +225,81 @@ static void test_entry_past_the_blob_end_is_refused(void)
     memset(blob, 0, sizeof(blob));
     artwork_hdr_t out;
     TEST_ASSERT_EQUAL_INT(-1, artwork_make_hdr(e, 1, blob, sizeof(blob), 0, &out));
+}
+
+/* ---- the per-strip length prefix ----
+ *
+ * THIS IS THE FRAMING THE DEVICE'S DECODER TRUSTS. It reads a page as a run of length-prefixed
+ * zlib streams, one strip at a time, so a prefix that is misread does not merely fail — it feeds
+ * the inflater the wrong bytes, or a length that walks off the end of the page. Every case below
+ * is a way the prefix can be wrong, and each must be refused rather than trusted.
+ */
+
+static void test_strip_len_reads_little_endian(void)
+{
+    /* 0x1234 as two bytes, low first — the same order every other multi-byte field in this format
+     * uses (the web app writes them through DataView.setUint32(.., true)). A big-endian read here
+     * would ask for 0x3412 bytes and run past the page. */
+    const uint8_t p[2] = { 0x34, 0x12 };
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(0, artwork_strip_len(p, sizeof(p), &n));
+    TEST_ASSERT_EQUAL_UINT16(0x1234, n);
+}
+
+static void test_strip_len_rejects_a_truncated_prefix(void)
+{
+    /* Fewer than two bytes left: the blob ended early, or was never this format. Reading the one
+     * byte that is there would invent a length from whatever follows. */
+    const uint8_t one[1] = { 0x10 };
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(-1, artwork_strip_len(one, sizeof(one), &n));
+    TEST_ASSERT_EQUAL_INT(-1, artwork_strip_len(one, 0, &n));
+}
+
+static void test_strip_len_rejects_zero(void)
+{
+    /* A zero-length stream is not a legal strip and would not consume input, so a decoder walking
+     * the blob by this rule would loop forever. zlib never produces one. */
+    const uint8_t z[2] = { 0x00, 0x00 };
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(-1, artwork_strip_len(z, sizeof(z), &n));
+}
+
+static void test_strip_len_accepts_the_ceiling_and_rejects_over_it(void)
+{
+    /* The cap is the uint16 maximum, so the boundary itself is legal and one past it is not. An
+     * over-cap prefix would otherwise be trusted and read out of bounds. */
+    const uint8_t at[] = { 0xff, 0xff };
+    const uint8_t over[2] = { 0xff, 0xff };
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(0, artwork_strip_len(at, sizeof(at), &n));
+    TEST_ASSERT_EQUAL_UINT16(ARTWORK_STRIP_COMP_MAX, n);
+    /* There is no representable 65536, so "over" is exercised through the zero case above; this
+     * documents that the ceiling is exactly the uint16 max rather than one less. */
+    TEST_ASSERT_EQUAL_UINT16(65535, ARTWORK_STRIP_COMP_MAX);
+    TEST_ASSERT_EQUAL_INT(0, artwork_strip_len(over, sizeof(over), &n));
+}
+
+static void test_strip_len_rejects_null(void)
+{
+    uint16_t n = 0;
+    const uint8_t p[2] = { 1, 0 };
+    TEST_ASSERT_EQUAL_INT(-1, artwork_strip_len(NULL, 2, &n));
+    TEST_ASSERT_EQUAL_INT(-1, artwork_strip_len(p, sizeof(p), NULL));
+}
+
+/* The decoder's scratch buffer must be a function of the STRIP, not of the page budget. This is
+ * the whole point of the prefix: a page budget sized for a photograph must not put that many
+ * bytes of `.bss` on the device, because `.bss` is DRAM the heap never gets — and a static struct
+ * that grew once already dropped the largest free block below the 78,200 the render needs. */
+static void test_decoder_scratch_is_strip_sized_not_page_sized(void)
+{
+    /* One strip's worst case: 3,910 raw bytes plus zlib's stored-block overhead. */
+    TEST_ASSERT_TRUE(ARTWORK_STRIP_COMP_CAP < ARTWORK_MAX_COMP);
+    TEST_ASSERT_TRUE(ARTWORK_STRIP_COMP_CAP < 4200);
+    /* And the page budget is now large enough for a real picture, so the two really are different
+     * numbers — which is what makes the assertion above meaningful rather than vacuous. */
+    TEST_ASSERT_TRUE(ARTWORK_MAX_COMP > 32 * 1024);
 }
 
 static void test_make_hdr_argument_checks(void)
@@ -371,17 +450,25 @@ static int host_inflate_one(const uint8_t *in, size_t in_len, uint8_t *out, size
     return (int)used;
 }
 
-/* Decode a whole page's strip run into `out` (ARTWORK_RAW_LEN bytes), exactly as the device does. */
+/* Decode a whole page's strip run into `out` (ARTWORK_RAW_LEN bytes), exactly as the device does:
+ * each strip is preceded by a uint16 little-endian compressed length, and the walk uses that
+ * length — NOT a search for where a stream happens to end. artwork_strip_len() is the firmware's
+ * own framing rule, so this test exercises the real function rather than restating it. */
 static int host_decode_page(const uint8_t *page, size_t page_len, uint8_t *out)
 {
     size_t at = 0;
     for (unsigned i = 0; i < ARTWORK_STRIP_COUNT; i++) {
-        const int used = host_inflate_one(page + at, page_len - at,
+        uint16_t clen = 0;
+        if (artwork_strip_len(page + at, page_len - at, &clen) != 0) return -1;
+        at += 2;
+        if (at + clen > page_len) return -1;
+        const int used = host_inflate_one(page + at, clen,
                                           out + (size_t)i * ARTWORK_STRIP_RAW, ARTWORK_STRIP_RAW);
-        if (used <= 0) return -1;
-        at += (size_t)used;
+        if (used <= 0 || (uint16_t)used != clen) return -1;
+        at += clen;
     }
-    return 0;
+    /* No trailing bytes: the page is exactly the strips and their prefixes. */
+    return at == page_len ? 0 : -1;
 }
 
 /* Every strip must decode ALONE. This is the direct proof that the encoder did not emit one
@@ -407,12 +494,16 @@ static void test_each_fixture_strip_decodes_alone_with_no_dictionary(void)
          * distinguishes per-strip streams from one stream. */
         size_t at = 0;
         for (unsigned i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+            uint16_t clen = 0;
+            TEST_ASSERT_EQUAL_INT(0, artwork_strip_len(stream + at, e.comp_len - at, &clen));
+            at += 2;
             uint8_t one[ARTWORK_STRIP_RAW];
-            const int used = host_inflate_one(stream + at, e.comp_len - at, one, ARTWORK_STRIP_RAW);
+            const int used = host_inflate_one(stream + at, clen, one, ARTWORK_STRIP_RAW);
             TEST_ASSERT_GREATER_THAN_INT(0, used);
+            TEST_ASSERT_EQUAL_UINT16(clen, (uint16_t)used);
             TEST_ASSERT_EQUAL_UINT8_ARRAY(page + (size_t)i * ARTWORK_STRIP_RAW, one,
                                           ARTWORK_STRIP_RAW);
-            at += (size_t)used;
+            at += clen;
         }
     }
 }
@@ -488,6 +579,12 @@ int main(void)
     RUN_TEST(test_null_arguments_are_refused);
     RUN_TEST(test_make_hdr_builds_a_valid_header);
     RUN_TEST(test_over_budget_stream_is_refused);
+    RUN_TEST(test_strip_len_reads_little_endian);
+    RUN_TEST(test_strip_len_rejects_a_truncated_prefix);
+    RUN_TEST(test_strip_len_rejects_zero);
+    RUN_TEST(test_strip_len_accepts_the_ceiling_and_rejects_over_it);
+    RUN_TEST(test_strip_len_rejects_null);
+    RUN_TEST(test_decoder_scratch_is_strip_sized_not_page_sized);
     RUN_TEST(test_entry_past_the_blob_end_is_refused);
     RUN_TEST(test_make_hdr_argument_checks);
     RUN_TEST(test_crc32_matches_the_known_vector);

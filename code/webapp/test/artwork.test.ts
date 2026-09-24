@@ -16,6 +16,7 @@ import {
   ARTWORK_MAGIC,
   ARTWORK_MAX_PAGES,
   ARTWORK_RAW_LEN,
+  ARTWORK_MAX_COMP,
   ARTWORK_STRIP_RAW,
   ARTWORK_STRIP_COUNT,
 } from '../src/transfer/artwork';
@@ -29,27 +30,47 @@ function layer(seed = 1): Uint8Array {
 
 /**
  * Decode a page's stored blob the way the DEVICE does: a run of ARTWORK_STRIP_COUNT independent
- * zlib streams, inflated one after another with no shared dictionary. The device's tinfl reports
- * how many input bytes each strip consumed; Node's inflateSync does not, so the strip's compressed
- * length is recovered here by inflating the shortest prefix that yields exactly one strip. That is
- * a faithful mirror of "the next strip starts where this one's stream ended".
+ * zlib streams, EACH PRECEDED BY A uint16 LITTLE-ENDIAN LENGTH, inflated one after another with no
+ * shared dictionary. The device reads one strip at a time under that prefix (see artwork.h for why
+ * the prefix exists), so this walks the blob exactly as artwork_store_load_page_seg() does — a
+ * length-prefixed walk, not a search for where a stream happens to end.
  */
 function decodeStrips(page: Uint8Array): Uint8Array {
   const out = new Uint8Array(ARTWORK_RAW_LEN);
   let at = 0;
   for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
-    let used = 0;
-    for (let n = 1; n <= page.length - at; n++) {
-      let r: Buffer | null = null;
-      try { r = inflateSync(Buffer.from(page.subarray(at, at + n))); } catch { /* need more input */ }
-      if (r && r.length === ARTWORK_STRIP_RAW) { used = n; break; }
-      if (r && r.length > ARTWORK_STRIP_RAW) break; // overshot: not a valid strip boundary
-    }
-    expect(used, `strip ${i} must inflate to exactly ${ARTWORK_STRIP_RAW} bytes`).toBeGreaterThan(0);
-    out.set(inflateSync(Buffer.from(page.subarray(at, at + used))), i * ARTWORK_STRIP_RAW);
-    at += used;
+    expect(at + 2, `strip ${i} must have a length prefix`).toBeLessThanOrEqual(page.length);
+    const len = page[at]! | (page[at + 1]! << 8);
+    expect(len, `strip ${i} must declare a length`).toBeGreaterThan(0);
+    at += 2;
+    expect(at + len).toBeLessThanOrEqual(page.length);
+    const r = inflateSync(Buffer.from(page.subarray(at, at + len)));
+    expect(r.length, `strip ${i} must inflate to exactly ${ARTWORK_STRIP_RAW} bytes`)
+      .toBe(ARTWORK_STRIP_RAW);
+    out.set(r, i * ARTWORK_STRIP_RAW);
+    at += len;
   }
+  /* No trailing bytes: the page IS the strips and their prefixes, so a leftover byte means the
+   * encoder and this walk disagree about the framing. */
+  expect(at).toBe(page.length);
   return out;
+}
+
+/** A page's strip offsets, for tests that need to inflate one strip on its own. */
+function stripOffsets(page: Uint8Array): number[] {
+  const offs: number[] = [];
+  let at = 0;
+  for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+    const len = page[at]! | (page[at + 1]! << 8);
+    offs.push(at + 2);
+    at += 2 + len;
+  }
+  return offs;
+}
+
+/** The length a strip declares, or 0 when the prefix is absent. */
+function stripLenAt(page: Uint8Array, at: number): number {
+  return page[at]! | (page[at + 1]! << 8);
 }
 
 function u32(b: Uint8Array, off: number): number {
@@ -124,33 +145,54 @@ describe('encodeArtwork', () => {
 
     /* And prove independence directly: every strip, inflated ALONE from its recorded start, yields
      * its own slice. A single whole-layer stream would make every strip but the first fail here. */
+    const offs = stripOffsets(page);
+    for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
+      const at = offs[i]!;
+      const len = stripLenAt(page, at - 2);
+      const lone = inflateSync(Buffer.from(page.subarray(at, at + len)));
+      expect(lone.length).toBe(ARTWORK_STRIP_RAW);
+      expect(new Uint8Array(lone)).toEqual(src.subarray(i * ARTWORK_STRIP_RAW, (i + 1) * ARTWORK_STRIP_RAW));
+    }
+  });
+
+  /* EVERY STRIP CARRIES ITS LENGTH, and the device reads the strips BY IT. A prefixless blob (which
+   * is what an older encoder produced) would still be valid zlib and still pass every entry check,
+   * so without this the incompatibility would show up as garbage on the panel rather than here. */
+  it('prefixes every strip with its little-endian compressed length', async () => {
+    const src = layer(5);
+    const { blob } = await encodeArtwork([src]);
+    const blobOff = 16 + 12 * ARTWORK_MAX_PAGES;
+    const pageLen = u32(blob, 16 + 4);
+    const page = blob.subarray(blobOff, blobOff + pageLen);
+
     let at = 0;
     for (let i = 0; i < ARTWORK_STRIP_COUNT; i++) {
-      const lone = new Uint8Array(inflateSync(Buffer.from(page.subarray(at, at + ARTWORK_STRIP_RAW + 512)))
-        .subarray(0, ARTWORK_STRIP_RAW));
-      expect(lone).toEqual(src.subarray(i * ARTWORK_STRIP_RAW, (i + 1) * ARTWORK_STRIP_RAW));
-      /* Advance to the next strip by the length that decodes to exactly one strip. */
-      let used = 0;
-      for (let n = 1; n <= page.length - at; n++) {
-        try { if (inflateSync(Buffer.from(page.subarray(at, at + n))).length === ARTWORK_STRIP_RAW) { used = n; break; } } catch { /* */ }
-      }
-      at += used;
+      const len = stripLenAt(page, at);
+      expect(len, `strip ${i} length`).toBeGreaterThan(0);
+      /* The declared length must be exactly the bytes the stream needs — inflating just those
+       * bytes must succeed and inflating one fewer must not. That is the property the device
+       * relies on when it reads a fixed number of bytes rather than searching for a boundary. */
+      expect(() => inflateSync(Buffer.from(page.subarray(at + 2, at + 2 + len)))).not.toThrow();
+      expect(() => inflateSync(Buffer.from(page.subarray(at + 2, at + 2 + len - 1)))).toThrow();
+      at += 2 + len;
     }
+    expect(at).toBe(pageLen);
   });
 
   /* THE STREAMS MUST BE ZLIB, NOT GZIP. The device passes TINFL_FLAG_PARSE_ZLIB_HEADER, which
    * expects RFC1950 framing; a gzip stream's 1f 8b header would be rejected for a reason that has
-   * nothing to do with the picture. This asserts the first byte of a real stream. */
+   * nothing to do with the picture. This asserts the first byte of a real stream — which is now two
+   * bytes into the page, past the strip's length prefix. */
   it('emits zlib streams, not gzip', async () => {
     const { blob } = await encodeArtwork([layer(3)]);
     const blobOff = 16 + 12 * ARTWORK_MAX_PAGES;
-    const first = blob[blobOff]!;
+    const first = blob[blobOff + 2]!;
     // A zlib header's first byte has low nibble 8 (DEFLATE, 32K window): 0x78 is the common case.
     expect(first & 0x0f).toBe(8);
     expect(first).not.toBe(0x1f); // 1f 8b would be gzip
     // And it must satisfy the zlib check: (b0<<8 | b1) % 31 == 0.
-    const cmf = blob[blobOff]!;
-    const flg = blob[blobOff + 1]!;
+    const cmf = blob[blobOff + 2]!;
+    const flg = blob[blobOff + 3]!;
     expect(((cmf << 8) | flg) % 31).toBe(0);
   });
 
@@ -194,30 +236,71 @@ describe('encodeArtwork', () => {
 
   /* A layout too detailed to store must fail LOUDLY here. The alternative is a device that
    * refuses the stream at promote time and leaves the previous artwork live — which the user
-   * would experience as "my labels never changed". */
+   * would experience as "my labels never changed".
+   *
+   * The budget is now large enough for a PICTURE, so the premise that a single page can exceed it
+   * has to be built rather than assumed: a full layer of 1-bit noise is the densest page this
+   * format can hold, and it is measured here before being asserted against the encoder. */
   it('refuses a layer whose compressed stream exceeds the device budget', async () => {
     /* GENUINELY INCOMPRESSIBLE, and that is the point: a 1 bpp layer can carry at most two
      * values per byte, so the only way to exceed the budget is ink scattered at a fine pitch.
-     * A repeating pattern (which is what a first attempt at this used) deflates to almost
-     * nothing, so the premise has to be checked rather than assumed. */
+     *
+     * THE HIGH BYTE OF THE GENERATOR MATTERS, and this is why the premise is measured rather than
+     * assumed: an earlier version of this test multiplied by a constant and took the LOW byte,
+     * which correlates across neighbours — deflate found it highly compressible (8.7 KB for a
+     * whole layer) and the test passed while asserting nothing. Taking the high byte of a
+     * well-mixed state gives the ~1.0 ratio the budget is meant to catch. */
     const noise = new Uint8Array(ARTWORK_RAW_LEN);
     let s = 0x12345678;
     for (let i = 0; i < noise.length; i++) {
-      // xorshift32 — cheap, deterministic, and passes deflate's entropy check.
       s ^= s << 13; s >>>= 0;
       s ^= s >>> 17;
       s ^= s << 5;  s >>>= 0;
-      noise[i] = (s * 2654435761) & 0xff;
+      noise[i] = (s >>> 24) & 0xff;
     }
-    // Confirm the premise: this really is over the budget when compressed.
-    const comp = deflateSync(Buffer.from(noise), { level: 9 }).length;
-    expect(comp).toBeGreaterThan(4096);
-    await expect(encodeArtwork([noise])).rejects.toThrow(/budget|too detailed/);
+    // Confirm the premise: this really is over the budget when compressed as the device wants it,
+    // strip by strip with a length prefix on each.
+    let comp = 0;
+    for (let k = 0; k < ARTWORK_STRIP_COUNT; k++) {
+      comp += 2 + deflateSync(Buffer.from(noise.subarray(k * ARTWORK_STRIP_RAW, (k + 1) * ARTWORK_STRIP_RAW)), { level: 9 }).length;
+    }
+    expect(comp).toBeGreaterThan(ARTWORK_MAX_COMP);
+    await expect(encodeArtwork([noise])).rejects.toThrow(/budget|smaller picture/);
+  });
+
+  /* THE WHOLE SET MUST FIT ONE SLOT, and that is a different limit from the per-page budget: two
+   * pages can each be legal and still not fit together. The device erases the spare slot and streams
+   * the set into it, so a set the slot cannot hold must be refused HERE, with a sentence, rather
+   * than failing half way through the upload on a device that has already erased its spare. */
+  it('refuses a set that does not fit the artwork slot even when each page is legal', async () => {
+    /* Each page is a PICTURE-SIZED but compressible layer, which is what makes this reachable in
+     * real use: a photo-heavy page compresses to a few KB, so the per-page budget never fires and
+     * only the set total does. Six such pages exceed the 48 KB slot. */
+    const pages: Uint8Array[] = [];
+    for (let p = 0; p < 6; p++) {
+      const b = new Uint8Array(ARTWORK_RAW_LEN).fill(0xff);
+      let s = 0x9e3779b9 ^ (p * 2654435761);
+      /* A picture-like texture: gradients and blobs, so it compresses to a few KB — legal on its
+       * own, unlike the noise case above. */
+      for (let y = 0; y < 680; y++) {
+        for (let x = 0; x < 920; x++) {
+          const v = 128 + 90 * Math.sin(x / 60) * Math.cos(y / 45);
+          s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0;
+          if (v + ((s >>> 24) % 40) - 20 < 128) b[y * 115 + (x >> 3)]! &= ~(0x80 >> (x & 7));
+        }
+      }
+      pages.push(b);
+    }
+    /* Premise: every page is under the per-page budget, so only the total is over. */
+    const { blob } = await encodeArtwork(pages.slice(0, 1));
+    expect(blob.length).toBeLessThan(ARTWORK_MAX_COMP);
+    await expect(encodeArtwork(pages)).rejects.toThrow(/can store|smaller picture/);
   });
 
   /* The whole point of compressing: a realistic layout must fit in a fraction of the raw size.
-   * The per-strip split costs a little (each strip carries its own zlib header and empty-stream
-   * terminator), so the bar is generous rather than the exact whole-stream ratio. */
+   * The per-strip split costs a little (each strip carries its own zlib header, empty-stream
+   * terminator AND a 2-byte length), so the bar is generous rather than the exact whole-stream
+   * ratio. */
   it('compresses a realistic layer far below its raw size', async () => {
     const { blob } = await encodeArtwork([layer(7)]);
     expect(blob.length).toBeLessThan(4096);

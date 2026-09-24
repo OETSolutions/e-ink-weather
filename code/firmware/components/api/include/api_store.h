@@ -130,6 +130,12 @@ int artwork_store_page_count(void);
  * already asks for. */
 void artwork_store_identity(int *page_count_out, uint32_t *seq_out);
 
+/* How many bytes an artwork slot holds, or 0 when the partitions are missing. This is the real
+ * ceiling on an upload: it is what the device can STORE, as opposed to how large one page's
+ * compressed blob may be — the two were the same number while the per-page budget was 4 KB, and
+ * are no longer, because the budget is now sized to hold a picture. */
+uint32_t artwork_store_slot_size(void);
+
 int artwork_store_begin_upload(void);
 int artwork_store_write_chunk(uint32_t offset, const uint8_t *data, uint32_t len);
 int artwork_store_finish_upload(uint32_t crc);

@@ -22,6 +22,24 @@ int artwork_spare_slot(int live)
     return (live == 0) ? 1 : 0;
 }
 
+int artwork_strip_len(const uint8_t *p, size_t avail, uint16_t *out)
+{
+    if (!p || !out) return -1;
+    /* Fewer than two bytes left cannot hold a prefix, so the blob ended early or was never this
+     * format. Reporting -1 here rather than reading on is what makes a truncated page fail loudly
+     * instead of decoding whatever bytes follow. */
+    if (avail < 2) return -1;
+    /* LITTLE-ENDIAN, matching every other multi-byte field in this format (the header and the
+     * entry table are written by DataView.setUint32(.., true) in the web app). */
+    const uint16_t n = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+    /* A zero-length stream is not a legal strip: it would loop forever without consuming input,
+     * and zlib never produces one. A prefix over the cap means a corrupt length, which would
+     * otherwise be trusted and read out of bounds by the caller. */
+    if (n == 0 || n > ARTWORK_STRIP_COMP_MAX) return -1;
+    *out = n;
+    return 0;
+}
+
 int artwork_pick_slot(const artwork_hdr_t *a, const artwork_hdr_t *b)
 {
     const int va = artwork_hdr_valid(a);

@@ -35,6 +35,10 @@ export function describeBinding(b: DataBinding | undefined): string {
       return `Forecast ${dayLabel(b.dayIndex)}: ${OWM_FIELD_NAMES[b.owmField ?? 'max'] ?? b.owmField ?? 'high'}`;
     case 'owm-alert':
       return 'OpenWeatherMap severe-weather alerts';
+    case 'image':
+      /* Says WHAT the box is, because its picture is not in the document — a layout opened without
+       * the picture still has the box, and "Picture" alone would read as if one were loaded. */
+      return 'A picture you upload — drawn into the page’s background';
     case 'ha':
       /* Says "(no entity chosen)" rather than just "Home Assistant:" — an unset entity is a
        * configuration mistake the user needs to see, not a label to hide. */

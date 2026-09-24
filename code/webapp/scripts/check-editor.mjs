@@ -226,6 +226,33 @@ const ruleY = async () => Number(await page.inputValue('.panelHost input[type=nu
   await page.waitForTimeout(200);
 }
 
+/* --- an image box: reachable, static, and with no controls that do nothing ---
+ *
+ * The picture's PIXELS are never in the config (the device re-parses it every refresh tick), so
+ * what this can assert here is the CONTRACT around the box: that the picture source is offered,
+ * that choosing it makes the box STATIC (a dynamic image box would have the firmware stamping a
+ * reading over the picture), and that the number-format and alert controls — which have no meaning
+ * for a picture — are not shown. The dither itself is checked pixel-wise in test/image.test.ts, and
+ * the round trip to the device in scripts/check-image.mjs. */
+{
+  await page.getByRole('button', { name: 'Add picture' }).click();
+  await page.waitForTimeout(250);
+  check('Add picture reports success',
+        /Added a picture box/.test((await page.textContent('p.status')) ?? ''));
+  const imgKind = page.locator('fieldset', { hasText: 'Data' }).locator('select').nth(0);
+  check('the picture source is selected', (await imgKind.inputValue()) === 'image');
+  const legends = await page.locator('.panelHost fieldset legend').allTextContents();
+  check('an image box hides the number format', !legends.includes('Number format'), legends.join(' | '));
+  check('an image box hides the alert rules', !legends.includes('Alerts'), legends.join(' | '));
+  /* With no picture chosen yet, the panel must say so — an empty box with no explanation reads as
+   * a broken control. */
+  check('an image box with no picture explains that',
+        /does not have the picture/.test(await panelHost()));
+  await page.getByRole('button', { name: 'Delete box' }).click();
+  await page.waitForTimeout(200);
+}
+
+/* --- the preview is drawing real values, not placeholders --- */
 {
   const dark = await page.evaluate(() => {
     const c = document.querySelector('canvas.panel');

@@ -29,23 +29,32 @@
  * so the strips tile it with no partial tail.
  *
  * THE FORMAT is one header per page plus a blob of concatenated streams; each page's entry covers
- * ARTWORK_STRIP_COUNT back-to-back strip streams:
+ * ARTWORK_STRIP_COUNT back-to-back strip streams, EACH PREFIXED BY ITS COMPRESSED LENGTH:
  *
  *     artwork_hdr_t   magic, page_count, crc, seq
  *     entry[page]     offset, comp_len, raw_len
- *     blob            the concatenated zlib streams (per page: the strip streams, in order)
+ *     blob            per page: ARTWORK_STRIP_COUNT x ( u16 comp_len, comp_len bytes )
+ *
+ * THE LENGTH PREFIX IS WHAT MAKES A PICTURE POSSIBLE, and it replaced a decode that walked the
+ * blob by asking the inflater how many bytes it had consumed. That walk required the WHOLE page
+ * blob to be resident at once, so the decoder held a static buffer the size of the page budget —
+ * and raising the budget for a real photograph would have added tens of KB of `.bss`, which is
+ * DRAM the heap never gets (a 9 KB static struct once dropped the largest free block below the
+ * 78,200 the render needs). With a length on every strip, the decoder reads one strip at a time
+ * into a buffer bounded by ONE strip, so the page budget is free to grow to a whole picture
+ * without the decoder growing with it.
  *
  * An entry with raw_len == 0 means "this page has no artwork", which is distinct from "empty
  * artwork": the renderer then falls back to a blank layer rather than to another page's picture.
  * A page with no artwork must NOT inherit a neighbouring page's, or the wrong labels appear. */
 
-/* "TEGP" little-endian — "PAGE" reversed. BUMPED to "PAGS" (reversed) when a page became a run of
- * independent per-strip streams: an older whole-layer blob is still zlib, still within the size
- * budget, and still passes the entry checks, so WITHOUT a magic change the device would accept it,
- * fail to decode it as strips, and log that failure every tick. Changing the magic makes the
- * incompatibility explicit — an old slot reads as "no artwork" and the render falls back cleanly
- * (FR-29) until the web app pushes a new set. The web app mirrors this value. */
-#define ARTWORK_MAGIC       0x53474150u   /* "PAGS" little-endian */
+/* Bumped to "PAGL" (reversed) when each strip gained its length prefix. Without the bump an older
+ * blob — which has no prefixes — still passes every entry check and inflates its first strip as
+ * garbage (the prefix bytes are read as stream data), and the panel would show noise or keep its
+ * old picture with only a decode failure logged. The magic makes the incompatibility explicit: an
+ * old slot reads as "no artwork" and the render falls back cleanly (FR-29) until the web app
+ * pushes a new set. The web app mirrors this value. */
+#define ARTWORK_MAGIC       0x4C474150u   /* "PAGL" little-endian */
 #define ARTWORK_MAX_PAGES   8             /* matches LAYOUT_MAX_PAGES */
 #define ARTWORK_RAW_LEN     78200u        /* one inflated layer (HW-6) */
 
@@ -62,11 +71,57 @@
 _Static_assert(ARTWORK_STRIP_RAW * ARTWORK_STRIP_COUNT == ARTWORK_RAW_LEN,
                "the strip size must divide the layer exactly");
 
-/* The compressed budget per page. The measured default layer is 966 bytes; 4 KB allows a
- * genuinely detailed layout (a bitmap-heavy one) to still fit, and 8 pages x 4 KB is 32 KB —
- * comfortably inside the 48 KB artwork slot this lives in. A stream larger than this is refused
- * rather than truncated, because a truncated stream inflates to garbage. */
-#define ARTWORK_MAX_COMP    4096u
+/* The compressed budget per page. The measured default layer is 966 bytes; the budget must now
+ * hold a whole uploaded PICTURE, which is what an image box bakes into this layer. Measured on
+ * the real encoder (Floyd-Steinberg dithered, compressed as per-strip zlib streams): a 320x220
+ * photo is 8.1 KB, a 520x340 photo is 18.4 KB, and a 700x470 (near-half-panel) photo is 32.6 KB.
+ * 48 KB fits any picture a panel this size can meaningfully show.
+ *
+ * WHY THIS IS SAFE TO RAISE, when the old comment here worried about exactly that: the decoder no
+ * longer stages the whole blob. Each strip carries its own length, so the read buffer is bounded
+ * by ONE strip's compressed size — a 34-row band of 1-bit image, which compresses to a few KB at
+ * worst. The static buffers in api_store.c therefore stay strip-sized no matter how large this
+ * budget grows, which is what keeps a big number here from becoming `.bss` the heap cannot have.
+ *
+ * THE SLOT PAIR MUST STILL HOLD IT: two pages of 48 KB exceed the 48 KB artwork_a/artwork_b slots.
+ * The encoder sums the SET and refuses an upload the device could not store — see the total check
+ * in webapp/src/transfer/artwork.ts — so an oversized document fails at Save with a message rather
+ * than on the glass. A stream larger than this is refused rather than truncated, because a
+ * truncated stream inflates to garbage. */
+#define ARTWORK_MAX_COMP    49152u
+
+/* One strip's compressed ceiling: the length prefix is a uint16, so a strip MUST compress to less
+ * than 64 KB. A 3,910-byte strip of 1-bit image cannot exceed ~4.2 KB even as pure noise (zlib's
+ * worst case adds ~5 bytes per 16 KB block plus the header), so this is slack of an order of
+ * magnitude rather than a limit anyone can hit — but it is asserted, because a stream that
+ * overflowed the prefix would wrap to a SMALL number and the decoder would then read the wrong
+ * bytes as the next strip. */
+#define ARTWORK_STRIP_COMP_MAX  65535u
+_Static_assert(ARTWORK_STRIP_RAW + 5u * ((ARTWORK_STRIP_RAW + 65534u) / 65535u) + 6u
+               <= ARTWORK_STRIP_COMP_MAX,
+               "a strip's worst-case zlib size must fit the uint16 length prefix");
+
+/* The buffer a decoder needs for ONE strip's compressed bytes. This is the number that replaced the
+ * whole-page buffer, and it is derived rather than guessed. zlib's worst case for n bytes of
+ * incompressible input is n + 5*ceil(n / 65535) + 6 — one stored block, whose 5-byte header the
+ * 65535-byte block limit forces, plus the 2-byte zlib header and 4-byte Adler-32. For a 3,910-byte
+ * strip that is 3,921, so a strip's RAW size plus 128 is slack of three times what the format can
+ * need while staying obviously related to the geometry.
+ *
+ * IT IS DELIBERATELY NOT A ROUND "4 KB": the point is that ONE strip's compressed size is a
+ * property of the strip geometry, so it does NOT move when the page budget grows to hold a
+ * picture. A prefix claiming more than this is refused as corrupt rather than read into the
+ * buffer. The static_assert below pins the zlib bound so this cannot silently become too small. */
+#define ARTWORK_STRIP_COMP_CAP  (ARTWORK_STRIP_RAW + 128u)
+_Static_assert(ARTWORK_STRIP_RAW + 5u * ((ARTWORK_STRIP_RAW + 65534u) / 65535u) + 6u
+               <= ARTWORK_STRIP_COMP_CAP,
+               "a strip's worst-case zlib size must fit the decoder's scratch buffer");
+
+/* Read one strip's length prefix. Returns 0 with `*out` set, or -1 when fewer than two bytes are
+ * available or the prefix is zero/over ARTWORK_STRIP_COMP_MAX — both of which mean the blob is not
+ * this format, so the caller must fail the page rather than read on. Pure, so the framing is
+ * host-tested and the device's decoder is a loop around something already proven. */
+int artwork_strip_len(const uint8_t *p, size_t avail, uint16_t *out);
 
 typedef struct {
     uint32_t magic;

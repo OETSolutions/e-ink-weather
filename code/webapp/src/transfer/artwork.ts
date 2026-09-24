@@ -60,12 +60,21 @@ async function zlibDeflate(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
-/** Must match artwork.h. The magic was bumped when a page became a run of per-strip streams — see
- * the note on ARTWORK_MAGIC in the header; the value must stay in lockstep with the firmware. */
-export const ARTWORK_MAGIC = 0x53474150;
+/** Must match artwork.h. The magic was bumped when each strip gained a uint16 length prefix — the
+ *  device reads one strip at a time by that length, so a prefixless blob would be decoded as
+ *  garbage. The value must stay in lockstep with the firmware. */
+export const ARTWORK_MAGIC = 0x4c474150;
 export const ARTWORK_MAX_PAGES = 8;
 export const ARTWORK_RAW_LEN = FB_BYTES;
-export const ARTWORK_MAX_COMP = 4096;
+/** The per-page compressed budget, mirrored from artwork.h. Sized to hold a whole PICTURE — an
+ *  image box bakes into this layer — rather than just a text layout. */
+export const ARTWORK_MAX_COMP = 49152;
+/** The device's artwork slot size (partitions.csv: artwork_a/artwork_b are 0xC000 each). The whole
+ *  encoded set must fit one slot, because the device erases the spare and streams the set into it.
+ *  The per-page budget alone cannot express that: eight pages of 48 KB would exceed the slot many
+ *  times over, and the device would fail mid-stream instead of the encoder refusing up front. */
+export const ARTWORK_SLOT_SIZE = 0xc000;
+const ARTWORK_STRIP_COMP_MAX = 65535;
 /* The strip geometry, mirrored from artwork.h. 3,910 raw bytes = 34 panel rows (34 x 115-byte
  * pitch); 20 strips tile the 680-row layer exactly. The device decompresses each strip with no
  * dictionary, so every strip MUST be its own zlib stream with no cross-strip back-reference. */
@@ -73,6 +82,8 @@ export const ARTWORK_STRIP_RAW = 3910;
 export const ARTWORK_STRIP_COUNT = ARTWORK_RAW_LEN / ARTWORK_STRIP_RAW; /* 20 */
 const ARTWORK_ENTRY_LEN = 12;
 const ARTWORK_HDR_LEN = 16;
+/** Bytes of length prefix in front of each strip stream. */
+const ARTWORK_STRIP_PREFIX = 2;
 
 /** CRC-32 (IEEE), the same value the device's artwork_crc32() produces. */
 const CRC_TABLE = (() => {
@@ -130,19 +141,36 @@ export async function encodeArtwork(
     if (l.length !== ARTWORK_RAW_LEN) {
       throw new Error(`page ${i}: layer must be ${ARTWORK_RAW_LEN} bytes, got ${l.length}`);
     }
-    /* Compress strip by strip and concatenate. A strip is exactly ARTWORK_STRIP_RAW bytes (the
-     * layer divides evenly), so the slices tile it with no tail. */
+    /* Compress strip by strip and concatenate, EACH PREFIXED BY ITS LENGTH. The prefix is what
+     * lets the device read one strip at a time from flash instead of staging the whole page — see
+     * ARTWORK_MAX_COMP in artwork.h for why that matters once a page holds a picture. A strip is
+     * exactly ARTWORK_STRIP_RAW bytes (the layer divides evenly), so the slices tile it with no
+     * tail. */
     const parts: Uint8Array[] = [];
     let total = 0;
     for (let k = 0; k < ARTWORK_STRIP_COUNT; k++) {
       const c = await zlibDeflate(l.subarray(k * ARTWORK_STRIP_RAW, (k + 1) * ARTWORK_STRIP_RAW));
-      parts.push(c);
-      total += c.length;
+      /* A strip that does not fit a uint16 prefix would be read back as a smaller number and the
+       * whole page would decode to nonsense. The device asserts the same bound; this is the half
+       * that can report it usefully. */
+      if (c.length === 0 || c.length > ARTWORK_STRIP_COMP_MAX) {
+        throw new Error(
+          `page ${i}: strip ${k} compressed to ${c.length} bytes, which does not fit the ` +
+          `device's 16-bit strip length. This is a bug, not a layout problem.`,
+        );
+      }
+      const framed = new Uint8Array(ARTWORK_STRIP_PREFIX + c.length);
+      framed[0] = c.length & 0xff;
+      framed[1] = (c.length >> 8) & 0xff;
+      framed.set(c, ARTWORK_STRIP_PREFIX);
+      parts.push(framed);
+      total += framed.length;
     }
     if (total > ARTWORK_MAX_COMP) {
       throw new Error(
         `page ${i}: compressed layer is ${total} bytes, over the device's ` +
-        `${ARTWORK_MAX_COMP}-byte budget. The layout is too detailed to store.`,
+        `${ARTWORK_MAX_COMP}-byte budget. Use a smaller picture in this page's image box, or ` +
+        `fewer boxes.`,
       );
     }
     const page = new Uint8Array(total);
@@ -154,6 +182,21 @@ export async function encodeArtwork(
   /* Lay the blob out first, so each entry's offset is known before the table is written. */
   let blobLen = 0;
   for (const s of streams) if (s) blobLen += s.length;
+
+  /* THE WHOLE SET MUST FIT ONE SLOT. The device erases the spare slot and streams the set into it,
+   * and the header plus the fixed entry table sit in front of the blob — so the check has to cover
+   * all three, not just the blob. Checking here rather than on the device turns "the upload failed
+   * half way through" into a sentence the user can act on, and it is reachable: the per-page budget
+   * is now large enough for a picture, so two picture-heavy pages can genuinely exceed 48 KB. */
+  const total_bytes = ARTWORK_HDR_LEN + ARTWORK_ENTRY_LEN * ARTWORK_MAX_PAGES + blobLen;
+  if (total_bytes > ARTWORK_SLOT_SIZE) {
+    throw new Error(
+      `this layout needs ${total_bytes} bytes of artwork but the display can store ` +
+      `${ARTWORK_SLOT_SIZE}. Use smaller pictures, or put the large ones on fewer pages ` +
+      `(currently ${layers.length}).`,
+    );
+  }
+
   const blob = new Uint8Array(blobLen);
   const entries = new Uint8Array(ARTWORK_ENTRY_LEN * ARTWORK_MAX_PAGES); /* padded */
   const ev = new DataView(entries.buffer);

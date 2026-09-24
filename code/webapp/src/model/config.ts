@@ -44,7 +44,7 @@ export type AlertLevel = 'none' | 'advisory' | 'warning' | 'severe';
 
 export type PowerMode = 'auto' | 'always-on' | 'battery';
 
-export type DataSourceKind = 'owm-current' | 'owm-daily' | 'owm-alert' | 'ha';
+export type DataSourceKind = 'owm-current' | 'owm-daily' | 'owm-alert' | 'ha' | 'image';
 
 export interface DataBinding {
   kind: DataSourceKind;
@@ -149,6 +149,29 @@ export interface Label {
   text: string;
   /** Pixel size; the ladder resolves it to a face, exactly like a widget's font.size. */
   font: number;
+}
+
+/** A picture the user uploaded into a box.
+ *
+ *  AN IMAGE BOX IS A WIDGET whose binding kind is 'image' and whose role is 'static'. That is not
+ *  a trick: the pixels ARE static content, baked into the page's artwork exactly like a heading or
+ *  a divider, and the firmware already skips a static widget — so an image box needs NO firmware
+ *  support at all. The widget's x/y/w/h is the placement, and the raster is produced at that exact
+ *  size, so the artwork needs no scaling at draw time and the preview matches the glass.
+ *
+ *  THE PIXELS DO NOT LIVE IN THE CONFIG. The device is a 1-bit ink-only panel with no image
+ *  decoder, so the app rasterises the picture to black-and-white and bakes it into the page's
+ *  artwork (FR-1: the device stamps VALUES, the app draws everything else). The ORIGINAL image is
+ *  held by the browser (see ui/image-store.ts) so the box can be resized and re-dithered.
+ *
+ *  WHY NOT THE PIXELS IN THE CONFIG, which would make the picture travel with the layout: the
+ *  device re-parses the whole document on EVERY refresh tick, inside the render window where the
+ *  largest free block falls to ~1.7 KB, and a PUT is already refused with `oom` above ~12 KB
+ *  (measured). A rasterised picture is 3-20 KB compressed, so carrying it here would push every
+ *  refresh through an allocation that has already failed on this board. The artwork partition
+ *  exists for exactly this and is read only when a layer is drawn. */
+export interface ImageBinding {
+  kind: 'image';
 }
 
 export interface Page {

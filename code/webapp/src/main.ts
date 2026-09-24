@@ -21,6 +21,9 @@ import { searchEntities } from './data/ha';
 import { previewTextWithLive, type LiveValue } from './data/format';
 import { defaultLayout, artworkForPage } from './presets/default-layout';
 import { buildStaticLayer } from './canvas/render';
+import { PANEL_WIDTH, PANEL_HEIGHT } from './model/canvas-consts';
+import { rasterizeImage, clampPlacement, decodeImageFile, type StaticImage } from './canvas/image';
+import { getImage, setImage, clearImage, hasImage, isImageBinding, persistImage, loadImagesFromDb, releaseAllImages } from './ui/image-store';
 import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement';
 import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, LABEL_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
@@ -187,7 +190,7 @@ async function saveConfig(doc: Config): Promise<SaveResult> {
  * Give a page the dividers its art defaults to, when the document carries none.
  *
  * WHY THIS IS NEEDED AT ALL: a device configured before rules moved into the document has no
- * `rules` key, but buildPageLayer() still DRAWS the art table's lines. Left alone, the user would
+ * `rules` key, but buildPageLayerWith() still DRAWS the art table's lines. Left alone, the user would
  * see dividers on the preview that cannot be grabbed — the drawn set and the editable set would
  * be different, which is the most confusing possible version of "the line will not move". Seeding
  * the page from the same table makes them one set, and the next save persists them so the
@@ -238,21 +241,55 @@ function ensurePageLabels(p: Page, index: number): void {
  * with no art entry and no labels yields a blank layer rather than another page's — a missing
  * picture is honest, the wrong picture is a lie about which page you are looking at.
  */
-function buildPageLayer(page: Page, pageIndex: number): Uint8Array {
+/**
+ * The uploadable 1 bpp layer for a page: heading text, dividers, and the page's PICTURES.
+ *
+ * `images` is passed in rather than read from the image store here, so this stays a pure function of
+ * its inputs and the CALLER decides which pictures are available — which is what lets the editor
+ * show a layer for a browser that does not hold a page's picture (it passes none, and the box
+ * simply bakes as blank on the preview rather than throwing).
+ */
+function buildPageLayerWith(page: Page, pageIndex: number, images: StaticImage[]): Uint8Array {
   const art = artworkForPage(pageIndex);
   const rules = page.rules ?? art.rules;
   const labels = page.labels ?? art.labels;
   return buildStaticLayer(
     labels.map((l) => ({ x: l.x, y: l.y, text: l.text, font: l.font })),
     rules.map((r) => ({ y: r.y, thickness: r.thickness, inset: r.inset })),
+    images,
   ).data;
+}
+
+/** The page's pictures, rasterised from the images THIS browser holds.
+ *
+ *  A box whose picture this browser does not have contributes NOTHING — it is skipped rather than
+ *  baked as a black rectangle, because a black box on the glass would look like a deliberate
+ *  design choice and the user would not know the picture had been lost. The editor says so in the
+ *  panel instead (see imageBoxNotice), and Save refuses to overwrite a page whose pictures are
+ *  missing rather than silently wiping them. */
+function pageImages(page: Page): StaticImage[] {
+  const out: StaticImage[] = [];
+  for (const w of page.widgets) {
+    if (!isImageBinding(w.binding)) continue;
+    const img = getImage(w.id);
+    if (!img) continue;
+    const box = clampPlacement(w.x, w.y, w.w, w.h);
+    try {
+      const patch = rasterizeImage(img, box.w, box.h);
+      out.push({ ...patch, x: box.x, y: box.y });
+    } catch {
+      /* A canvas the browser refused, or an image it cannot draw: skip the picture rather than
+       * failing the whole page, so one bad box cannot stop headings and dividers from saving. */
+    }
+  }
+  return out;
 }
 
 async function pushArtwork(doc: Config): Promise<SaveResult> {
   /* One layer per page, built from the page's own art. A page with no art table entry gets a
    * blank layer rather than a copy of another page's — a missing picture is honest, the wrong
    * picture is a lie about which page you are looking at. */
-  const layers: (Uint8Array | null)[] = doc.pages.map((p, i) => buildPageLayer(p, i));
+  const layers: (Uint8Array | null)[] = doc.pages.map((p, i) => buildPageLayerWith(p, i, pageImages(p)));
   const up = await uploadArtwork(layers);
   if (!up.ok) return { ok: false, error: up.error ?? 'The artwork upload failed' };
   return { ok: true, restarting: false };
@@ -261,6 +298,14 @@ async function pushArtwork(doc: Config): Promise<SaveResult> {
 async function mount(root: HTMLElement): Promise<void> {
   const loaded = await loadConfig();
   let doc: Config = loaded ?? emptyConfig();
+
+  /* THE PICTURES MUST BE BACK IN MEMORY BEFORE ANY LAYER IS BUILT. pageImages() reads the
+   * in-memory store synchronously, so a picture still only in IndexedDB would bake as a blank box
+   * — and a Save in that window would erase the picture from the display. Awaiting the load here,
+   * before the first editor layer, is what makes "the layout looks right after a reload" true
+   * rather than nearly true. A file that no longer decodes is reported and then behaves as a
+   * picture this browser does not have, which the panel already explains. */
+  const undecodable = await loadImagesFromDb();
 
   /* ---- the page being edited ----
    *
@@ -300,6 +345,17 @@ async function mount(root: HTMLElement): Promise<void> {
 
   /* ---- DOM, built first ---- */
   const status = el('p', { className: 'status' });
+
+  /* A PICTURE THAT WAS STORED BUT WILL NOT DECODE is reported ONCE, at load, where the user can
+   * see it — and it is reported rather than kept silent because the box will look empty and the
+   * Save guard will then refuse, and neither of those explains itself. The bytes are dropped by
+   * the store, so the fix is simply to choose the file again. */
+  if (undecodable.length > 0) {
+    status.classList.add('err');
+    status.textContent =
+      `${undecodable.length === 1 ? 'A picture' : `${undecodable.length} pictures`} saved in this `
+      + 'browser could not be read back. Choose the file again in that box to restore it.';
+  }
   const mapEl = el('div', { className: 'map' });
   const mapStatus = el('p', { className: 'map-status' });
   const latInput = el('input', {
@@ -432,9 +488,42 @@ async function mount(root: HTMLElement): Promise<void> {
     status.textContent = 'Added a heading. Type its text here or drag it on the panel.';
   }
 
+  /** Add a picture box: an image box is a STATIC widget whose binding kind is 'image', so the
+   *  device skips it entirely and the pixels ride in the page's artwork. It lands in the middle of
+   *  the panel rather than a findPlacement() slot, because a picture is the one box the user cares
+   *  about the SHAPE of — a slot-sized box would be the wrong shape for almost any photo, and the
+   *  panel's hint tells them to match the box to the picture. */
+  function addImageWidget(): void {
+    if (page.widgets.length >= MAX_WIDGETS_PER_PAGE) {
+      status.textContent =
+        `This page already holds the maximum of ${MAX_WIDGETS_PER_PAGE} boxes the display can `
+        + 'draw. Remove one to add another.';
+      status.classList.add('err');
+      return;
+    }
+    /* THE SHAPE OF A TYPICAL PHOTO, not a square: 4:3 in the middle of the panel, which is where a
+     * user puts a picture and a shape most images will not be badly stretched by. */
+    const w = 440, h = 330;
+    const nw: Widget = {
+      id: freshWidgetId(page.widgets),
+      x: Math.round((PANEL_WIDTH - w) / 2), y: Math.round((PANEL_HEIGHT - h) / 2), w, h,
+      role: 'static',
+      binding: { kind: 'image' },
+    };
+    page.widgets.push(nw);
+    editorState.selection = { kind: 'widget', id: nw.id };
+    panel.show(editorState.selection, page);
+    describe(editorState.selection);
+    editor.redraw();
+    status.classList.remove('err');
+    status.textContent =
+      'Added a picture box. Choose a picture file in the panel beside the display.';
+  }
+
   const addBoxBtn = button('Add box', addWidget);
   const addRuleBtn = button('Add divider', addRule);
   const addLabelBtn = button('Add heading', addLabel);
+  const addImageBtn = button('Add picture', addImageWidget);
 
   /* ---- pages: add, delete, rename, and the two intervals (FR-15, FR-25) ----
    *
@@ -954,12 +1043,48 @@ async function mount(root: HTMLElement): Promise<void> {
    * edited — not a fixed 0, and not `indexOf(page)`, which is -1 for a page synthesized for a
    * device document that carried no such entry. */
   function rebuildEditedLayer(): Uint8Array {
-    return buildPageLayer(page, pageIndex);
+    return buildPageLayerWith(page, pageIndex, pageImages(page));
   }
 
   const panel: PropertyPanelHandle = createPropertyPanel({
     host: panelHost,
     onEntitySearch: (q) => entitySearch(q),
+    /* THE PICTURE IS DECODED AND HELD HERE, not in the panel. The panel is rebuilt on every
+     * repaint (render()) and would lose anything it held; the store is module-level for exactly
+     * that reason, and the decode's failure has to be reported where the user can see it — which
+     * is this status line, not a control that silently stays empty. */
+    onImageFile: (widgetId, file) => {
+      void (async () => {
+        try {
+          const img = await decodeImageFile(file);
+          setImage(widgetId, img);
+          /* PERSISTED SEPARATELY FROM DECODING, and after it: a file that will not decode must not
+           * be stored, or every later reload would try to decode it again and fail. */
+          await persistImage(widgetId, file);
+          /* The layer is rebuilt from the store, so the preview shows the dithered result at once —
+           * at the box's own size, which is the size it will print. */
+          editor.setLayer(rebuildEditedLayer());
+          panel.show(editorState.selection, page);
+          editor.redraw();
+          status.classList.remove('err');
+          status.textContent =
+            'Picture loaded. It is drawn in black and white at the box’s size — save to put it on '
+            + 'the display.';
+        } catch (e) {
+          status.classList.add('err');
+          status.textContent = e instanceof Error ? e.message : 'That picture could not be read.';
+        }
+      })();
+    },
+    onImageClear: (widgetId) => {
+      clearImage(widgetId);
+      editor.setLayer(rebuildEditedLayer());
+      panel.show(editorState.selection, page);
+      editor.redraw();
+      status.classList.remove('err');
+      status.textContent = 'Picture removed. Save to clear it from the display.';
+    },
+    hasImage,
     onChange: () => {
       /* A format or alert change alters the preview text, so refresh it — otherwise the panel
        * would edit a widget while the canvas kept painting the old value. */
@@ -991,6 +1116,10 @@ async function mount(root: HTMLElement): Promise<void> {
       } else {
         const i = page.widgets.findIndex((w) => w.id === s.id);
         if (i >= 0) page.widgets.splice(i, 1);
+        /* RELEASE THE PICTURE, if this box had one. An ImageBitmap holds decoded pixels outside the
+         * JS heap, so deleting a picture box without closing its bitmap would keep that memory for
+         * the life of the tab — and a user trying several large photos would accumulate them. */
+        clearImage(s.id);
         editorState.values = previewValues(page, alertProbe, liveValues);
       }
       editorState.selection = undefined;
@@ -1123,6 +1252,11 @@ async function mount(root: HTMLElement): Promise<void> {
   pollValues();
   window.addEventListener('beforeunload', () => window.clearInterval(valuesTimer));
 
+  /* Release the decoded pictures when the page goes away. An ImageBitmap holds pixel memory outside
+   * the JS heap, so without this a tab left open after a few large photos would hold all of them.
+   * The PERSISTED copies in IndexedDB stay, which is what makes them come back on the next load. */
+  window.addEventListener('beforeunload', () => releaseAllImages());
+
   async function doSave(): Promise<void> {
     const p = picker.getPosition();
     /* WRITE THE EDITED PAGE BACK BY INDEX, not as `[page, ...slice(1)]`. That construction
@@ -1136,6 +1270,36 @@ async function mount(root: HTMLElement): Promise<void> {
       location: { ...doc.location, latitude: p.lat, longitude: p.lon, zipCode: zipInput.value },
       pages,
     };
+
+    /* REFUSE TO SAVE OVER A PICTURE THIS BROWSER CANNOT SUPPLY.
+     *
+     * A Save re-bakes the WHOLE artwork set for every page, so one page whose picture is missing
+     * here would be written back with that box blank — the picture would disappear from the
+     * display, and nothing anywhere would say why. The pixels live in the browser that uploaded
+     * them (they are deliberately not in the config: the device re-parses it every refresh tick
+     * and a PUT already fails above ~12 KB), so a layout opened on another machine, or one whose
+     * stored copy was cleared, is in exactly this state.
+     *
+     * REFUSING RATHER THAN SAVING WITH A WARNING is the deliberate choice: a warning the user
+     * dismisses still writes the blank layer, and "my picture vanished" is not recoverable from
+     * the device — the pixels are gone from the only place that had them. The message names the
+     * page and the fix, so the user can re-choose the file and save.
+     */
+    const missing: string[] = [];
+    for (const pg of doc.pages) {
+      for (const w of pg.widgets ?? []) {
+        if (isImageBinding(w.binding) && !hasImage(w.id)) missing.push(pg.name || '(unnamed)');
+      }
+    }
+    if (missing.length > 0) {
+      const names = [...new Set(missing)].join(', ');
+      status.classList.add('err');
+      status.textContent =
+        `This browser does not have the picture for a box on ${names}. Saving would erase it from `
+        + 'the display. Choose the picture again in that box, then save — or delete the box if you '
+        + 'want it gone.';
+      return;
+    }
     /* The button carries its own state. A message at the top of the page is easy to miss when
      * the user is looking at the button they just pressed, and "did it save?" is the one
      * question this app must never leave ambiguous. */
@@ -1219,7 +1383,8 @@ async function mount(root: HTMLElement): Promise<void> {
     el('h2', {}, 'Layout'),
     el('p', { className: 'sub' },
        'Drag a value box to move it, or drag its edge to resize. Drag a divider to move the ' +
-       'line, or a heading to move it. This is the real 1-bit output the panel will show.'),
+       'line, or a heading to move it. Add a picture to put an image in the background. This is ' +
+       'the real 1-bit output the panel will show.'),
     el('div', { className: 'fields' },
        el('div', {}, el('label', { htmlFor: 'editPage' }, 'Editing page'), pageSel)),
     pageHint,
@@ -1238,7 +1403,7 @@ async function mount(root: HTMLElement): Promise<void> {
     el('div', { className: 'actions' }, addPageBtn, delPageBtn),
     el('div', { className: 'toolbar' },
        zoomOut, zoomIn, zoomFit, bitBadge, zoomLabel),
-    el('div', { className: 'actions' }, addBoxBtn, addRuleBtn, addLabelBtn),
+    el('div', { className: 'actions' }, addBoxBtn, addRuleBtn, addLabelBtn, addImageBtn),
     el('div', { className: 'editorLayout' },
        el('div', { className: 'editorWrap' }, canvasEl),
        panelHost),

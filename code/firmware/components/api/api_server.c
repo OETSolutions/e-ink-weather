@@ -1735,11 +1735,17 @@ static esp_err_t h_artwork(httpd_req_t *req)
     }
 
     if (offset == 0) {
-        /* Bounded so a hostile or buggy client cannot ask the device to erase and fill a
-         * partition with an arbitrarily long stream (NFR-2 has no PSRAM to spare). */
-        const uint32_t max_total = (uint32_t)artwork_blob_offset()
-                                 + ARTWORK_MAX_COMP * ARTWORK_MAX_PAGES;
-        if (total == 0 || total > max_total) {
+        /* Bounded by the SLOT, not by the per-page budget times the page count.
+         *
+         * `artwork_blob_offset() + ARTWORK_MAX_COMP * ARTWORK_MAX_PAGES` was the same number while
+         * the per-page budget was 4 KB, but it is not a bound at all now that the budget is sized
+         * for a picture: 48 KB x 8 pages is 384 KB against a 48 KB slot, so a hostile client could
+         * have asked the device to stream far more than the partition holds and the write would
+         * have failed mid-way with a confusing error instead of being refused up front. The slot's
+         * own size is the real limit, and artwork_store_write_chunk() would reject a write past it
+         * anyway — this just makes the refusal a clean 400 at the start rather than a 500 later. */
+        const uint32_t max_total = (uint32_t)artwork_store_slot_size();
+        if (total == 0 || max_total == 0 || total > max_total) {
             return api_send_err(req, "400 Bad Request", "artwork total out of range");
         }
         /* A new session starting while one is open is a restart, not an error — the same

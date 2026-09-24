@@ -47,6 +47,15 @@ export interface PropertyPanelOptions {
   onEntitySearch?: (q: string) => void;
   /** True when the HA entity list could not be fetched, so offer free text instead. */
   entitiesUnavailable?: string;
+  /** Called when the user picks a picture file for an image box. The shell decodes it, stores it
+   *  for this widget id and repaints — the panel never touches the image itself, so the decode
+   *  failure and the memory lifetime live in one place (ui/image-store.ts). */
+  onImageFile?: (widgetId: string, file: File) => void;
+  /** Remove the picture from an image box. */
+  onImageClear?: (widgetId: string) => void;
+  /** Whether THIS browser holds the picture for a widget. False for a layout opened elsewhere —
+   *  which the panel must say, because a Save from here cannot bake a picture it does not have. */
+  hasImage?: (widgetId: string) => boolean;
 }
 
 export interface PropertyPanelHandle {
@@ -132,6 +141,7 @@ const KINDS: { value: DataSourceKind; label: string }[] = [
   { value: 'owm-daily', label: 'Forecast' },
   { value: 'owm-alert', label: 'Weather alerts' },
   { value: 'ha', label: 'Home Assistant entity' },
+  { value: 'image', label: 'Picture I upload' },
 ];
 const OPS: AlertOp[] = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'];
 const LEVELS: Exclude<AlertLevel, 'none'>[] = ['advisory', 'warning', 'severe'];
@@ -382,13 +392,58 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
             ? { kind: 'owm-daily', dayIndex: 0, owmField: 'max' }
             : k === 'owm-alert'
               ? { kind: 'owm-alert' }
-              : { kind: 'owm-current', owmField: 'temp' };
-        commit({ binding: fresh });
+              : k === 'image'
+                ? { kind: 'image' }
+                : { kind: 'owm-current', owmField: 'temp' };
+        /* AN IMAGE BOX IS STATIC; every other kind is a reading. The role is what the device reads
+         * to decide whether to stamp a value into the box at all (it skips static widgets), so
+         * getting it wrong here would either draw a picture AND a reading over it, or leave a
+         * reading box that never shows anything. Switching AWAY from image must restore 'dynamic'
+         * for the same reason. */
+        commit({ binding: fresh, role: k === 'image' ? 'static' : 'dynamic' });
+        /* A picture box needs no alert rules or number format, and leaving the ones a previous
+         * kind installed would put "°F" beside nothing. */
+        if (k === 'image') commit({ format: undefined, alerts: undefined });
         render();
       })),
     );
 
-    if (binding.kind === 'ha') {
+    if (binding.kind === 'image') {
+      const idc = el('input', { type: 'file', accept: 'image/*' }) as HTMLInputElement;
+      /* A file input cannot be styled into a button reliably, so the label carries the text and
+       * the input sits beside it. `aria-label` keeps it addressable for a screen reader and for
+       * the editor check, which drives this by label. */
+      idc.setAttribute('aria-label', 'Choose a picture');
+      idc.addEventListener('change', () => {
+        const f = idc.files?.[0];
+        if (f) opts.onImageFile?.(w.id, f);
+        /* Cleared so choosing the SAME file twice fires another change event — a user who
+         * re-picks the same picture after a failed decode would otherwise see nothing happen. */
+        idc.value = '';
+      });
+      bset.append(field('Picture', idc));
+
+      const held = opts.hasImage?.(w.id) ?? false;
+      if (held) {
+        bset.append(
+          el('p', { className: 'hint' },
+            'This picture is baked into the page’s static layer when you save, at the box’s exact '
+            + 'size. Make the box the shape of the picture — it is stretched to fill the box, and on '
+            + 'this display it is drawn in black and white, so a photo becomes a fine dot pattern.'),
+          el('p', { className: 'hint' }, makeButton('Remove picture', () => opts.onImageClear?.(w.id))),
+        );
+      } else {
+        /* THE PICTURE IS NOT IN THE LAYOUT DOCUMENT, so a layout opened on another computer (or
+         * after this browser's storage was cleared) has the BOX but not its picture. Saying so is
+         * the difference between "the display lost my picture" and "choose it again here" — and a
+         * save from here cannot restore it, because the pixels were never anywhere but the browser
+         * that uploaded them. */
+        bset.append(el('p', { className: 'hint warn' },
+          'This box is a picture, but this browser does not have the picture — it was uploaded from '
+          + 'another device or browser. Choose the file again here. Saving is blocked until then, so '
+          + 'the picture already on the display cannot be erased by accident.'));
+      }
+    } else if (binding.kind === 'ha') {
       const list = document.createElement('datalist');
       list.id = 'ha-entities';
       for (const e of entities) {
@@ -462,6 +517,17 @@ export function createPropertyPanel(opts: PropertyPanelOptions): PropertyPanelHa
 
     bset.append(el('p', { className: 'hint' }, describeBinding(binding)));
     host.append(bset);
+
+    /* AN IMAGE BOX HAS NO READING, so there is nothing to format, no font to set and no value to
+     * put rules on. Showing those controls anyway would be the "control that appears to work while
+     * having no effect" defect this project has hit repeatedly — a decimals spinner next to a
+     * picture does nothing at all on the glass. The geometry section above still applies, because
+     * the box IS the picture's placement. */
+    if (binding.kind === 'image') {
+      host.append(el('div', { className: 'actions' },
+        makeButton('Delete box', () => onDelete(currentSel!))));
+      return;
+    }
 
     /* ---- formatting ---- */
     const fmt = w.format ?? {};

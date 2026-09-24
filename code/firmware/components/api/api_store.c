@@ -421,6 +421,16 @@ void artwork_store_identity(int *page_count_out, uint32_t *seq_out)
     if (seq_out)        *seq_out        = (live < 0) ? 0 : h.seq;
 }
 
+uint32_t artwork_store_slot_size(void)
+{
+    /* Either slot: they are the same size by construction (partitions.csv sizes artwork_a and
+     * artwork_b identically), and an upload always targets the spare. Reading slot A's size is
+     * therefore the whole answer, and 0 when the partition is missing lets the caller refuse the
+     * upload rather than erase-then-fail in the middle of it. */
+    const esp_partition_t *p = aw_part(BITMAP_SLOT_A);
+    return p ? (uint32_t)p->size : 0;
+}
+
 /* Read page `page`'s entry from the live slot into `*e`, and return the live partition.
  *
  * Returns the partition, or NULL (with `*e` zeroed) when there is no live artwork, no entry for
@@ -526,8 +536,11 @@ static int inflate_one(artwork_inflate_t *w, const uint8_t *comp, size_t comp_le
  * same large DRAM region the layer's segments need — and the two together do not fit. Strips need
  * no dictionary, so this path never competes with the layer for a large block.
  *
- * The strips are back-to-back inside the page's single stored blob, so the cursor walks it with no
- * per-strip offset table — the strip size is fixed and divides the layer exactly. */
+ * EACH STRIP IS READ FROM FLASH ON ITS OWN, under a uint16 length prefix. An earlier revision read
+ * the page's WHOLE compressed blob into one static buffer and then walked it strip by strip; that
+ * made the static buffer as large as the page budget, so raising the budget to hold a real picture
+ * would have added tens of KB of `.bss` — DRAM the heap does not get. Reading per strip keeps the
+ * scratch a function of the STRIP geometry, which does not grow with the page budget. */
 int artwork_store_load_page_seg(int page, segbuf_t *b, artwork_inflate_t *w)
 {
     if (!b || !w || page < 0 || b->total < ARTWORK_RAW_LEN) return -1;
@@ -536,32 +549,65 @@ int artwork_store_load_page_seg(int page, segbuf_t *b, artwork_inflate_t *w)
     const esp_partition_t *p = aw_page_entry(page, NULL, &e);
     if (!p) return -1;
 
-    /* Read the whole page blob into a static scratch. Measured 1,633-2,800 bytes for the shipped
-     * two-page layout (20 strips); the budget is 4 KB, which the encoder refuses to exceed. */
-    static uint8_t comp[ARTWORK_MAX_COMP];
-    if (esp_partition_read(p, artwork_blob_offset() + e.offset, comp, e.comp_len) != ESP_OK) {
-        ESP_LOGE(TAG, "artwork stream read failed for page %d", page);
-        return -1;
-    }
-
-    /* One strip's inflated bytes. Static, not on the render worker's stack (see main.c). */
+    /* One strip's compressed bytes and one strip's inflated bytes. Both are sized by the strip
+     * geometry, not by the page budget, and both are static rather than on the render worker's
+     * small stack (see main.c). */
+    static uint8_t comp[ARTWORK_STRIP_COMP_CAP];
     static uint8_t strip[ARTWORK_STRIP_RAW];
 
-    size_t in = 0;
+    /* The cursor walks the page's blob, which is a run of length-prefixed streams with no
+     * per-strip offset table. `end` is the page's last byte, so a prefix that claims more than
+     * remains is caught before any read runs past this page into the next. */
+    const uint32_t base = artwork_blob_offset() + e.offset;
+    const uint32_t end = base + e.comp_len;
+    uint32_t at = base;
+
     for (int i = 0; i < (int)ARTWORK_STRIP_COUNT; i++) {
-        const int used = inflate_one(w, comp + in, e.comp_len - in, strip, ARTWORK_STRIP_RAW);
-        if (used <= 0) {
-            ESP_LOGE(TAG, "artwork strip %d/%u of page %d failed to inflate "
-                          "(comp_len=%u, consumed=%u)",
-                     i, (unsigned)ARTWORK_STRIP_COUNT, page, (unsigned)e.comp_len, (unsigned)in);
+        if (at + 2 > end) {
+            ESP_LOGE(TAG, "artwork page %d ended before strip %d", page, i);
             return -1;
         }
-        in += (size_t)used;
+        uint8_t pre[2];
+        if (esp_partition_read(p, at, pre, sizeof(pre)) != ESP_OK) return -1;
+        uint16_t clen = 0;
+        if (artwork_strip_len(pre, sizeof(pre), &clen) != 0) {
+            ESP_LOGE(TAG, "artwork page %d strip %d has a bad length prefix", page, i);
+            return -1;
+        }
+        at += 2;
+        if (clen > sizeof(comp) || at + clen > end) {
+            ESP_LOGE(TAG, "artwork page %d strip %d length %u does not fit the page",
+                     page, i, (unsigned)clen);
+            return -1;
+        }
+        if (esp_partition_read(p, at, comp, clen) != ESP_OK) {
+            ESP_LOGE(TAG, "artwork stream read failed for page %d strip %d", page, i);
+            return -1;
+        }
+        at += clen;
+
+        /* The whole stream is in `comp`, so `used` is expected to consume all of it — a stream
+         * that left input unread would mean the prefix and the stream disagree. */
+        const int used = inflate_one(w, comp, clen, strip, ARTWORK_STRIP_RAW);
+        if (used != (int)clen) {
+            ESP_LOGE(TAG, "artwork strip %d/%u of page %d failed to inflate "
+                          "(clen=%u, consumed=%d)",
+                     i, (unsigned)ARTWORK_STRIP_COUNT, page, (unsigned)clen, used);
+            return -1;
+        }
 
         if (segbuf_write(b, (size_t)i * ARTWORK_STRIP_RAW, strip, ARTWORK_STRIP_RAW) != 0) {
             ESP_LOGE(TAG, "artwork strip %d write failed for page %d", i, page);
             return -1;
         }
+    }
+
+    /* Every byte of the page must have been consumed. Trailing bytes mean the stored stream does
+     * not match the strip geometry, which is a corrupt or newer-format blob — silently ignoring
+     * them would let a wrong picture render as a plausible one. */
+    if (at != end) {
+        ESP_LOGE(TAG, "artwork page %d left %u bytes unread", page, (unsigned)(end - at));
+        return -1;
     }
     return 0;
 }

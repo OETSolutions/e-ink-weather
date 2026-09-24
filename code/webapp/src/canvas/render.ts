@@ -19,6 +19,7 @@ import {
 } from './bitmap';
 import { FACES, type Face, type Glyph } from './atlas-data';
 import { faceIdForPx } from './face';
+import type { StaticImage } from './image';
 import { WEATHER_ICONS } from './weather-icons-data';
 import { weatherIconIndex, WeatherIcon } from './weather-icons';
 
@@ -334,8 +335,14 @@ export function drawText(
  * gives the origin the renderer needs while never clipping a glyph the panel could show; the
  * canvas still bounds ink to the panel, which is the only clip a label should ever hit.
  */
-export function buildStaticLayer(labels: StaticLabel[], rules: StaticRule[]): Bitmap {
+export function buildStaticLayer(labels: StaticLabel[], rules: StaticRule[], images: StaticImage[] = []): Bitmap {
   const b = createBitmap();
+  /* A PICTURE IS INK, SO THE ORDER DOES NOT MATTER — and that is a property worth stating rather
+   * than leaving implicit. Every element here (a picture, a heading, a divider) only ever SETS
+   * ink; none paints white. So a picture and a heading that overlap both survive, whichever is
+   * drawn first, and the user can put a caption on a picture without losing either. Painting the
+   * pictures first is simply the order that reads naturally. */
+  for (const im of images) blitInk(b, im);
   for (const l of labels) {
     drawText(b, l.x, l.y, l.text, faceIdForPx(l.font), b.width - l.x, b.height - l.y);
   }
@@ -347,4 +354,27 @@ export function buildStaticLayer(labels: StaticLabel[], rules: StaticRule[]): Bi
     }
   }
   return b;
+}
+
+/**
+ * Blit a 1 bpp ink patch onto the layer, in the ATLAS convention (a set source bit is ink).
+ *
+ * DELIBERATELY THE SAME OPERATION AS blitMasked() FOR GLYPHS: an image is stamped as ink onto
+ * whatever is underneath, and a white source pixel is TRANSPARENT rather than white — so a picture
+ * cannot punch a white rectangle through a divider it overlaps. That matters because the user can
+ * drag an image box over a rule.
+ *
+ * Coordinates are whole pixels by the time they get here (clampPlacement rounds), and setPx floors
+ * anyway, so a patch can never land on a half pixel and vanish.
+ */
+export function blitInk(dst: Bitmap, im: StaticImage): void {
+  for (let sy = 0; sy < im.h; sy++) {
+    const row = sy * im.pitch;
+    for (let sx = 0; sx < im.w; sx++) {
+      const byte = im.ink[row + (sx >> 3)];
+      if (byte === undefined) continue;
+      if ((byte & (0x80 >> (sx & 7))) === 0) continue; /* source clear = white = transparent */
+      setPx(dst, im.x + sx, im.y + sy, true);
+    }
+  }
 }
