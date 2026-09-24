@@ -23,8 +23,46 @@ permissions:
   contents: write
 
 jobs:
+  # A RELEASE MUST NOT SHIP UNTESTED CODE, and the tag is what triggers it — so the tests run
+  # here rather than being assumed from whatever CI did on main. `release` needs this job, so a
+  # failing suite blocks the publish instead of being noticed afterwards: a release is the one
+  # artifact that reaches devices over the air and cannot be quietly corrected.
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # test_artwork decodes the real webapp artwork fixture on the host, so it needs zlib (-lz).
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      - name: Firmware host tests
+        working-directory: code/firmware
+        run: pio test -e native
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: code/webapp/package-lock.json
+      - name: Web app dependencies
+        working-directory: code/webapp
+        run: npm ci
+      - name: Web app typecheck
+        working-directory: code/webapp
+        run: npx tsc --noEmit
+      - name: Web app tests
+        working-directory: code/webapp
+        run: npm test
+
   release:
     name: Build and publish release
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
