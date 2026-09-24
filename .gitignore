@@ -15,6 +15,9 @@ secrets.json
 .DS_Store
 __pycache__/
 *.pyc
+# Editor state. It carries ABSOLUTE local paths (cmake.sourceDirectory), so committing it would
+# publish the author's directory layout and break every other clone.
+.vscode/
 
 # Large derived artifacts — regenerable from the sources that ARE tracked.
 # Kept out of history deliberately: 217 MB of intermediates would bloat the repo
