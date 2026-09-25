@@ -272,9 +272,26 @@ static int ensure_static(void)
      * single-stream version wedged (it reserved the window and returned without giving it back). */
     if (!s_inflate) s_inflate = artwork_inflate_reserve();
 
-    if (s_inflate && segbuf_alloc(&s_layer, EPD_FB_BYTES, 16384u, 2048u,
-                                  layer_seg_alloc, layer_seg_free) == 0) {
-        return 0;
+    /* BOUNDED WAIT — this is load-bearing and was briefly lost in the segmented rewrite.
+     *
+     * A single attempt is not enough because the region is fragmented by TRANSIENT network-stack
+     * allocations that free on their own: measured, the largest free block sits below what the
+     * layer needs for up to ~1.45 s after a fetch, then coalesces. Without this loop such a tick
+     * fails outright, records an OOM and leaves the panel stale even though the memory returns a
+     * moment later — the exact "reports failure while the device is fine" class FR-29 exists to
+     * avoid. segbuf_alloc() frees every partial segment it took before returning, so retrying it
+     * leaks nothing. The cost is paid ONLY on a losing tick: a healthy tick returns on the first
+     * attempt having waited nothing. See FB_ACQUIRE_WAIT_MS for the measurement behind the ceiling. */
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)FB_ACQUIRE_WAIT_MS * 1000;
+    if (s_inflate) {
+        for (;;) {
+            if (segbuf_alloc(&s_layer, EPD_FB_BYTES, 16384u, 2048u,
+                             layer_seg_alloc, layer_seg_free) == 0) {
+                return 0;
+            }
+            if (esp_timer_get_time() >= deadline_us) break;
+            vTaskDelay(pdMS_TO_TICKS(FB_ACQUIRE_POLL_MS));
+        }
     }
 
     /* A failure here means the heap has no room for the layer at all (the decompressor is tiny by
@@ -1901,9 +1918,20 @@ static void refresh_tick_locked(power_source_t source, int force_full)
     if (ensure_static() != 0) {
         /* Flag it so the serve loop retries shortly instead of holding the stale image for a
          * full interval; the flag is the only signal, since the image on the glass is
-         * deliberately untouched. */
+         * deliberately untouched.
+         *
+         * The BOTH-numbers profile is carried in the message because /api/status is the field
+         * diagnostic (FR-33) and there is no console in the field: `largest_free_block` is the
+         * number that predicts whether the next acquire can succeed, and pairing it with the
+         * total tells "fragmented" (total high, largest low) from "genuinely out of memory"
+         * (both low) without a re-flash. ensure_static() has already waited FB_ACQUIRE_WAIT_MS
+         * for a transient fragmenter to clear before this point is reached. */
         s_fb_lost = 1;
-        api_note_error("render: out of memory for the static layer");
+        char _m[80];
+        snprintf(_m, sizeof(_m), "render: no static layer (free %u, largest %u)",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        api_note_error(_m);
         return;
     }
     s_fb_lost = 0;

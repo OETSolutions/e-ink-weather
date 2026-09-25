@@ -6,11 +6,12 @@ Home Assistant — configured from a browser-based layout editor with no code an
 recompiling.
 
 <p align="center">
-  <img src="docs/images/device-panel.jpg" alt="The finished display in its printed case, showing temperature, conditions, the Home Assistant 'Hallway' reading, forecast highs/lows and the time of the last update" width="640">
+  <img src="docs/images/device-preview.png" alt="The panel preview from the layout config app: temperature, conditions, the Home Assistant 'Hallway' reading, forecast highs/lows and the time of the last update" width="640">
 </p>
 
-<p align="center"><em>The finished unit. Everything on the glass — headings, boxes, dividers,
-icons and values — is placed by the layout editor below, not hard-coded in the firmware.</em></p>
+<p align="center"><em>What the glass shows, captured from the layout editor's preview. Everything on
+screen — headings, boxes, dividers, icons and values — is placed by the layout editor below, not
+hard-coded in the firmware.</em></p>
 
 <table>
 <tr>
