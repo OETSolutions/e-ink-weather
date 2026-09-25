@@ -53,6 +53,28 @@ for z,label in [(CASE_D-.2,'lip early layer'),(LIP_UNDERSIDE+.2,'lip final layer
 # No material may float below the split plane.
 if bezel.BoundBox.ZMin<SPLIT_Z-1e-5:fails.append('bezel extends below split plane')
 
+# Bezel bed-edge overhang. The bezel prints cosmetic-face-down, so z=CASE_D is the bed and the
+# part is built toward decreasing z. A layer's outer edge may not step further outward than the
+# declared printable limit, or that ring prints in mid-air -- this is the "prints ugly" defect
+# the front edge's lead chamfer exists to fix, so it must be guarded, not assumed. Angle is
+# measured from the horizontal bed: 90 = vertical wall, 45 = 45-degree chamfer, lower = worse.
+MIN_BED_ANGLE=40.0
+LAYER=0.2
+prev=None
+worst=90.0
+for i in range(1,14):
+    z=CASE_D-(i+1)*LAYER
+    bb=bezel.common(Part.makeBox(300,300,LAYER,App.Vector(-100,-100,z))).BoundBox
+    if prev is not None:
+        growth=max(bb.XLength-prev[0],bb.YLength-prev[1])/2.0   # per side
+        deg=math.degrees(math.atan(LAYER/growth)) if growth>1e-6 else 90.0
+        worst=min(worst,deg)
+        if deg<MIN_BED_ANGLE-1e-6:
+            fails.append('bezel bed overhang %.1f deg at z=%.2f'%(deg,z))
+    prev=(bb.XLength,bb.YLength)
+print(' bezel bed-edge overhang  worst %.1f deg (floor %.0f) %s'%
+      (worst,MIN_BED_ANGLE,'OK' if worst>=MIN_BED_ANGLE-1e-6 else 'FAIL'))
+
 # Chassis: support grid bridges only its 5 mm clear cells. Verify actual pitch/clear span and
 # structural bridge material immediately below it.
 ch=parts['PRINT_REAR_CHASSIS']

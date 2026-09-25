@@ -88,6 +88,11 @@ bezel=bezel.cut(rp(AA_W+REVEAL,AA_H+REVEAL,0.8,open_x,open_y,LIP_UNDERSIDE-0.05,
 HEAD_CBORE_D=4.4
 HEAD_CBORE_DEPTH=1.2
 CBORE_FLOOR=D-HEAD_CBORE_DEPTH
+# Spotface radius beyond the counterbore. The front edge now carries a 45-degree lead chamfer
+# at the bed (see 02_shell.py). A 6 mm driver body descending on the fastener axis grazed that
+# chamfer by 0.20 mm at a 0.6 mm margin; 0.9 clears it entirely while trimming only the
+# cosmetic outer lip (the lip's bearing edge is 2.7 mm further in, at the aperture).
+SPOTFACE_MARGIN=0.9
 for x,y in FASTENERS:
  boss_raw=Part.makeCylinder(BOSS_R,PILOT_TOP-SPLIT_Z,App.Vector(x,y,SPLIT_Z))
  boss=outer.common(boss_raw)
@@ -97,7 +102,7 @@ for x,y in FASTENERS:
  # diameter the outer surface falls from 18.70 to 16.69, so a flat screw head seated on the
  # rolled surface cuts up to 0.8 mm into the material. Boring a flat-faced recess normal to
  # the axis (standard spotfacing) gives the head a true seat and removes that interference.
- spot=Part.makeCylinder(HEAD_CBORE_D/2+0.6,D-CBORE_FLOOR+1.0,
+ spot=Part.makeCylinder(HEAD_CBORE_D/2+SPOTFACE_MARGIN,D-CBORE_FLOOR+1.0,
                         App.Vector(x,y,CBORE_FLOOR-0.8))
  bezel=bezel.cut(spot)
  # Through-hole from the split plane up to the counterbore floor (not the old lip plane:

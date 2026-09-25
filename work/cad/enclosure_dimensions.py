@@ -40,23 +40,30 @@ M3_PILOT=2.5                  # M3 self-tapping pilot
 MIN_SKIN=1.2                  # pocket/floor skin
 
 # ---- complete rear-to-front physical stack ------------------------------------
+# Depth is minimized against the thickest internal component. The 11 mm cell is that
+# component: the board/PCB cluster is only 4.3 mm tall and sits in the same z band, so it
+# never drives the stack. The cell therefore bears directly on the cover skin behind it and
+# on the support-grid ribs in front of it, and CASE_D is exactly (fixed front capture stack)
+# + (cell thickness). The former 0.2 mm rear pad and 0.1 mm grid gap were the last slack and
+# are now zero. Consequence: a cell thicker than 11.0 mm will hold the cover off its seat, so
+# the cell must be the specified envelope.
 REAR_COVER_T=3.0              # 1.8 foot pocket leaves 1.2 skin
-BATTERY_REAR_PAD=0.2          # compressed locating pad / assembly tolerance
-BATTERY_Z0=REAR_COVER_T+BATTERY_REAR_PAD              # 3.2
-BATTERY_Z1=BATTERY_Z0+BATTERY_T                        # 14.2
-GRID_ASSEMBLY_GAP=0.1
-GRID_Z0=BATTERY_Z1+GRID_ASSEMBLY_GAP                   # 14.3
+BATTERY_REAR_PAD=0.0          # cell bears directly on the cover skin
+BATTERY_Z0=REAR_COVER_T+BATTERY_REAR_PAD              # 3.0
+BATTERY_Z1=BATTERY_Z0+BATTERY_T                        # 14.0
+GRID_ASSEMBLY_GAP=0.0         # cell bears directly on the grid ribs
+GRID_Z0=BATTERY_Z1+GRID_ASSEMBLY_GAP                   # 14.0
 GRID_T=1.2
-GRID_Z1=GRID_Z0+GRID_T                                 # 15.5
+GRID_Z1=GRID_Z0+GRID_T                                 # 15.2
 REAR_FOAM_T=0.5
-REAR_FOAM_Z0=GRID_Z1                                   # 15.5
-PANEL_Z=REAR_FOAM_Z0+REAR_FOAM_T                       # 16.0
-PANEL_Z1=PANEL_Z+PANEL_T                               # 16.9
+REAR_FOAM_Z0=GRID_Z1                                   # 15.2
+PANEL_Z=REAR_FOAM_Z0+REAR_FOAM_T                       # 15.7
+PANEL_Z1=PANEL_Z+PANEL_T                               # 16.6
 FRONT_GASKET_T=0.2
-FRONT_GASKET_Z0=PANEL_Z1                               # 16.9
-LIP_UNDERSIDE=FRONT_GASKET_Z0+FRONT_GASKET_T           # 17.1
+FRONT_GASKET_Z0=PANEL_Z1                               # 16.6
+LIP_UNDERSIDE=FRONT_GASKET_Z0+FRONT_GASKET_T           # 16.8
 RETAINING_LIP_T=1.6
-CASE_D=LIP_UNDERSIDE+RETAINING_LIP_T                   # 18.7
+CASE_D=LIP_UNDERSIDE+RETAINING_LIP_T                   # 18.4
 
 # One assembly split plane: rear chassis owns <=; front bezel owns >=.
 SPLIT_Z=GRID_Z1

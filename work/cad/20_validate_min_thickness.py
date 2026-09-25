@@ -16,7 +16,7 @@ import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from enclosure_dimensions import (MIN_PRINTED_WALL, MIN_LOAD_WALL, MIN_SKIN,
                                   MIN_M2_THREAD, CASE_D, LIP_UNDERSIDE, GRID_Z0,
-                                  GRID_Z1, REAR_COVER_T)
+                                  GRID_Z1, REAR_COVER_T, M2_PILOT)
 from functools import partial
 print = partial(print, flush=True)
 
@@ -86,11 +86,14 @@ COVER_SCREW_XY=[(11.0,11.0),(134.4-11.0,11.0),(11.0,108.5-11.0),(134.4-11.0,108.
 for px,py in COVER_SCREW_XY:
     z0=REAR_COVER_T
     engage=4.0
-    col=Part.makeCylinder(1.05,engage,App.Vector(px,py,z0))
+    # Probe the REAL pilot radius (M2_PILOT/2), not a remembered 1.05: the boss is an M2
+    # self-tapping feature and this probe must track the design constant.
+    rp=M2_PILOT/2.0
+    col=Part.makeCylinder(rp,engage,App.Vector(px,py,z0))
     void=col.Volume-chassis.common(col).Volume
     # Thread wall: solid between the pilot and boss OD, over the designed 4.0 mm engagement.
     wall=Part.makeCylinder(3.0,engage,App.Vector(px,py,z0)).cut(
-         Part.makeCylinder(1.05,engage+0.4,App.Vector(px,py,z0-0.2)))
+         Part.makeCylinder(rp,engage+0.4,App.Vector(px,py,z0-0.2)))
     solid=chassis.common(wall).Volume
     ok=void>0.98*col.Volume and solid>80.0
     print("  (%.1f,%.1f) pilot open %.0f%% thread wall %.1f mm3 %s"%

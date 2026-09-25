@@ -8,6 +8,8 @@ import FreeCAD as App, Part, os, sys
 from functools import partial
 print=partial(print,flush=True)
 HERE=os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0,HERE)
+from enclosure_dimensions import GRID_Z0,GRID_Z1,REAR_COVER_T
 d=App.openDocument(os.path.join(HERE,"EInk_Weather_Display_Assembly.FCStd"))
 
 checks=[]
@@ -26,10 +28,12 @@ probe("PRINT_FRONT_BEZEL",(1.0,10.0,1.4),(4.5,40.0,17.5),"front retaining lip so
 probe("PRINT_FRONT_BEZEL",(1.2,2.0,2.0),(1.2,53.0,15.9),"bezel side skirt solid")
 # Chassis perimeter wall at mid-height.
 probe("PRINT_REAR_CHASSIS",(1.2,2.0,2.0),(0.3,53.0,11.0),"chassis perimeter wall solid")
-# Support grid rib at actual z14.6..15.8.
-probe("PRINT_REAR_CHASSIS",(0.6,4.0,1.0),(11.7,9.4,14.65),"support grid rib solid")
+# Support grid rib, inside the real grid z band (module-derived, so a depth-stack change
+# cannot leave this probe measuring empty space above the grid).
+_rib_z=(GRID_Z0+GRID_Z1)/2.0-0.5
+probe("PRINT_REAR_CHASSIS",(0.6,4.0,1.0),(11.7,9.4,_rib_z),"support grid rib solid")
 # 1.4 mm tub-grid bridge away from FPC notch.
-probe("PRINT_REAR_CHASSIS",(2.0,8.0,1.0),(3.0,40.0,13.35),"tub-to-grid bridge solid",0.35)
+probe("PRINT_REAR_CHASSIS",(2.0,8.0,1.0),(3.0,40.0,GRID_Z0-1.15),"tub-to-grid bridge solid",0.35)
 # Real rear-cover boss and gusset.
 probe("PRINT_REAR_CHASSIS",(4.0,4.0,3.0),(9.0,9.0,3.2),"rear-cover boss/gusset solid",0.25)
 # 1.2 mm cover skin behind the foot pocket. The pocket opens from z=0 to 1.8; the skin is

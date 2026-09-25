@@ -306,19 +306,22 @@ for x,y in FASTENERS:
     # Through-hole through the whole bezel band.
     th=Part.makeCylinder(SHANK_D/2+0.15,LIP_UNDERSIDE-GRID_Z1,App.Vector(x,y,GRID_Z1))
     th_open=(th.Volume-bezel.common(th).Volume)/th.Volume
-    # Chassis boss present, with its bore open on the same axis.
+    # Chassis boss present, with its bore open on the same axis. Judge the boss by material
+    # per mm of height, not a raw total: the printed stack height legitimately changes when
+    # the depth stack is tuned, and a fixed mm3 gate silently encodes the old height.
     boss=Part.makeCylinder(3.4,GRID_Z0-6.0,App.Vector(x,y,6.0))
     boss_mat=chassis.common(boss).Volume
+    boss_density=boss_mat/(GRID_Z0-6.0)
     chb=Part.makeCylinder(SHANK_D/2,SPLIT_Z-5.0,App.Vector(x,y,5.0))
     chb_open=1.0-(chassis.common(chb).Volume/chb.Volume)
     # Seated screw must not collide with printed parts.
     head=Part.makeCylinder(HEAD_D/2,HEAD_T,App.Vector(x,y,CASE_D-HEAD_T))
     shank=Part.makeCylinder(SHANK_D/2,SHANK_L,App.Vector(x,y,CASE_D-HEAD_T-SHANK_L))
     seated=bezel.common(head.fuse(shank)).Volume+chassis.common(head.fuse(shank)).Volume
-    ok=(drv_block<0.5 and cb_open>0.95 and th_open>0.95 and boss_mat>200.0
+    ok=(drv_block<0.5 and cb_open>0.95 and th_open>0.95 and boss_density>20.0
         and chb_open>0.95 and seated<0.2)
-    print("CHECK %-30s driver %.2f cbore %.2f bezelhole %.2f boss %.0f chhole %.2f seat %.2f %s"%
-          ("front fastener %.1f,%.1f"%(x,y),drv_block,cb_open,th_open,boss_mat,chb_open,seated,
+    print("CHECK %-30s driver %.2f cbore %.2f bezelhole %.2f boss %.0f (%.1f/mm) chhole %.2f seat %.2f %s"%
+          ("front fastener %.1f,%.1f"%(x,y),drv_block,cb_open,th_open,boss_mat,boss_density,chb_open,seated,
            "OK" if ok else "FAIL"))
     if not ok:fails.append("front fastener chain failed at %.1f,%.1f"%(x,y))
 # Bezel and chassis must share the same screw axis and clear the electronics.

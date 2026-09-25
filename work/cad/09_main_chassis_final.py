@@ -13,7 +13,7 @@ import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from enclosure_dimensions import (FPC_ROOT_X,FPC_ROOT_Y,FPC_ROOT_Z,FPC_LEN,FPC_BEND_R,
                                   PANEL_Z,GRID_Z0,PANEL_W,PANEL_H,MIN_PRINTED_WALL,
-                                  MIN_LOAD_WALL,MIN_M2_THREAD)
+                                  MIN_LOAD_WALL,MIN_M2_THREAD,BATTERY_Z0,BATTERY_Z1)
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 
@@ -70,7 +70,7 @@ PILOT_D=1.6                                            # M2 self-tapping pilot
 # Battery moves to the right side of the flipped board, beside the PCB, user's 70x39x11.
 BAT_X0,BAT_X1=86.0,125.0                               # DERIVED from flipped board x<=83.3
 BAT_Y0,BAT_Y1=18.0,88.0
-BAT_Z0,BAT_Z1=3.5,14.5                                 # shared stack planes
+BAT_Z0,BAT_Z1=BATTERY_Z0,BATTERY_Z1                     # shared stack planes, from the module
 BAT_CLEAR=0.5
 COLLAR_W=MIN_PRINTED_WALL                              # PETG locating collar
 COLLAR_Z0,COLLAR_Z1=GRID_Z0-1.2,GRID_Z0+0.2            # hangs from grid, overlaps it

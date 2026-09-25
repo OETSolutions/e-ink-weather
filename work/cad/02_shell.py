@@ -16,12 +16,28 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 
 # ---- exterior styling ------------------------------------------------------
 BEZEL = 4.5          # visible bezel: glass edge -> case edge
-FRONT_ROLL_R = 3.4   # front edge radius (the "seems slimmer" feature)
-BACK_CHAMFER = 8.0   # USER requested reduced rear footprint
-                     # 19.0 - 8.0 - 3.4 = 7.6 mm straight side remains in profile.
 CORNER_R = 9.0
 D = CASE_D
 Z_FRONT = CASE_D
+
+# Front edge profile. The printed front bezel is placed COSMETIC FACE DOWN, so the front face
+# (z=CASE_D) is the bed side and the case is built toward decreasing z. The previous profile
+# was a full 3.4 mm circular roll; in that orientation the roll's outer edge leaves the bed
+# vertical, so the outer ~1.1 mm of every one of the first layers printed in mid-air -- this is
+# the "prints ugly" the user reported. A circular roll cannot be both flat on the bed and
+# shallow-angled at the bed, so the roll is kept for its slim silhouette and only its
+# overhanging bed edge is replaced by a lead chamfer at a true printable angle.
+FRONT_ROLL_R = 3.4   # front edge radius (the "seems slimmer" feature)
+LEAD_DEG = 45.0      # bed-edge lead chamfer angle from the bed; 45 is the usual FDM limit
+# The roll's own tangent reaches LEAD_DEG at theta=LEAD_DEG; below that it is already
+# printable, so the chamfer only has to span that last arc. Anything gentler cannot both
+# preserve the 3.4 mm roll and clear the bezel's 2.3 mm fastener band and FPC exit.
+_SIN, _COS = math.sin(math.radians(LEAD_DEG)), math.cos(math.radians(LEAD_DEG))
+KNEE_Z = (D - FRONT_ROLL_R) + FRONT_ROLL_R * _SIN        # roll -> chamfer handover
+KNEE_INSET = FRONT_ROLL_R * (1.0 - _COS)
+LEAD_INSET = KNEE_INSET + (D - KNEE_Z)                   # inset at the front/bed face
+BACK_CHAMFER = 8.0   # USER requested reduced rear footprint
+
 
 
 def rounded_rect_wire(w, h, r, cx=0.0, cy=0.0):
@@ -74,20 +90,19 @@ def edges_in_plane(shape, z):
     return out
 
 
-# ---- front roll: built from matched rounded-rectangle sections ----------------
-# The roll is generated as a stack of ruled lofts between rounded-rectangle sections whose
-# inset follows a true circular arc, then capped by the front face. This replaces
-# `makeFillet` on the front rim: that operator pulled the four corner junctions 0.74 mm
-# outside the 134.4 mm outline (toroidal corner surfaces spanning z 15.6..19.0), i.e. the
-# case grew beyond its own locked footprint. Ruled lofts between matched sections cannot do
-# that, and this is the same technique already proven on the rear taper.
+# ---- front edge: circular roll + printable lead chamfer at the bed ----------------------
+# Matched rounded-rectangle sections in ONE ruled loft (the technique already proven on the
+# rear taper; makeFillet on the front rim pulled the corners 0.74 mm outside the 134.4 mm
+# outline). Sections run from the top of the straight side, around the roll's printable arc,
+# to the knee where the tangent reaches LEAD_DEG, then straight to the front/bed face. The
+# ruled chamfer is a true lead-in: it sits inside the roll, so no station exceeds LEAD_DEG.
 N_ROLL = 10
 roll_stations = []
 for i in range(N_ROLL + 1):
-    t = i / float(N_ROLL)
-    z = (D - FRONT_ROLL_R) + t * FRONT_ROLL_R
-    # Inset from the full outline: 0 at the roll start, growing to R at the front face.
-    inset = FRONT_ROLL_R - math.sqrt(max(FRONT_ROLL_R ** 2 - (t * FRONT_ROLL_R) ** 2, 0))
+    t = i / float(N_ROLL)                      # 0 at the roll start, 1 at the knee
+    th = t * math.radians(LEAD_DEG)
+    z = (D - FRONT_ROLL_R) + FRONT_ROLL_R * math.sin(th)
+    inset = FRONT_ROLL_R * (1.0 - math.cos(th))
     roll_stations.append((z, inset))
 roll_sections = []
 for z, inset in roll_stations:
@@ -98,27 +113,33 @@ for z, inset in roll_stations:
 roll_sections[0].translate(App.Vector(0, 0, roll_stations[0][0]))
 for i in range(1, len(roll_sections)):
     roll_sections[i].translate(App.Vector(0, 0, roll_stations[i][0]))
+face_sec = rounded_rect_wire(CASE_W - 2 * LEAD_INSET, CASE_H - 2 * LEAD_INSET,
+                             max(0.5, CORNER_R - LEAD_INSET), LEAD_INSET, LEAD_INSET)
+face_sec.translate(App.Vector(0, 0, D))
+roll_sections.append(face_sec)
 roll_parts = [Part.makeLoft([roll_sections[i], roll_sections[i + 1]], True, True)
               for i in range(len(roll_sections) - 1)]
 roll = roll_parts[0]
 for p in roll_parts[1:]:
     roll = roll.fuse(p)
 body = body.fuse(roll).removeSplitter()
-# Cap the front. The roll's last section is a ring inset by R, so the front face is the
-# smaller rounded rectangle it terminates on -- not the full outline. Capping the full
-# outline here would re-close the case and undo the roll.
-front_w = CASE_W - 2 * FRONT_ROLL_R
-front_h = CASE_H - 2 * FRONT_ROLL_R
-front_r = max(0.5, CORNER_R - FRONT_ROLL_R)
+# Cap the front. The front section is a ring inset by LEAD_INSET, so the front face is the
+# smaller rounded rectangle it terminates on -- not the full outline; capping the full outline
+# would re-close the case and undo the chamfer.
+front_w = CASE_W - 2 * LEAD_INSET
+front_h = CASE_H - 2 * LEAD_INSET
+front_r = max(0.5, CORNER_R - LEAD_INSET)
 front_cap = Part.Face(rounded_rect_wire(front_w, front_h, front_r,
-                                        FRONT_ROLL_R, FRONT_ROLL_R)).extrude(App.Vector(0, 0, 0.001))
+                                        LEAD_INSET, LEAD_INSET)).extrude(App.Vector(0, 0, 0.001))
 front_cap.translate(App.Vector(0, 0, D - 0.001))
 body = body.fuse(front_cap).removeSplitter()
-print("after generated front roll: valid %s faces %d" % (body.isValid(), len(body.Faces)))
+print("front edge: roll to knee z=%.3f inset=%.3f, lead chamfer %.0f deg to inset %.3f" %
+      (KNEE_Z, KNEE_INSET, LEAD_DEG, LEAD_INSET))
+print("after front roll + lead chamfer: valid %s faces %d" % (body.isValid(), len(body.Faces)))
 if body.BoundBox.XMax > CASE_W + 1e-3 or body.BoundBox.YMax > CASE_H + 1e-3:
-    raise RuntimeError("front roll exceeds the %s x %s outline" % (CASE_W, CASE_H))
+    raise RuntimeError("front edge exceeds the %s x %s outline" % (CASE_W, CASE_H))
 if body.BoundBox.XMin < -1e-3 or body.BoundBox.YMin < -1e-3:
-    raise RuntimeError("front roll undershoots the case origin")
+    raise RuntimeError("front edge undershoots the case origin")
 
 # The rear taper is already the requested 8 mm four-sided chamfer. No edge chamfer is
 # applied here: doing so is what caused the unwanted triangular corner transition faces.
@@ -136,20 +157,27 @@ ob = body.optimalBoundingBox()
 print("SHELL optimal bbox X %.3f..%.3f  Y %.3f..%.3f  Z %.3f..%.3f" %
       (ob.XMin, ob.XMax, ob.YMin, ob.YMax, ob.ZMin, ob.ZMax))
 
-# cross-section width vs height: proves the front roll + rear roll are real
-print("   z      width    expect")
-for z in [0.0, 0.6, 1.2, 5.0, 13.4, 13.5, 14.0, 15.0, 16.0, 16.85, 16.89]:
+# cross-section width vs height: proves the rear taper, the roll and the lead chamfer are real
+print("   z      width    expect   slope_from_bed")
+def _inset(z):
+    if z <= BACK_CHAMFER:
+        return BACK_CHAMFER - z                      # rear taper, 45 deg
+    if z >= D:
+        return LEAD_INSET                            # front face
+    if z >= KNEE_Z:
+        return KNEE_INSET + (z - KNEE_Z)             # lead chamfer, ruled-linear
+    t = z - (D - FRONT_ROLL_R)                       # roll
+    if t <= 0.0:
+        return 0.0
+    return FRONT_ROLL_R - math.sqrt(max(FRONT_ROLL_R ** 2 - t ** 2, 0.0))
+for z in [0.0, 0.6, 1.2, 5.0, KNEE_Z - 1.0, KNEE_Z - 0.2, KNEE_Z + 0.2,
+          D - 0.5, D - 0.1]:
     c = body.common(Part.makeBox(400, 400, 0.01, App.Vector(-100, -100, z)))
     w = c.BoundBox.XLength
-    if z <= BACK_CHAMFER:
-        f = BACK_CHAMFER - z
-    elif z >= D - FRONT_ROLL_R:
-        t = z - (D - FRONT_ROLL_R)
-        f = FRONT_ROLL_R - math.sqrt(max(FRONT_ROLL_R ** 2 - t ** 2, 0))
-    else:
-        f = 0.0
-    e = CASE_W - 2 * f
-    print("%7.2f %8.3f %8.3f" % (z, w, e))
+    e = CASE_W - 2 * _inset(z)
+    dz = 0.05
+    slope = math.degrees(math.atan(abs(_inset(z + dz) - _inset(z)) / dz))
+    print("%7.2f %8.3f %8.3f %12.1f" % (z, w, e, slope))
 print("CASE_W %.1f  CASE_H %.1f  D %.1f" % (CASE_W, CASE_H, D))
 print("z planes: cover %.1f cell %.1f..%.1f grid %.1f..%.1f glass %.1f..%.1f lip %.1f..%.1f" %
       (REAR_COVER_T, BATTERY_Z0, BATTERY_Z1, GRID_Z0, GRID_Z1,
