@@ -65,11 +65,11 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # The tag (vX.Y.Z) without the leading "v" is the version compiled into the image.
+      # RESOLVE THE VERSION BEFORE THE CHECKOUT, not after. The checkout below then fetches that
+      # exact tag, so a release is ALWAYS built from the tagged commit. Without this the
+      # `workflow_dispatch` path would build from whatever `main` happened to be — shipping code
+      # that does not match the tag it publishes, which is exactly the mismatch the version
+      # stamping exists to prevent. On a tag push this is the tag that triggered the run anyway.
       - name: Resolve version
         id: ver
         run: |
@@ -86,6 +86,11 @@ jobs:
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VER"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -130,13 +135,28 @@ jobs:
 
       # Marked latest and named plainly, which is the standard gh release flow: the tag drives
       # it, the title is the version, and --generate-notes writes the changelog from commits.
+      #
+      # UPSERT, NOT CREATE. A tag can be re-pushed (a history rewrite moves it; a re-run happens
+      # after a partial failure), and `gh release create` then dies with "a release with the same
+      # tag name already exists" — turning a good build into a red X for no real reason. So an
+      # existing release is edited in place and its assets replaced; only a first publish creates.
+      # `--clobber` is what replaces assets of the same name, and it is safe here because the
+      # running job just rebuilt both files from this exact tag.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --title "${{ steps.ver.outputs.tag }}" \
-            --latest \
-            --generate-notes \
-            dist/firmware.bin \
-            dist/manifest.json
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber \
+              dist/firmware.bin dist/manifest.json
+            gh release edit "$TAG" --title "$TAG" --latest
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --latest \
+              --generate-notes \
+              dist/firmware.bin \
+              dist/manifest.json
+          fi
