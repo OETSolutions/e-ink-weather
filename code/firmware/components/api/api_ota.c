@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "api_ota";
@@ -368,4 +369,124 @@ int api_ota_auto_update_if_enabled(int enabled)
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
     return 1;   /* not reached */
+}
+
+/* --------------------------------------------------- LAN firmware upload (local dev flash) -- */
+
+/* The receive chunk. 4 KB: large enough that a ~1.8 MB image is ~450 reads (not thousands of
+ * tiny ones), small enough to be a stack-safe, non-fragmenting transient — it is taken from the
+ * heap, not .bss, and released before the reboot. */
+#define FW_CHUNK_BYTES 4096
+
+esp_err_t api_firmware_handler(httpd_req_t *req)
+{
+    /* GATED (FR-31): this replaces the firmware outright, so it is the same capability as
+     * POST /api/ota and needs the same token check. */
+    if (api_auth_gate(req)) return ESP_OK;
+
+    /* Content-Length is REQUIRED. Without it the body length is unknown and a truncated upload
+     * could be written as a complete-looking image; the OTA partition would then hold a bad image
+     * that only fails at the next boot. */
+    const size_t total = req->content_len;
+    if (total == 0) {
+        return api_send_err(req, "411 Length Required", "Content-Length required");
+    }
+
+    /* Bound BEFORE allocating or erasing anything: the target slot is the app partition size, and
+     * an image that cannot fit must be refused rather than partially written. */
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) {
+        api_note_error("firmware: no OTA partition");
+        return api_send_err(req, "500 Internal Server Error", "no OTA partition");
+    }
+    if (total > part->size) {
+        ESP_LOGE(TAG, "upload of %u bytes exceeds the %u-byte OTA slot",
+                 (unsigned)total, (unsigned)part->size);
+        return api_send_err(req, "413 Payload Too Large", "image larger than the OTA slot");
+    }
+
+    /* THE RENDER LAYER MUST BE OUT OF THE WAY for the whole write, for the same reason the OTA
+     * fetch needs it: this runs on the httpd task while the render task holds the one contiguous
+     * DRAM region, and the OTA buffer below has to come from somewhere. Held for the write, given
+     * back before the reboot. */
+    esp_ota_handle_t handle = 0;
+    esp_err_t e = esp_ota_begin(part, total, &handle);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(e));
+        api_note_error("firmware: ota begin failed");
+        return api_send_err(req, "500 Internal Server Error", "OTA begin failed");
+    }
+
+    char *chunk = malloc(FW_CHUNK_BYTES);
+    if (!chunk) {
+        esp_ota_abort(handle);
+        return api_send_err(req, "500 Internal Server Error", "oom");
+    }
+
+    api_fetch_pause();
+    size_t received = 0;
+    esp_err_t werr = ESP_OK;
+    while (received < total) {
+        const int n = httpd_req_recv(req, chunk, FW_CHUNK_BYTES);
+        if (n <= 0) {
+            /* A timeout or a dropped connection mid-upload. Abort and DO NOT reboot: nothing has
+             * been swapped in, so the running image is untouched and the device stays up. */
+            ESP_LOGE(TAG, "upload receive failed after %u of %u bytes (%d)",
+                     (unsigned)received, (unsigned)total, n);
+            werr = ESP_FAIL;
+            break;
+        }
+        if ((werr = esp_ota_write(handle, chunk, (size_t)n)) != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(werr));
+            break;
+        }
+        received += (size_t)n;
+    }
+    api_fetch_resume();
+    free(chunk);
+
+    if (werr != ESP_OK) {
+        esp_ota_abort(handle);
+        api_note_error("firmware: upload failed");
+        return api_send_err(req, "500 Internal Server Error", "firmware write failed");
+    }
+
+    /* A short read that did not error (the socket closed cleanly early) would leave a truncated
+     * image; refuse it here rather than let esp_ota_end accept a short write. */
+    if (received != total) {
+        esp_ota_abort(handle);
+        ESP_LOGE(TAG, "upload truncated: %u of %u bytes", (unsigned)received, (unsigned)total);
+        return api_send_err(req, "400 Bad Request", "upload truncated");
+    }
+
+    e = esp_ota_end(handle);
+    if (e != ESP_OK) {
+        /* The image was written but is not a valid app (wrong magic, bad checksum). The running
+         * firmware is still the old one because set_boot_partition has not run. */
+        ESP_LOGE(TAG, "esp_ota_end rejected the image: %s", esp_err_to_name(e));
+        api_note_error("firmware: invalid image");
+        return api_send_err(req, "400 Bad Request", "not a valid firmware image");
+    }
+    if ((e = esp_ota_set_boot_partition(part)) != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(e));
+        return api_send_err(req, "500 Internal Server Error", "could not select the new image");
+    }
+
+    ESP_LOGW(TAG, "firmware uploaded (%u bytes) to %s; rebooting into a probationary image",
+             (unsigned)received, part->label);
+
+    /* NOT marked valid here — the boot path does that after a successful refresh, exactly as the
+     * network OTA paths leave it (see api_ota_mark_valid_if_pending). */
+    char body[192];
+    snprintf(body, sizeof(body),
+             "{\"status\":\"firmware applied\",\"reboot\":true,"
+             "\"partition\":\"%s\",\"bytes\":%u,\"rollback_unless_refresh\":true}",
+             part->label, (unsigned)received);
+    const esp_err_t sent = api_send_json(req, body, "200 OK");
+
+    /* Let the response leave the socket before esp_restart() closes it, so the client can tell a
+     * successful upload from a crash. Same reason as api_ota_install_and_reboot(). */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return sent;      /* not reached */
 }

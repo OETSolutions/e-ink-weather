@@ -13,6 +13,11 @@
 
 import './ui/theme.css';
 import './ui/app.css';
+/* The brand marks, imported so Vite fingerprints and copies them into both builds (the browser
+ * one and the embedded one). The device build embeds every file under dist-device, so these ride
+ * along automatically — see scripts/build-for-device.mjs. */
+import oetLogoUrl from './assets/oetsolutions-logo.png';
+import aetherLogoUrl from './assets/aether-logo.png';
 import { createMapPicker, type MapPickerHandle } from './ui/map-picker';
 import { hasPosition } from './ui/location';
 import { attachEditor, type EditorHandle, type EditorState } from './canvas/editor';
@@ -28,7 +33,7 @@ import { findPlacement, fontSizeForBox, freshWidgetId } from './canvas/placement
 import { emptyConfig, MAX_WIDGETS_PER_PAGE, RULE_ID, LABEL_ID, type Config, type Page, type Selection, type Widget } from './model/config';
 import { exportConfig, importConfig, configFilename, downloadText } from './transfer/config';
 import { uploadArtwork } from './transfer/artwork';
-import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, checkFirmware, installFirmware, getConfig, getStatus, putConfig, type AuthState } from './transfer/device';
+import { getAuth, getValuesInfo, putAuth, getSecrets, putSecrets, requestPage, checkFirmware, installFirmware, uploadFirmware, getConfig, getStatus, putConfig, type AuthState } from './transfer/device';
 
 /** Where the device's API lives. Served from the device itself, so a relative URL is correct
  *  both on the device and when the dev server proxies to it. */
@@ -649,9 +654,34 @@ async function mount(root: HTMLElement): Promise<void> {
     const n = Number(refreshInput.value);
     if (!Number.isFinite(n)) return;
     doc.updateSeconds = Math.min(604800, Math.max(5, Math.round(n)));
+    /* OWM can never be refreshed more often than the device wakes, so keep the OWM interval at
+     * least the tick. The device clamps this too (layout_model.c); doing it here keeps the number
+     * shown equal to the number stored, which is the rule every control follows. */
+    if (owmInput.value !== '' && Number(owmInput.value) < doc.updateSeconds) {
+      doc.owmUpdateSeconds = doc.updateSeconds;
+      owmInput.value = String(doc.updateSeconds);
+    }
   });
   refreshInput.addEventListener('blur', () => {
     refreshInput.value = String(doc.updateSeconds);
+  });
+
+  /* THE SLOW HALF OF THE SPLIT: how often OWM is re-fetched. See Config.owmUpdateSeconds for why
+   * this is separate from the tick — HA has no quota and changes in seconds, OWM updates ~every
+   * 10 minutes and caps at 1000 calls/day. */
+  const owmInput = el('input', {
+    type: 'number', id: 'owmUpdateSeconds', min: '5', max: '604800', step: '1',
+  }) as HTMLInputElement;
+  owmInput.addEventListener('input', () => {
+    const n = Number(owmInput.value);
+    if (!Number.isFinite(n)) return;
+    /* Clamp UP to the tick interval, never below — a smaller OWM interval than the tick is
+     * incoherent (the device cannot fetch OWM more often than it wakes). */
+    const floor = doc.updateSeconds ?? 5;
+    doc.owmUpdateSeconds = Math.min(604800, Math.max(floor, Math.round(n)));
+  });
+  owmInput.addEventListener('blur', () => {
+    owmInput.value = String(doc.owmUpdateSeconds ?? doc.updateSeconds ?? 900);
   });
 
   /** Repoint the settings fields at the page now being edited. Called from switchPage and after a
@@ -662,6 +692,7 @@ async function mount(root: HTMLElement): Promise<void> {
       pageNameInput.value = page.name ?? '';
       pageDwellInput.value = String(page.refreshSeconds ?? 900);
       refreshInput.value = String(doc.updateSeconds ?? 900);
+      owmInput.value = String(doc.owmUpdateSeconds ?? doc.updateSeconds ?? 900);
       delPageBtn.disabled = doc.pages.length <= 1;
       addPageBtn.disabled = doc.pages.length >= MAX_PAGES;
     },
@@ -1066,6 +1097,48 @@ async function mount(root: HTMLElement): Promise<void> {
     }, 15000);
   }
 
+  /* ---- LAN firmware upload (the local dev flash path) ----
+   *
+   * Picks a firmware.bin off the user's machine and POSTs the bytes to the device's /api/firmware.
+   * This is the path that needs no GitHub release and no CA-trusted host — useful when the image is
+   * a just-built file rather than a published release. */
+  const fwFileInput = el('input', {
+    type: 'file', accept: '.bin,application/octet-stream', id: 'fwFile',
+  }) as HTMLInputElement;
+  const fwUploadBtn = button('Upload firmware file', () => void doUploadFirmware());
+  fwUploadBtn.disabled = true;
+  fwFileInput.addEventListener('change', () => {
+    fwUploadBtn.disabled = !fwFileInput.files || fwFileInput.files.length === 0;
+  });
+
+  async function doUploadFirmware(): Promise<void> {
+    const file = fwFileInput.files?.[0];
+    if (!file) { fwSet('Choose a .bin file first.', true); return; }
+    if (!window.confirm(
+      `Install ${file.name} (${Math.round(file.size / 1024)} KB) on the display?\n\n` +
+      'This replaces its firmware and restarts it. Do not unplug it during the upload.')) {
+      return;
+    }
+    fwUploadBtn.disabled = true;
+    fwCheckBtn.disabled = true;
+    fwInstallBtn.disabled = true;
+    fwSet(`Uploading ${file.name}… the display will restart when it is done.`);
+    /* REJECTION IS EXPECTED — the device answers and reboots ~500 ms later, resetting the
+     * connection. Report the send, not the rejection. */
+    const r = await uploadFirmware(file, file.name, { token: authToken }).catch(() => undefined);
+    if (r && !r.ok && r.status !== 0) {
+      fwSet(`Upload failed: ${r.error}`, true);
+      setTimeout(() => { fwUploadBtn.disabled = false; fwCheckBtn.disabled = false; }, 2000);
+      return;
+    }
+    fwSet('The firmware was sent. If the display goes dark and comes back, it worked.');
+    setTimeout(() => {
+      fwCheckBtn.disabled = false;
+      fwUploadBtn.disabled = false;
+      fwFileInput.value = '';
+    }, 15000);
+  }
+
   /* Prefill from the LAST status read, which already carries both the version and the interval. The
    * device stores the interval; this checkbox only mirrors it, so nothing is written until the user
    * changes it. */
@@ -1450,8 +1523,20 @@ async function mount(root: HTMLElement): Promise<void> {
   }
   zoomLabel.textContent = 'Zoom fit';
 
+  /* ---- the branded header ----
+   *
+   * The two marks are the product identity: OETSolutions is the maker, Aether is the product (the
+   * working title "eink_weather" is not shown anywhere a user sees). Kept as an image pair rather
+   * than text so the wordmarks render exactly as designed. */
+  const header = el('header', { className: 'brandHeader' },
+    el('img', { className: 'brandAether', src: aetherLogoUrl, alt: 'Aether — Weather Display' }),
+    el('span', { className: 'brandDivider' }),
+    el('img', { className: 'brandOet', src: oetLogoUrl, alt: 'OETSolutions' }),
+  );
+
   /* ---- append LAST, after every declaration above ---- */
   root.append(
+    header,
     el('h1', {}, 'E-Ink Weather'),
     status,
     el('h2', {}, 'Display location'),
@@ -1481,8 +1566,17 @@ async function mount(root: HTMLElement): Promise<void> {
        el('div', {}, el('label', { htmlFor: 'pageName' }, 'Page name'), pageNameInput),
        el('div', {}, el('label', { htmlFor: 'pageDwell' }, 'Show this page for (seconds)'), pageDwellInput)),
     el('div', { className: 'fields' },
-       el('div', {}, el('label', { htmlFor: 'refreshSeconds' }, 'Refresh all values every (seconds)'),
-          refreshInput)),
+       el('div', {}, el('label', { htmlFor: 'refreshSeconds' }, 'Refresh Home Assistant every (seconds)'),
+          refreshInput),
+       el('div', {}, el('label', { htmlFor: 'owmUpdateSeconds' }, 'Refresh weather data every (seconds)'),
+          owmInput)),
+    el('p', { className: 'hint' },
+       'These are two cadences for two sources. Home Assistant is your own server — refresh it ' +
+       'as often as you like. OpenWeatherMap only publishes new data about every 10 minutes and ' +
+       'its free tier allows 1000 calls a day, so fetching it on every wake wastes the quota on ' +
+       'values that have not changed. Between weather refreshes the display keeps the last ' +
+       'readings. A weather interval shorter than the Home Assistant one is not possible and is ' +
+       'raised to match it.'),
     rotationHint,
     el('div', { className: 'actions' }, addPageBtn, delPageBtn),
     el('div', { className: 'toolbar' },
@@ -1528,6 +1622,12 @@ async function mount(root: HTMLElement): Promise<void> {
        'again is the confirmation.'),
     fwStatusEl,
     el('div', { className: 'actions' }, fwCheckBtn, fwInstallBtn),
+    el('h3', {}, 'Upload a firmware file'),
+    el('p', { className: 'sub' },
+       'Install a firmware image from this computer instead of a GitHub release. Use this when ' +
+       'you have a freshly built firmware.bin and the display is on your local network. The ' +
+       'display reboots when the upload finishes.'),
+    el('div', { className: 'actions' }, fwFileInput, fwUploadBtn),
     fwLabel,
   );
 

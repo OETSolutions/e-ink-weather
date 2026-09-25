@@ -277,11 +277,12 @@ void app_boot_run(void)
         api_note_error("boot: config unparseable");
         memset(&cfg, 0, sizeof(cfg));
         cfg.update_seconds = 900;
+        cfg.owm_update_seconds = 900;
         cfg.partial_refresh_limit = 5;
         cfg.page_count = 1;
     }
-    ESP_LOGI(TAG, "config: update=%ds partial_limit=%d pages=%d",
-             cfg.update_seconds, cfg.partial_refresh_limit, cfg.page_count);
+    ESP_LOGI(TAG, "config: update=%ds owm=%ds partial_limit=%d pages=%d",
+             cfg.update_seconds, cfg.owm_update_seconds, cfg.partial_refresh_limit, cfg.page_count);
 
     /* ---- 2. Battery sense, with WiFi OFF (HW-3) ---- */
     const double vbat = read_vbat();

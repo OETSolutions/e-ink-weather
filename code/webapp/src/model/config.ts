@@ -227,7 +227,26 @@ export interface Config {
   schemaVersion: number;
   generator: string;
   createdAt: string;
+  /**
+   * How often the device wakes to refresh Home Assistant, in seconds — the FAST half of the split.
+   *
+   * Home Assistant is the user's own server with no quota, so it can genuinely change every few
+   * seconds and is worth refreshing often.
+   */
   updateSeconds: number;
+  /**
+   * How often the device re-fetches OpenWeatherMap, in seconds — the SLOW half of the split.
+   *
+   * OWM publishes new data only about every 10 minutes and the free tier caps calls at 1000/day, so
+   * fetching it as often as HA would burn the quota for values that have not changed. Between OWM
+   * fetches the device reuses the last document, so the panel's OWM readings are unchanged (OWM has
+   * not republished) while the HA readings stay fresh.
+   *
+   * OPTIONAL FOR BACKWARDS COMPATIBILITY: an absent value means "same as updateSeconds", which is
+   * the pre-split behaviour. The device also clamps it up to updateSeconds — OWM cannot be fetched
+   * more often than the device wakes.
+   */
+  owmUpdateSeconds?: number;
   partialRefreshLimit: number;
   /**
    * The FR-8 power behaviour override.
@@ -266,6 +285,7 @@ export function emptyConfig(now: Date = new Date()): Config {
     generator: 'eink-weather-webapp',
     createdAt: now.toISOString(),
     updateSeconds: 900,
+    owmUpdateSeconds: 900,
     partialRefreshLimit: 5,
     powerMode: 'auto',
     location: { latitude: 0, longitude: 0, zipCode: '' },

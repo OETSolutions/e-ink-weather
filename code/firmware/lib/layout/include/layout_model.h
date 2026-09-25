@@ -45,7 +45,23 @@ typedef struct {
 
 typedef struct {
     int           schema_version;
-    int           update_seconds;         /* base device wake interval, >= 30 */
+    int           update_seconds;         /* base device wake / HA refresh interval, >= 5 s */
+    int           owm_update_seconds;      /* OWM refresh interval, >= update_seconds. WHY TWO
+                                           * INTERVALS: the two data sources have very different
+                                           * costs and cadences. Home Assistant is the user's own
+                                           * server with no quota and can genuinely change every
+                                           * few seconds; OpenWeatherMap only publishes new data
+                                           * every ~10 minutes and the free tier caps calls at
+                                           * 1000/day. A single interval forces one number to
+                                           * serve both, so a fast HA refresh burns OWM quota
+                                           * (180 s x 2 calls = 960/day, at the cap) while a slow
+                                           * one leaves HA stale. Splitting lets the device wake
+                                           * and refresh HA on the fast cadence and only re-fetch
+                                           * OWM on the slow one, reusing the last OWM document
+                                           * in between — the visible OWM values are unchanged
+                                           * because OWM has not republished. Absent = same as
+                                           * update_seconds, which reproduces the pre-split
+                                           * behaviour exactly. */
     int           partial_refresh_limit;  /* full refresh after N partials (FR-11) */
     int           power_mode;             /* a power_mode_t: the FR-8 user override. The
                                            * firmware reads it because the VBAT inference can

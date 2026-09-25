@@ -27,6 +27,7 @@ int layout_config_parse(const char *json, layout_config_t *out)
 
     out->schema_version = LAYOUT_SCHEMA_VERSION;
     out->update_seconds = 900;          /* 15 min default */
+    out->owm_update_seconds = 0;        /* 0 = "same as update_seconds"; resolved below */
     out->partial_refresh_limit = 5;     /* vendor demo's rule of thumb (FR-11) */
     out->page_count = 1;
     out->power_mode = POWER_MODE_AUTO;  /* trust the inference unless told otherwise */
@@ -63,6 +64,22 @@ int layout_config_parse(const char *json, layout_config_t *out)
     if (cJSON_IsNumber(us)) {
         int v = (int)us->valuedouble;
         out->update_seconds = clamp_interval(v, out->update_seconds);
+    }
+
+    /* The OWM refresh interval — the slow half of the split (see layout_model.h).
+     *
+     * CLAMPED UP TO update_seconds, never below it: OWM cannot be refreshed more often than the
+     * device ticks, so a smaller value is not a faster OWM refresh, it is an incoherent config.
+     * Treating it as "at most the tick rate" is the only interpretation that does not silently do
+     * something the user did not ask for. An ABSENT key resolves to update_seconds (the pre-split
+     * behaviour) rather than to the 900 default, so an old document that sets updateSeconds: 180
+     * still refreshes OWM every 180 s exactly as it did before this field existed. */
+    cJSON *os = cJSON_GetObjectItemCaseSensitive(root, "owmUpdateSeconds");
+    out->owm_update_seconds = cJSON_IsNumber(os)
+                            ? clamp_interval((int)os->valuedouble, out->update_seconds)
+                            : out->update_seconds;
+    if (out->owm_update_seconds < out->update_seconds) {
+        out->owm_update_seconds = out->update_seconds;
     }
 
     cJSON *pr = cJSON_GetObjectItemCaseSensitive(root, "partialRefreshLimit");

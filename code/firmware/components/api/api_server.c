@@ -2114,6 +2114,7 @@ esp_err_t api_start(void)
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = api_ota_handler },
         { .uri = "/api/ota/check",  .method = HTTP_GET,  .handler = api_ota_check_handler },
         { .uri = "/api/ota/update", .method = HTTP_POST, .handler = api_ota_update_handler },
+        { .uri = "/api/firmware",   .method = HTTP_POST, .handler = api_firmware_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         e = httpd_register_uri_handler(s_server, &uris[i]);

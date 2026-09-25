@@ -659,6 +659,30 @@ static int push_banded(const frame_spec_t *next, const frame_spec_t *prev, int p
 static char s_last_current[2048];
 static int  s_have_last_current;
 
+/* ---- The split interval: OWM documents retained between fetches ----------------
+ *
+ * WHY THE OWM SIDE NEEDS ITS OWN CACHE. The two data sources have different cadences and costs:
+ * Home Assistant is the user's own server (no quota, changes in seconds), while OWM publishes
+ * only ~every 10 minutes and the free tier caps calls at 1000/day. When `owmUpdateSeconds` is
+ * longer than `updateSeconds`, the tick still runs at the fast rate for HA but must NOT re-fetch
+ * OWM — and it must still draw the OWM values, because OWM has not changed them. Drawing them
+ * means resolving them from the documents again, so the documents have to survive the tick.
+ *
+ * The CURRENT-conditions document is already retained (s_last_current, above) for the fetch-failure
+ * fallback, so that half costs nothing new. The FORECAST document is the one that used to be a
+ * transient heap buffer freed at the end of every tick; it is kept here instead.
+ *
+ * ALLOCATED LAZILY, ONLY WHEN THE SPLIT IS ACTIVE. A device whose owmUpdateSeconds equals its
+ * updateSeconds (the default, and every pre-split config) fetches OWM every tick and needs no
+ * cache at all, so it keeps today's exact memory profile: a transient fetch buffer that is gone
+ * before the render window opens. Only a device that actually asked for the split pays the
+ * resident bytes — and it is the render window's contiguous DRAM that pays, which is why this is
+ * gated rather than always-on. See ensure_forecast_cache(). */
+static char  *s_forecast_cache;         /* retained forecast document, or NULL */
+static size_t s_forecast_cap;           /* its capacity in bytes; 0 = not allocated */
+static int    s_have_forecast_cache;    /* 0 until a fetch has landed in it */
+static int64_t s_last_owm_fetch_us;     /* when OWM was last fetched; 0 = never this boot */
+
 /* HW-1's operating-temperature guard.
  *
  * The panel datasheet gives TOPR 0..50 C and warns that drawing outside it produces garbage;
@@ -853,6 +877,63 @@ static int read_creds(fetch_creds_t *c)
  * 17 KB this works out to is affordable because the request happens BEFORE the render window,
  * while the resident framebuffer is released on USB — the same window the old 12,288 fit in. */
 #define FORECAST_BUF_BYTES ((size_t)owm_forecast_buf_bytes(FORECAST_MAX_BLOCKS))
+
+/* ---- The split interval: is OWM due this tick? --------------------------------------------
+ *
+ * `owm_seconds` is the OWM cadence (>= the tick interval, see layout_config_t). The FIRST tick
+ * after boot is always due (no timestamp yet), and every tick is due when the two intervals are
+ * equal — which is the default and every pre-split config, so this adds no behaviour change there.
+ *
+ * `s_last_owm_fetch_us` is esp_timer time, so it resets on every boot: on battery each wake is a
+ * fresh boot and therefore always due, which is correct — there is one refresh per wake and a
+ * retained document could not survive esp_deep_sleep_start() anyway. The split is a mains behaviour. */
+static int owm_fetch_due(int owm_seconds)
+{
+    if (owm_seconds <= 0) return 1;
+    if (s_last_owm_fetch_us == 0) return 1;
+    const int64_t elapsed_ms = (esp_timer_get_time() - s_last_owm_fetch_us) / 1000;
+    return elapsed_ms >= (int64_t)owm_seconds * 1000;
+}
+
+/* Make the retained forecast buffer hold at least `need` bytes.
+ *
+ * SIZED TO WHAT THE LAYOUT ASKED FOR, not to the 40-block maximum: the request is already bounded
+ * to the days the page binds (see fetch_forecast), so for a typical today+tomorrow layout the
+ * answer is ~6.8 KB rather than the 17.3 KB the full horizon needs — and on this part every
+ * resident byte is contiguous DRAM the render window does not get. Only when the page binds
+ * further-out days does this grow. A cache already large enough is kept as-is; it only grows.
+ *
+ * THIS IS SAFE TO HOLD RESIDENT because the tick releases the 78,200-byte static layer before it
+ * fetches (see the release note at the top of refresh_tick_locked), so the TLS handshake sees the
+ * big region minus these few KB, not minus the layer. The cost lands on the RENDER window's band
+ * buffers instead, which retry at a smaller size when the block is tight (see push_banded). */
+static int ensure_forecast_cache(size_t need)
+{
+    if (need == 0) need = FORECAST_BUF_BYTES;
+    if (s_forecast_cache && s_forecast_cap >= need) return 0;
+
+    char *next = heap_caps_malloc(need, MALLOC_CAP_8BIT);
+    if (!next) {
+        ESP_LOGW(TAG, "no heap for the retained forecast cache (%u bytes); "
+                      "OWM will re-fetch every tick instead", (unsigned)need);
+        return -1;
+    }
+    free(s_forecast_cache);
+    s_forecast_cache = next;
+    s_forecast_cap = need;
+    s_have_forecast_cache = 0;      /* fresh buffer holds no document yet */
+    return 0;
+}
+
+/* Drop the retained forecast document. Called when a config change turns the split off, so the
+ * resident bytes are given back rather than held for a feature no longer in use. */
+static void forecast_cache_release(void)
+{
+    free(s_forecast_cache);
+    s_forecast_cache = NULL;
+    s_forecast_cap = 0;
+    s_have_forecast_cache = 0;
+}
 
 /* Whether this device's key has One Call 3.0 available, once probed.
  *
@@ -1411,6 +1492,7 @@ static void refresh_tick_locked(power_source_t source, int force_full)
     if (!cfg_ok) {
         ESP_LOGW(TAG, "stored config unparseable; using defaults");
         cfg.update_seconds = 900;
+        cfg.owm_update_seconds = 900;
         cfg.partial_refresh_limit = 5;
         cfg.page_count = 1;
     }
@@ -1518,43 +1600,88 @@ static void refresh_tick_locked(power_source_t source, int force_full)
                                   (onecall && needs.need_owm_current);
     int got_current = 0;
 
-    if (onecall) {
-        /* Nothing to fetch here: the current conditions arrive inside the One Call document and
-         * are parsed out of it below. Asking 2.5/weather as well would be a second call for data
-         * already held. */
-        got_current = 0;
-    } else {
+    /* ---- THE SPLIT INTERVAL: is OWM due, or do we reuse the last document? ----
+     *
+     * `owm_due` is decided ONCE for the whole OWM side (both fetches, current and forecast) so a
+     * tick can never refresh one half and reuse the other — which would put a fresh temperature
+     * beside a stale forecast and, worse, credit the call counter twice for one logical fetch.
+     *
+     * When the split is NOT active (owm_seconds == interval) this is always 1, so the code below
+     * is exactly the pre-split path with one extra branch that is always taken.
+     *
+     * `want_owm` is whether the page needs OWM at all. When it does and OWM is due, fetch; when it
+     * does and OWM is NOT due, fall through to the retained documents. */
+    const int owm_due = owm_fetch_due(cfg.owm_update_seconds);
+    const int want_owm = needs.need_owm_current || needs.need_owm_daily || needs.need_owm_alert;
+    const int owm_fetching = want_owm && owm_due;
+    const int split_active = cfg.owm_update_seconds > cfg.update_seconds;
+
+    /* The split was turned OFF since the last tick: give the retained bytes back rather than hold
+     * DRAM for a feature no longer in use. Cheap and idempotent (a NULL cache is a no-op). */
+    if (!split_active && s_forecast_cache) forecast_cache_release();
+
+    if (owm_fetching && !onecall) {
         /* The parsed current reading is used for the fetch's success and for the daily-call
          * bookkeeping (fetch_current credits the call to the response's own day); the widgets
          * then re-read the DOCUMENT rather than this one value. */
         got_current = (fetch_current(&creds, resp, sizeof(resp), &current, product) == 0);
     }
 
-    if (need_forecast_doc) {
-        forecast = heap_caps_malloc(FORECAST_BUF_BYTES, MALLOC_CAP_8BIT);
-        if (forecast) {
-            /* `max_day_index` is the highest day any widget references, so the request carries
-             * exactly the days the page will draw. An alert-only page binds no day and gets the
-             * whole horizon, because the official alerts ride in this document. */
-            const int days = needs.need_owm_daily ? needs.max_day_index + 1 : 0;
-            if (fetch_forecast(&creds, forecast, FORECAST_BUF_BYTES, days, product) != 0) {
-                free(forecast);
-                forecast = NULL;
-            } else if (onecall) {
-                /* The One Call document IS the current-conditions document, so the reading the
-                 * rest of this function treats as "did the current fetch work" comes out of it.
-                 * Parsing rather than assuming success: a 200 whose body did not survive the
-                 * buffer is not a reading, and treating it as one would cache garbage. */
-                current = owm_parse_current_temp(forecast,
-                                                 (long)(esp_timer_get_time() / 1000000LL));
-                got_current = (current.status == DATASRC_OK);
+    if (owm_fetching && need_forecast_doc) {
+        /* THE FINAL FORECAST DOCUMENT LIVES IN THE RETAINED BUFFER when the split is active, so a
+         * later tick that skips OWM can still resolve its widgets from it. When the split is NOT
+         * active there is no reason to keep it past the render, so the transient buffer is used
+         * exactly as before and the memory profile is unchanged (see s_forecast_cache).
+         *
+         * The request is bounded to the days the page binds, so the retained size is sized to that
+         * request rather than to the 40-block maximum. */
+        const int days = needs.need_owm_daily ? needs.max_day_index + 1 : 0;
+        const size_t need = owm_forecast_buf_bytes(days > 0 ? days * 8 : FORECAST_MAX_BLOCKS);
+
+        if (split_active) {
+            if (ensure_forecast_cache(need) == 0 && s_forecast_cache) {
+                if (fetch_forecast(&creds, s_forecast_cache, s_forecast_cap, days, product) == 0) {
+                    forecast = s_forecast_cache;
+                    s_have_forecast_cache = 1;
+                } else {
+                    s_have_forecast_cache = 0;   /* keep nothing rather than a half-filled doc */
+                }
             }
         } else {
-            /* Not fatal — the widgets show their fallback — but worth logging, because the usual
-             * reason is heap pressure and that is worth seeing. */
-            ESP_LOGW(TAG, "no heap for the forecast buffer (%u bytes)", (unsigned)FORECAST_BUF_BYTES);
+            forecast = heap_caps_malloc(FORECAST_BUF_BYTES, MALLOC_CAP_8BIT);
+            if (forecast) {
+                if (fetch_forecast(&creds, forecast, FORECAST_BUF_BYTES, days, product) != 0) {
+                    free(forecast);
+                    forecast = NULL;
+                }
+            } else {
+                /* Not fatal — the widgets show their fallback — but worth logging, because the
+                 * usual reason is heap pressure and that is worth seeing. */
+                ESP_LOGW(TAG, "no heap for the forecast buffer (%u bytes)",
+                         (unsigned)FORECAST_BUF_BYTES);
+            }
         }
+
+        if (forecast && onecall) {
+            /* The One Call document IS the current-conditions document, so the reading the rest of
+             * this function treats as "did the current fetch work" comes out of it. Parsing rather
+             * than assuming success: a 200 whose body did not survive the buffer is not a reading,
+             * and treating it as one would cache garbage. */
+            current = owm_parse_current_temp(forecast,
+                                             (long)(esp_timer_get_time() / 1000000LL));
+            got_current = (current.status == DATASRC_OK);
+        }
+    } else if (want_owm && !owm_due) {
+        /* OWM IS NOT DUE: reuse the documents retained from the last fetch, so the panel keeps its
+         * OWM readings while only the HA half is refreshed. If nothing has been fetched yet this
+         * boot the buffers are empty and the widgets fall back to their placeholders, which is the
+         * honest answer rather than a stale value. */
+        if (s_have_forecast_cache && s_forecast_cache) forecast = s_forecast_cache;
+        ESP_LOGI(TAG, "OWM not due (%d s); reusing the retained documents",
+                 cfg.owm_update_seconds);
     }
+
+    if (owm_fetching) s_last_owm_fetch_us = esp_timer_get_time();
 
     if (needs.need_ha) {
         if (fetch_ha(&creds, ha_ids, n_ha, ha_resp, sizeof(ha_resp)) != 0) {
@@ -1569,21 +1696,25 @@ static void refresh_tick_locked(power_source_t source, int force_full)
         net_wifi_disconnect();
     }
 
-    if (!got_current) {
+    if (owm_fetching && !got_current) {
         /* Not fatal, and NOT a reason to skip the render: the panel still gets whatever
          * static layer is live (which is the whole point when the web app has just uploaded
          * one), with the last known reading if there is one. The error is recorded for
-         * /api/status either way (FR-33). */
+         * /api/status either way (FR-33).
+         *
+         * ONLY WHEN WE ACTUALLY TRIED. A tick that skipped OWM because the split interval had not
+         * elapsed has no failure to report — recording one would fill /api/status with errors on
+         * every fast HA tick, which is exactly the noise the bounded error log exists to avoid. */
         api_note_error("owm: no current reading");
         ESP_LOGW(TAG, "fetch failed; widgets fall back to their placeholders");
-    } else if (!onecall) {
+    } else if (got_current && !onecall) {
         /* Remember the DOCUMENT, not a formatted string: the widgets bind to different fields
          * of it (temp, humidity, wind, conditions), so caching one number would only serve
          * whichever widget happened to be first in the page.
          *
          * Only on the free tier: `resp` holds 2.5/weather there, and on One Call the current
-         * conditions live in the forecast document, which is a transient buffer freed below and
-         * must not be cached by reference. */
+         * conditions live in the forecast document, which is retained separately (s_forecast_cache)
+         * when the split is active and must not be cached here by reference. */
         const size_t n = strlen(resp);
         if (n < sizeof(s_last_current)) {
             memcpy(s_last_current, resp, n + 1);
@@ -1591,16 +1722,22 @@ static void refresh_tick_locked(power_source_t source, int force_full)
         }
     }
 
-    /* When this fetch failed, fall back to the document kept from the last one that worked, so
-     * an outage leaves the readings on the glass rather than replacing every one with "--". A
-     * device that has NEVER had a good fetch has nothing to fall back to and correctly shows the
-     * placeholders. */
+    /* Which document the current-conditions widgets read.
+     *
+     * THREE SOURCES, in priority order, and the order matters:
+     *   1. A document fetched THIS tick (the normal case).
+     *   2. On One Call, the retained forecast document — its top-level fields ARE the current
+     *      conditions, so when the split skipped the fetch it is still the right source. This is
+     *      why it is checked before the 2.5/weather fallback, which is empty on One Call.
+     *   3. The last good 2.5/weather document (free tier), which covers both a skipped tick and a
+     *      genuinely failed fetch — an outage leaves the readings on the glass rather than
+     *      replacing every one with "--". A device that has NEVER fetched has nothing here and
+     *      correctly shows the placeholders. */
     const char *current_doc = NULL;
     if (got_current) {
-        /* On One Call the current conditions come out of the forecast document; on the free tier
-         * they come out of the dedicated 2.5/weather response. Either way the widgets re-read the
-         * DOCUMENT, so the right one has to be handed over. */
         current_doc = onecall ? forecast : resp;
+    } else if (onecall && s_have_forecast_cache && s_forecast_cache) {
+        current_doc = s_forecast_cache;
     } else if (s_have_last_current) {
         current_doc = s_last_current;
         ESP_LOGI(TAG, "using the last good reading document (%u bytes)",
@@ -1686,8 +1823,15 @@ static void refresh_tick_locked(power_source_t source, int force_full)
     cfg_json = NULL;
 
     /* The forecast buffer has served its purpose; releasing it here gives the render window the
-     * ~16.5 KB back, which matters on USB where the second framebuffer is already tight. */
-    free(forecast);
+     * ~16.5 KB back, which matters on USB where the second framebuffer is already tight.
+     *
+     * THE RETAINED CACHE IS NOT FREED. When the split is active, `forecast` points at
+     * s_forecast_cache and freeing it here would both lose the document the next skipped tick must
+     * reuse AND leave s_forecast_cache a dangling pointer. Only the transient (non-split) buffer is
+     * released, which is the pre-split behaviour exactly. */
+    if (forecast && forecast != s_forecast_cache) {
+        free(forecast);
+    }
     forecast = NULL;
     HEAP_DIAG("after forecast free");
 

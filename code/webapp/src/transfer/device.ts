@@ -295,3 +295,32 @@ export function checkFirmware(opts: DeviceOptions = {}): Promise<JsonResult<Firm
 export function installFirmware(opts: DeviceOptions = {}): Promise<JsonResult<unknown>> {
   return jsonCall('/api/ota/update', { method: 'POST' }, { ...opts, timeoutMs: opts.timeoutMs ?? 120000 });
 }
+
+/**
+ * Upload a firmware image from the browser straight to the device (the LAN dev flash path).
+ *
+ * WHY THIS BYPASSES THE GITHUB PATH: on the bench the image is a freshly-built firmware.bin on the
+ * developer's machine, not a published release, so the GitHub flow has nothing to install. This
+ * POSTs the bytes to /api/firmware, which streams them into the OTA partition and reboots — no
+ * GitHub, no CA-trusted host, no USB. Gated on the device like the other installers (FR-31).
+ *
+ * EXPECT THE FETCH TO REJECT, exactly like installFirmware: the device answers and reboots ~500 ms
+ * later, so the connection is usually reset before the body is read. That is the normal outcome.
+ *
+ * A GENEROUS TIMEOUT because ~1.8 MB over WiFi takes seconds and the device writes it in 4 KB
+ * chunks; the default 8 s would abort a transfer that is making progress.
+ */
+export async function uploadFirmware(
+  blob: Blob,
+  filename: string,
+  opts: DeviceOptions = {},
+): Promise<JsonResult<unknown>> {
+  return jsonCall('/api/firmware', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-Filename': filename,
+    },
+    body: blob,
+  }, { ...opts, timeoutMs: opts.timeoutMs ?? 180000 });
+}

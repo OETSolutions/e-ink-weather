@@ -28,6 +28,27 @@ esp_err_t api_ota_handler(httpd_req_t *req);
 esp_err_t api_ota_check_handler(httpd_req_t *req);
 esp_err_t api_ota_update_handler(httpd_req_t *req);
 
+/* POST /api/firmware — install a firmware image from the REQUEST BODY.
+ *
+ * WHY THIS EXISTS (the local dev flash path): the other two installers both need a reachable HTTPS
+ * source — POST /api/ota takes a URL the device dials, and POST /api/ota/update pulls from GitHub.
+ * Neither is usable when the image is a freshly-built firmware.bin on the developer's laptop and
+ * the board is on the bench with no USB: standing up a CA-trusted HTTPS server just to flash is
+ * disproportionate. This endpoint takes the bytes directly over the LAN, so `curl --data-binary
+ * @firmware.bin http://<device>/api/firmware` is the whole flow.
+ *
+ * IT IS GATED LIKE THE OTHER INSTALLERS (FR-31), because it is the SAME capability — arbitrary
+ * firmware replacement, i.e. device takeover — and an ungated upload endpoint would be a worse hole
+ * than the URL one, since it needs no external host at all.
+ *
+ * The body is streamed straight to the OTA partition in chunks; it is never buffered whole (the
+ * image is ~1.8 MB and this part has no PSRAM). Content-Length is REQUIRED and bounded by the OTA
+ * slot size, so a truncated or oversized upload fails before anything is written.
+ *
+ * The new image is left on PROBATION exactly as the other paths leave it: the boot path proves it
+ * can boot and refresh before marking it valid (see api_ota_mark_valid_if_pending). */
+esp_err_t api_firmware_handler(httpd_req_t *req);
+
 /* Boot-time auto-update. Called from the boot worker BEFORE the first render, and only when the
  * user enabled it. Returns 1 if it installed an update and is about to reboot (never returns in
  * that case); 0 to continue the normal boot. `enabled` is the parsed `firmware_auto_update`

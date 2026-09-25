@@ -5,6 +5,40 @@
  * the scale rather than being a fresh magic number.
  */
 
+/* ---- the branded header ---- */
+
+.brandHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding-bottom: var(--s-3);
+  margin-bottom: var(--s-4);
+  border-bottom: 1px solid var(--border, #d8dce3);
+}
+
+/* The product mark leads; the maker's mark follows, lighter, after a rule. This is the usual
+   endorsement lockup — the thing you bought, then who made it. */
+.brandAether {
+  height: 2.75rem;
+  width: auto;
+  display: block;
+}
+
+.brandDivider {
+  width: 1px;
+  height: 2rem;
+  background: var(--border, #d8dce3);
+  display: block;
+}
+
+.brandOet {
+  height: 1.1rem;
+  width: auto;
+  display: block;
+  opacity: 0.85;
+}
+
 /* ---- the panel preview ---- */
 
 .editorLayout {

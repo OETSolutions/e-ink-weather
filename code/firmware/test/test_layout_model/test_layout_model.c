@@ -22,6 +22,43 @@ static void test_minimal_document_gets_defaults(void)
     TEST_ASSERT_EQUAL_INT(900, c.update_seconds);
     TEST_ASSERT_EQUAL_INT(5, c.partial_refresh_limit);
     TEST_ASSERT_EQUAL_INT(1, c.page_count);
+    /* The OWM interval defaults to the tick interval, so an old document (which has no
+     * owmUpdateSeconds) keeps the pre-split behaviour: OWM is refreshed every tick. */
+    TEST_ASSERT_EQUAL_INT(900, c.owm_update_seconds);
+}
+
+/* The split interval: an explicit owmUpdateSeconds larger than updateSeconds is honoured, which
+ * is the whole point of the field — HA refreshes on the fast tick while OWM is throttled. */
+static void test_owm_interval_splits_from_the_tick(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"updateSeconds\":180,\"owmUpdateSeconds\":900}", &c));
+    TEST_ASSERT_EQUAL_INT(180, c.update_seconds);
+    TEST_ASSERT_EQUAL_INT(900, c.owm_update_seconds);
+}
+
+/* ABSENT owmUpdateSeconds must resolve to updateSeconds, NOT to the 900 default. This is the
+ * backwards-compatibility case: a pre-split document that set updateSeconds: 180 must go on
+ * refreshing OWM every 180 s exactly as it did before the field existed. Resolving to 900 would
+ * silently slow OWM down by 5x and change what such a device does. */
+static void test_absent_owm_interval_tracks_the_tick(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"updateSeconds\":180}", &c));
+    TEST_ASSERT_EQUAL_INT(180, c.owm_update_seconds);
+}
+
+/* The OWM interval can never be SMALLER than the tick: OWM cannot be fetched more often than the
+ * device wakes, so a smaller value is incoherent and is clamped UP to the tick, not down to some
+ * default. A user who typed 60 beside a 600 s tick gets 600, not 900. */
+static void test_owm_interval_clamps_up_to_the_tick(void)
+{
+    layout_config_t c;
+    TEST_ASSERT_EQUAL_INT(0, layout_config_parse(
+        "{\"schemaVersion\":1,\"updateSeconds\":600,\"owmUpdateSeconds\":60}", &c));
+    TEST_ASSERT_EQUAL_INT(600, c.owm_update_seconds);
 }
 
 static void test_pages_and_intervals_parse(void)
@@ -347,6 +384,9 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_minimal_document_gets_defaults);
     RUN_TEST(test_pages_and_intervals_parse);
+    RUN_TEST(test_owm_interval_splits_from_the_tick);
+    RUN_TEST(test_absent_owm_interval_tracks_the_tick);
+    RUN_TEST(test_owm_interval_clamps_up_to_the_tick);
     RUN_TEST(test_single_page_always_returns_page_zero);
     RUN_TEST(test_rotation_boundaries_and_wrap);
     RUN_TEST(test_malformed_json_is_an_error);

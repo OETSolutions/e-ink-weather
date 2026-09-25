@@ -10,7 +10,7 @@ typedef struct {
     int gzipped;
 } webui_asset_t;
 
-#define WEBUI_ASSET_COUNT 6
+#define WEBUI_ASSET_COUNT 8
 extern const webui_asset_t WEBUI_ASSETS[WEBUI_ASSET_COUNT];
 
 /* The app shell, for the site root and the SPA fallback. A path with no extension is a
