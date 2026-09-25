@@ -28,6 +28,14 @@ int owm_counter_should_call(const owm_counter_t *c, int cap);
  * only be attributed to a day AFTER it returns; a non-positive value is ignored rather than
  * blamed on epoch day 0.
  *
+ * The day index only ever moves FORWARD: a timestamp for a LATER day starts a fresh quota, and a
+ * same-or-earlier one is counted into the current day without resetting. That monotonicity is
+ * load-bearing on the free tier, where a tick makes two OWM calls that disagree on the date —
+ * 2.5/weather reports the observation, 2.5/forecast reports its next 3-hourly slot, which is
+ * 00:00 tomorrow for the last three hours of each UTC day. Resetting on any difference let those
+ * two calls cancel each other's count every tick, pinning the count at 1 and killing the cap.
+ * See owm_counter.c for the measurement.
+ *
  * `cap` is passed in and the count is CLAMPED to it, so the counter cannot exceed the cap even
  * if a caller records without asking first. owm_counter_should_call() is still what must gate
  * the request — clamping here is defence in depth, not the mechanism. */
