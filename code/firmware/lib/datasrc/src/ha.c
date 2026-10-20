@@ -256,3 +256,17 @@ int ha_parse_entity_list(const char *body, ha_entity_t *out, int max, int *total
     if (total) *total = declared >= n ? declared : seen;
     return n;
 }
+
+int ha_fetch_should_retry(int http_status, int attempt, int max_attempts, int resp_clipped)
+{
+    /* Out of attempts: the caller has spent its budget, whatever the reason. */
+    if (attempt >= max_attempts) return 0;
+
+    /* A CLIPPED BODY IS NOT WORTH RE-FETCHING. The server answered and the body did not fit the
+     * receive buffer; the same request against the same buffer produces the same overflow. */
+    if (http_status != 0 && resp_clipped) return 0;
+
+    /* THE ONLY RETRYABLE CAUSE: no response at all. See the header for why a non-zero status
+     * (the server answering, even to refuse) must not be retried. */
+    return http_status == 0;
+}

@@ -348,6 +348,44 @@ static void test_entity_list_empty_and_bad_args(void)
     TEST_ASSERT_EQUAL_INT(0, ha_parse_entity_list("sensor.a", rows, 0, &total));
 }
 
+/* ---------------------------------------------------------------- fetch retry policy ---
+ *
+ * THE DEFECT THESE PIN: a transient failure of the ONE template request took out every HA widget
+ * for a whole tick. Measured 2026-10-20 on the bench, the HA host silently dropped the device's
+ * SYNs (no SYN-ACK, no RST) and roughly one tick in four rendered "--" — and the firmware, which
+ * retried nothing, turned a momentary drop into 180 s of a wrong reading. */
+
+/* No response at all is the class this retry exists for: DNS, a connect timeout, or a SYN the
+ * far end dropped. A second attempt costs nothing and is very likely to succeed. */
+static void test_no_response_is_retried(void)
+{
+    TEST_ASSERT_EQUAL_INT(1, ha_fetch_should_retry(0, 1, 2, 0));
+}
+
+/* The server ANSWERED. A 401 for a bad token or a 400 for a rejected template comes back
+ * identically a second later, so retrying only spends the tick's time. This is the half that
+ * makes the retry safe rather than merely persistent. */
+static void test_a_server_rejection_is_not_retried(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(401, 1, 2, 0));
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(400, 1, 2, 0));
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(404, 1, 2, 0));
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(500, 1, 2, 0));
+}
+
+/* A clipped body is a 200 the buffer could not hold; the same request overflows the same way. */
+static void test_a_clipped_body_is_not_retried(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(200, 1, 2, 1));
+}
+
+/* The budget is enforced by this rule, not only by the caller's loop. */
+static void test_the_attempt_budget_is_exhausted(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, ha_fetch_should_retry(0, 2, 2, 0));
+    TEST_ASSERT_EQUAL_INT(1, ha_fetch_should_retry(0, 1, 2, 0));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -374,5 +412,9 @@ int main(void)
     RUN_TEST(test_entity_list_tolerates_missing_name_and_filters_junk);
     RUN_TEST(test_entity_list_reports_truncation);
     RUN_TEST(test_entity_list_empty_and_bad_args);
+    RUN_TEST(test_no_response_is_retried);
+    RUN_TEST(test_a_server_rejection_is_not_retried);
+    RUN_TEST(test_a_clipped_body_is_not_retried);
+    RUN_TEST(test_the_attempt_budget_is_exhausted);
     return UNITY_END();
 }

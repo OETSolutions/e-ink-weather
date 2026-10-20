@@ -8,6 +8,35 @@
  * layout needs and gets back a small '|'-separated line. That beats N per-entity GETs,
  * and it beats pulling /api/states (which returns every entity on the instance). */
 
+/* Should a failed template request be attempted again?
+ *
+ * `esp_err` is deliberately NOT consulted: it is the transport's verdict and merges a refused
+ * answer with no answer at all. The HTTP STATUS is the question that matters, and it is 0 only
+ * when no response arrived — DNS, a connect timeout, or a SYN the far end silently dropped.
+ * That last case is not hypothetical: measured 2026-10-20, roughly one tick in four lost the
+ * device's HA connection to a stack that dropped its SYNs, and every HA widget rendered "--"
+ * for a whole interval because the firmware had no second attempt.
+ *
+ * A non-zero status is the server ANSWERING — a 401 for a bad token, a 400 for a rejected
+ * template — and an identical second request is answered identically, so it is not worth the
+ * tick's time.
+ *
+ * `resp_clipped` says the last attempt's response did not fit the caller's receive buffer. A
+ * clipped body is a permanent condition of the request+buffer, so it is not re-fetched.
+ *
+ * `attempt` is the 1-based number of the attempt that just failed; `max_attempts` is the budget
+ * for the request. Returns 1 to try again, 0 to give up.
+ *
+ * NOTE that a CLIPPED BODY IS PERMANENT WHEREAS A LOST CONNECTION IS NOT, which is the whole
+ * reason the two are separated here rather than left as "did it fail". Sizing a buffer cannot be
+ * retried into working; a dropped SYN almost always can.
+ *
+ * Lives here, with the rest of the HA rules, so the rule each caller's retry loop applies is
+ * host-tested rather than reachable only on a live device. */
+#define HA_RESP_MIN_CAP 512   /* one '|'-separated line for any real layout */
+
+int ha_fetch_should_retry(int http_status, int attempt, int max_attempts, int resp_clipped);
+
 /* Parse one '|'-separated line, e.g. "68.4|41.2|unavailable", into values in order.
  * Returns how many tokens were parsed (may be < n_out on short input); every slot not
  * filled by the response is set to DATASRC_ERR_UNAVAILABLE, NEVER to zero — a missing

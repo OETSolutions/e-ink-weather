@@ -206,3 +206,9 @@ esp_err_t net_http_post_json(const char *url, const char *bearer, const char *bo
 {
     return do_request(url, bearer, body, out, outlen, NULL);
 }
+
+esp_err_t net_http_post_json_status(const char *url, const char *bearer, const char *body,
+                                    char *out, size_t outlen, int *status_out)
+{
+    return do_request(url, bearer, body, out, outlen, status_out);
+}

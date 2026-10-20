@@ -1160,6 +1160,26 @@ static int fetch_forecast(const fetch_creds_t *c, char *buf, size_t buflen, int 
     return 0;
 }
 
+/* Attempts per request, and the pause before the second one.
+ *
+ * THIS RETRY EXISTS BECAUSE A LOST SYN COST A WHOLE TICK. Measured 2026-10-20: the HA host
+ * silently dropped the device's connection (SYNs arrived, no SYN-ACK, not even a RST — the
+ * host's "SYNs to LISTEN sockets dropped" counter rose by exactly the retransmit count), and
+ * roughly one tick in four rendered "--" for every HA widget. The loss was transient by nature —
+ * a 1-2 s backoff lands on a stack that is no longer refusing — but the firmware had no second
+ * attempt, so a momentary drop became 180 s of a wrong reading on the glass.
+ *
+ * TWO ATTEMPTS, NOT A LOOP. The failure this addresses is a transient one, and the cost of a
+ * further attempt is paid inside the tick, where the radio is up and the render window is
+ * waiting. Repeatedly re-dialling a host that is genuinely down would hold the refresh open and
+ * delay the panel for no gain: the widget falls back on this tick and the next one tries again
+ * 180 s later.
+ *
+ * WHICH FAILURES ARE WORTH RETRYING IS ha_fetch_should_retry()'s question, not this call site's
+ * — that rule is host-tested in lib/datasrc. */
+#define HA_FETCH_ATTEMPTS  2
+#define HA_RETRY_DELAY_MS  1500
+
 /* Fetch the page's Home Assistant entities in ONE template call (FR-5a).
  *
  * THE KEY OPTIMISATION: HA renders a template server-side, so the device sends one small POST
@@ -1198,11 +1218,33 @@ static int fetch_ha(const fetch_creds_t *c, char (*ids)[48], int n_ids,
     char url[256];
     snprintf(url, sizeof(url), "%s/api/template", c->ha_url);
 
-    if (net_http_post_json(url, c->ha_token, body, out, outlen) != ESP_OK) {
-        ESP_LOGW(TAG, "HA template request failed");
-        return -1;
+    /* The retry decision lives in the loop CONDITION, so "may we try again" is answered in
+     * exactly one place and a future edit cannot retry a failure ha_fetch_should_retry()
+     * excludes. The bound is the policy's own attempt budget, so this cannot spin. */
+    for (int attempt = 1; attempt <= HA_FETCH_ATTEMPTS; attempt++) {
+        int status = 0;
+        const esp_err_t e = net_http_post_json_status(url, c->ha_token, body, out, outlen, &status);
+        if (e == ESP_OK) return 0;
+
+        /* A CLIPPED BODY IS NOT PASSED HERE, deliberately. net_http's overflow flag is sticky (a
+         * clipped body cannot be un-clipped) and is not cleared between attempts, so ESP_ERR_NO_MEM
+         * cannot be attributed to THIS attempt — claiming it would let a transient failure be
+         * treated as permanent. The omission is harmless: net_http reports an overflow on a 200 as
+         * ESP_ERR_NO_MEM with status 200, which ha_fetch_should_retry() already refuses. That
+         * branch is pinned by test_a_clipped_body_is_not_retried. */
+        if (!ha_fetch_should_retry(status, attempt, HA_FETCH_ATTEMPTS, 0)) {
+            ESP_LOGW(TAG, "HA template request failed (attempt %d/%d, status %d: %s)",
+                     attempt, HA_FETCH_ATTEMPTS, status, esp_err_to_name(e));
+            return -1;
+        }
+
+        ESP_LOGW(TAG, "HA template request got no response (attempt %d/%d, %s); retrying in %d ms",
+                 attempt, HA_FETCH_ATTEMPTS, esp_err_to_name(e), HA_RETRY_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(HA_RETRY_DELAY_MS));
     }
-    return 0;
+    /* Unreachable: the policy refuses once `attempt` reaches the budget, and that branch
+     * returns above. Kept so the function always has an explicit exit. */
+    return -1;
 }
 
 /* Return the layer's DRAM to the heap, WITH the lock already held. Memory only — it does NOT

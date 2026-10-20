@@ -50,3 +50,16 @@ esp_err_t net_http_post_json(const char *url, const char *bearer,
  * alerts are unavailable on a key that has them. */
 esp_err_t net_http_get_json_status(const char *url, const char *bearer,
                                    char *out, size_t outlen, int *status_out);
+
+/* The POST equivalent, for the same reason: the caller has to tell "the server answered with
+ * a rejection" from "no answer ever came".
+ *
+ * THAT DISTINCTION IS WHAT MAKES A RETRY SAFE. `status_out` is 0 when no response arrived at
+ * all — a DNS failure, a connect timeout, or a SYN the server's stack silently dropped. That
+ * class is transient and a second attempt is worth making. A 4xx is a considered answer (a bad
+ * token, a rejected template) and retrying it just spends the tick's time to be refused again.
+ * `err` alone cannot separate the two: it reports ESP_ERR_INVALID_RESPONSE for a 401 and for a
+ * transport failure alike. */
+esp_err_t net_http_post_json_status(const char *url, const char *bearer,
+                                    const char *body, char *out, size_t outlen,
+                                    int *status_out);
